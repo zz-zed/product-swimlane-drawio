@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-11
+
+### Changed
+
+- Keep automatically generated vertical connector corridors at least 16 pixels away from internal lane boundaries.
+- Re-run strict validation after a diagram is opened, edited, moved, or saved in Draw.io.
+- Separate strict validation, preview export, and model visual review in handoff reporting.
+
+### Documentation
+
+- Document the relative reliability and limits of text-only, multimodal, and human-reviewed output without claiming an unmeasured accuracy rate.
+
+### Tests
+
+- Add neutral regressions for safe lane-boundary clearance and near-boundary validation.
+
 ## [0.1.0] - 2026-08-11
 
 ### Added
@@ -22,5 +38,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/zz-zed/product-swimlane-drawio/releases/tag/v0.1.0

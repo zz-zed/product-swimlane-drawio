@@ -46,6 +46,8 @@ ROUTING_FIELDS = {
     "exit_offset", "entry_offset", "waypoints", "allow_port_reuse", "reroute",
 }
 ROUTE_CLEARANCE = 24.0
+LANE_BOUNDARY_CLEARANCE = 16.0
+POOL_EDGE_MARGIN = 8.0
 GEOMETRY_TOLERANCE = 0.75
 
 
@@ -378,6 +380,52 @@ def compact_points(points: list[tuple[float, float]]) -> list[tuple[float, float
     return compacted
 
 
+def internal_lane_boundaries(lanes: dict[str, dict]) -> list[float]:
+    right_edges = {
+        round(record["geometry"]["x"] + record["geometry"]["width"], 4)
+        for record in lanes.values()
+    }
+    if not right_edges:
+        return []
+    pool_right = max(right_edges)
+    return sorted(edge for edge in right_edges if edge < pool_right - GEOMETRY_TOLERANCE)
+
+
+def safe_vertical_corridor(
+    candidate: float,
+    boundaries: list[float],
+    direction: str,
+    pool_width: float,
+) -> float:
+    """Move an automatic vertical corridor away from internal lane boundaries."""
+    if direction not in {"left", "right"}:
+        raise DiagramError(f"Unsupported corridor direction: {direction}")
+
+    lower = POOL_EDGE_MARGIN
+    upper = max(lower, pool_width - POOL_EDGE_MARGIN)
+    candidate = min(max(candidate, lower), upper)
+    safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+
+    for _ in range(len(boundaries) + 1):
+        conflict = next(
+            (
+                boundary
+                for boundary in boundaries
+                if abs(candidate - boundary) < LANE_BOUNDARY_CLEARANCE
+            ),
+            None,
+        )
+        if conflict is None:
+            break
+        shifted = conflict - safe_gap if direction == "left" else conflict + safe_gap
+        shifted = min(max(shifted, lower), upper)
+        if abs(shifted - candidate) < GEOMETRY_TOLERANCE:
+            break
+        candidate = shifted
+
+    return candidate
+
+
 def automatic_waypoints(
     route_class: str,
     source_bounds: dict[str, float],
@@ -387,6 +435,7 @@ def automatic_waypoints(
     exit_side: str,
     entry_side: str,
     pool_width: float,
+    lane_boundaries: list[float],
 ) -> list[tuple[float, float]]:
     sx, sy = source_point
     tx, ty = target_point
@@ -399,17 +448,27 @@ def automatic_waypoints(
             return compact_points([(sx, corridor_y), (tx, corridor_y)])
         if exit_side in {"left", "right"}:
             escape_x = sx + (ROUTE_CLEARANCE if exit_side == "right" else -ROUTE_CLEARANCE)
+            escape_x = safe_vertical_corridor(
+                escape_x, lane_boundaries, exit_side, pool_width
+            )
             return compact_points([(escape_x, sy), (escape_x, corridor_y), (tx, corridor_y)])
         return compact_points([(sx, corridor_y), (tx, corridor_y)])
 
     if route_class == "back":
         if exit_side == entry_side == "left":
-            route_x = max(8.0, min(source_bounds["left"], target_bounds["left"]) - ROUTE_CLEARANCE)
+            route_x = safe_vertical_corridor(
+                min(source_bounds["left"], target_bounds["left"]) - ROUTE_CLEARANCE,
+                lane_boundaries,
+                "left",
+                pool_width,
+            )
             return compact_points([(route_x, sy), (route_x, ty)])
         if exit_side == entry_side == "right":
-            route_x = min(
-                pool_width - 8.0,
+            route_x = safe_vertical_corridor(
                 max(source_bounds["right"], target_bounds["right"]) + ROUTE_CLEARANCE,
+                lane_boundaries,
+                "right",
+                pool_width,
             )
             return compact_points([(route_x, sy), (route_x, ty)])
         corridor_y = (sy + ty) / 2
@@ -418,9 +477,19 @@ def automatic_waypoints(
     if abs(sy - ty) < GEOMETRY_TOLERANCE:
         return []
     if exit_side == "right":
-        route_x = min(source_bounds["right"] + ROUTE_CLEARANCE, pool_width - 8.0)
+        route_x = safe_vertical_corridor(
+            source_bounds["right"] + ROUTE_CLEARANCE,
+            lane_boundaries,
+            "right",
+            pool_width,
+        )
     elif exit_side == "left":
-        route_x = max(source_bounds["left"] - ROUTE_CLEARANCE, 8.0)
+        route_x = safe_vertical_corridor(
+            source_bounds["left"] - ROUTE_CLEARANCE,
+            lane_boundaries,
+            "left",
+            pool_width,
+        )
     else:
         route_x = (sx + tx) / 2
     return compact_points([(route_x, sy), (route_x, ty)])
@@ -452,6 +521,7 @@ def route_edge(
     source_point = port_point(source_bounds, exit_side, exit_offset)
     target_point = port_point(target_bounds, entry_side, entry_offset)
     pool_width = max(record["geometry"]["x"] + record["geometry"]["width"] for record in lanes.values())
+    lane_boundaries = internal_lane_boundaries(lanes)
     points = (
         normalize_waypoints(edge["waypoints"])
         if "waypoints" in edge
@@ -464,6 +534,7 @@ def route_edge(
             exit_side,
             entry_side,
             pool_width,
+            lane_boundaries,
         )
     )
     return {
@@ -987,13 +1058,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 f"Port reused at node {node_id} ({side}@{number(offset)}): {', '.join(sorted(used_by))}"
             )
 
-    internal_boundaries = sorted(
-        {
-            round(record["geometry"]["x"] + record["geometry"]["width"], 4)
-            for index, record in enumerate(lanes.values())
-            if index < len(lanes) - 1
-        }
-    )
+    internal_boundaries = internal_lane_boundaries(lanes)
     node_bounds = {
         semantic_id: node_bounds_in_pool(record, lanes[record["lane"]])
         for semantic_id, record in nodes.items()
@@ -1013,6 +1078,14 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 x = segment[0][0]
                 if any(abs(x - boundary) < GEOMETRY_TOLERANCE for boundary in internal_boundaries):
                     warnings.append(f"Connector overlaps a lane boundary: {edge_id}")
+                elif any(
+                    abs(x - boundary) < LANE_BOUNDARY_CLEARANCE
+                    for boundary in internal_boundaries
+                ):
+                    warnings.append(
+                        "Connector is too close to a lane boundary "
+                        f"(< {number(LANE_BOUNDARY_CLEARANCE)} px): {edge_id}"
+                    )
             for node_id, bounds in node_bounds.items():
                 if node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}:
                     continue

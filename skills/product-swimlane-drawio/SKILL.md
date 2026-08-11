@@ -49,7 +49,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
    ```
 
 5. If strict validation reports a routing warning, adjust edge semantics or ports and rebuild. Do not declare completion from XML validity alone.
-6. When a renderer is available, export a preview and inspect it before handoff.
+6. When a renderer is available, export a preview before handoff. Inspect it only when the current agent can analyze images; otherwise ask the user to review it and report that model visual review was not performed.
 
 ## Routing semantics
 
@@ -57,7 +57,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 - Reserve a decision's top for incoming flow. Send its forward branch from the right and its backward branch from the left unless the layout requires an explicit override.
 - Route retries and returns to earlier ranks outside the node stack and enter the historical target from a side.
 - Give each connection a distinct port by default. Set `allow_port_reuse` only for an intentional convergence.
-- Keep cross-lane vertical segments away from lane boundaries.
+- Keep cross-lane vertical segments at least 16 pixels away from lane boundaries.
 - Put labels on clear, independent segments and keep the primary path visually dominant.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
 
@@ -72,7 +72,13 @@ Require strict validation to have no warnings. It checks:
 - Connectors crossing nodes.
 - Connector segments crossing, overlapping, or becoming non-orthogonal.
 
-Then inspect the rendered preview for clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions that geometry checks cannot reliably detect.
+Treat automated validation and visual review as separate evidence:
+
+- Always run strict validation on the actual `.drawio` file being handed off.
+- If Draw.io opens, moves, edits, or saves the file, re-run strict validation on that final saved file.
+- If the current agent can analyze images, inspect the rendered preview for clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions.
+- If the current agent cannot analyze images, export a preview when possible and request user review. Never claim that visual review passed.
+- Report `strict validation`, `preview export`, and `model visual review` as separate statuses.
 
 ## Update an existing diagram
 

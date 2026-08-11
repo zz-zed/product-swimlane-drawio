@@ -5,6 +5,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -31,6 +32,48 @@ def run_tool(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
     return result
 
 
+def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
+    edges = []
+    if include_forward:
+        edges.append({"id": "forward", "from": "step-a", "to": "step-b"})
+    edges.append(
+        {"id": "retry", "from": "step-b", "to": "step-a", "type": "retry"}
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "title": "Neutral flow",
+                "lanes": [
+                    {"id": "lane-a", "label": "Lane A", "width": 220},
+                    {"id": "lane-b", "label": "Lane B", "width": 220},
+                ],
+                "nodes": [
+                    {
+                        "id": "step-a",
+                        "lane": "lane-b",
+                        "rank": 1,
+                        "type": "process",
+                        "label": "Step A",
+                        "x": 20,
+                        "width": 160,
+                    },
+                    {
+                        "id": "step-b",
+                        "lane": "lane-b",
+                        "rank": 2,
+                        "type": "process",
+                        "label": "Step B",
+                        "x": 20,
+                        "width": 160,
+                    },
+                ],
+                "edges": edges,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class ReleasePackageTests(unittest.TestCase):
     def test_readme_language_navigation_and_structure(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -50,6 +93,14 @@ class ReleasePackageTests(unittest.TestCase):
         width, height = struct.unpack(">II", data[16:24])
         self.assertGreater(width, height)
         self.assertAlmostEqual(width / height, 16 / 9, delta=0.03)
+
+    def test_readme_discloses_multimodal_review_reliability(self) -> None:
+        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        self.assertIn("Model capability and output reliability", english)
+        self.assertIn("does not claim a measured accuracy percentage", english)
+        self.assertIn("模型能力与输出可靠度", chinese)
+        self.assertIn("没有为模型生成的流程图声明经过测量的准确率", chinese)
 
     def test_expected_skill_files_only(self) -> None:
         relative_files = {
@@ -173,6 +224,53 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("port", (result.stdout + result.stderr).lower())
+
+    def test_retry_corridor_keeps_safe_lane_boundary_clearance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "boundary.json"
+            output = directory / "boundary.drawio"
+            write_boundary_spec(spec, include_forward=True)
+
+            build = run_tool("build", "--spec", str(spec), "--output", str(output))
+            self.assertEqual(json.loads(build.stdout)["warnings"], [])
+
+            tree = ET.parse(output)
+            retry = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "retry"
+            )
+            points = retry.findall("./mxGeometry/Array[@as='points']/mxPoint")
+            self.assertTrue(points)
+            self.assertTrue(all(abs(float(point.attrib["x"]) - 220) >= 16 for point in points))
+
+    def test_near_lane_boundary_connector_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "boundary.json"
+            output = directory / "boundary.drawio"
+            write_boundary_spec(spec, include_forward=False)
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+
+            tree = ET.parse(output)
+            retry = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "retry"
+            )
+            for point in retry.findall("./mxGeometry/Array[@as='points']/mxPoint"):
+                point.attrib["x"] = "228"
+            tree.write(output, encoding="utf-8", xml_declaration=False)
+
+            validate = run_tool(
+                "validate", "--input", str(output), "--strict", check=False
+            )
+            self.assertNotEqual(validate.returncode, 0)
+            report = json.loads(validate.stdout)
+            self.assertTrue(
+                any("too close to a lane boundary" in warning for warning in report["warnings"])
+            )
 
 
 if __name__ == "__main__":

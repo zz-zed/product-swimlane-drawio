@@ -37,7 +37,7 @@ Neutral JSON specification
         ↓
 Build native .drawio
         ↓
-Strict validation and visual inspection
+Strict validation and capability-aware visual review
         ↓
 Edit locally or apply a semantic patch
 ```
@@ -133,11 +133,23 @@ Strict validation checks structural integrity and routing heuristics, including:
 - Missing endpoints and duplicate semantic IDs
 - Nodes outside their lanes
 - Unintentional port reuse
-- Connectors aligned with lane boundaries
+- Connectors aligned with or too close to lane boundaries
 - Connectors crossing nodes
 - Overlapping, crossing, or non-orthogonal connector segments
 
-Automated validation does not replace visual review. Inspect the rendered diagram for clipped labels, ambiguous arrow direction, hidden arrowheads, and excessive detours before sharing it.
+Automated validation does not replace visual review. Always validate the final saved `.drawio` file. If Draw.io opens, edits, moves, or saves the diagram, run strict validation again before handoff.
+
+## Model capability and output reliability
+
+This project does not claim a measured accuracy percentage for model-produced diagrams. Deterministic validation and model visual review provide different kinds of evidence.
+
+| Agent capability | Relative output confidence | Required disclosure |
+|---|---|---|
+| Text-only model | Structural and routing confidence comes only from strict automated validation. Visual defects can remain. | Report that model visual review was not performed. |
+| Multimodal model | Higher confidence for visible clipping, collisions, hidden arrowheads, and excessive detours. The review is non-deterministic and can still miss defects. | Report automated validation, preview export, and model visual review separately. |
+| Multimodal model plus human review | Recommended for important diagrams before publication or operational use. | Keep the editable `.drawio` file and review the final exported preview. |
+
+A successful preview export does not mean that a model inspected the preview. A multimodal model improves visual quality assurance, but it does not replace strict validation or guarantee a perfect diagram.
 
 ## Design scope
 
