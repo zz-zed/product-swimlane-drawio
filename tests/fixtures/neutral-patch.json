@@ -1,0 +1,9 @@
+{
+  "nodes": [
+    {"id": "note-new", "lane": "lane-b", "rank": 6, "type": "note", "label": "Note"},
+    {"id": "step-new", "lane": "lane-b", "rank": 7, "type": "process", "label": "New Step"}
+  ],
+  "edges": [
+    {"id": "edge-new", "from": "note-new", "to": "step-new", "type": "flow", "label": ""}
+  ]
+}

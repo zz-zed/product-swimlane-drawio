@@ -1,0 +1,111 @@
+---
+name: product-swimlane-drawio
+description: Create and incrementally update native, editable Draw.io vertical swimlane process diagrams with structure confirmation, semantic port allocation, global ranks, decisions, retries, cross-lane routing, stable IDs, and visual-quality checks. Use when an agent must turn a natural-language process into a local .drawio file or safely revise a compatible diagram without discarding manual layout changes.
+---
+
+# Editable Draw.io Swimlanes
+
+Build native, uncompressed `.drawio` files with the bundled Python tool. Keep the latest user-saved `.drawio` canonical after local editing.
+
+## Requirements
+
+- Use Python 3.10 or later.
+- Resolve referenced files relative to this `SKILL.md`; never assume an installation path or working directory.
+- Treat Draw.io Desktop or the web app as an optional editor and renderer, not as a generation dependency.
+- Keep task inputs and outputs outside the skill directory.
+
+## Start from natural language
+
+Do not ask the user to understand ranks, node types, ports, calls, or returns. Ask only for missing high-impact information in everyday terms:
+
+- What the diagram describes.
+- Which systems or roles participate.
+- What starts the process.
+- What happens in the normal path, in order.
+- What can fail, branch, return, or retry.
+- What marks completion.
+- What must stay out of scope.
+- Which ambiguous steps are manual or automatic.
+
+When the user asks to confirm the structure first, do not generate files yet. Return a compact confirmation card containing:
+
+1. Lane order from left to right.
+2. Numbered main path with one owner per step.
+3. Decision and exception paths, including their return targets.
+4. Assumptions and unresolved questions.
+
+Wait for explicit confirmation. Never add unprovided intermediate steps, data exchanges, owners, or outcomes. Mark uncertain items as unresolved.
+
+## Build after confirmation
+
+1. Read [references/schema.md](references/schema.md).
+2. Translate the confirmed structure into a task-local JSON specification with stable semantic IDs.
+3. Mark primary progress as `route: forward`, historical return or retry as `route: back`, and same-rank interaction as `route: side`. Use `branch` or explicit ports for decision outputs.
+4. Build and run strict validation:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" build --spec "<spec.json>" --output "<diagram.drawio>"
+   python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<diagram.drawio>" --strict
+   ```
+
+5. If strict validation reports a routing warning, adjust edge semantics or ports and rebuild. Do not declare completion from XML validity alone.
+6. When a renderer is available, export a preview and inspect it before handoff.
+
+## Routing semantics
+
+- Keep the main path top-to-bottom: enter from the top and continue from the bottom.
+- Reserve a decision's top for incoming flow. Send its forward branch from the right and its backward branch from the left unless the layout requires an explicit override.
+- Route retries and returns to earlier ranks outside the node stack and enter the historical target from a side.
+- Give each connection a distinct port by default. Set `allow_port_reuse` only for an intentional convergence.
+- Keep cross-lane vertical segments away from lane boundaries.
+- Put labels on clear, independent segments and keep the primary path visually dominant.
+- Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
+
+## Visual quality gate
+
+Require strict validation to have no warnings. It checks:
+
+- Broken endpoints and duplicate semantic IDs.
+- Nodes outside their lanes.
+- Reused ports.
+- Connectors collinear with lane boundaries.
+- Connectors crossing nodes.
+- Connector segments crossing, overlapping, or becoming non-orthogonal.
+
+Then inspect the rendered preview for clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions that geometry checks cannot reliably detect.
+
+## Update an existing diagram
+
+1. Start from the latest user-saved `.drawio`, never an older JSON specification.
+2. Confirm that the file contains compatible semantic metadata. Otherwise explain that migration or rebuilding is required for safe patching.
+3. Put only requested `update_nodes`, `update_edges`, new nodes, and new edges in a task-local patch file.
+4. Write to a new output file, validate, and compare against the declared patch:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --changes "<changes.json>" --output "<updated.drawio>"
+   python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<updated.drawio>" --strict
+   python3 "<skill-root>/scripts/drawio_swimlane.py" compare --before "<current.drawio>" --after "<updated.drawio>" --changes "<changes.json>"
+   ```
+
+5. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
+6. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes.
+7. Keep the input unchanged until the user approves replacement.
+
+## Layout and handoff
+
+- Give each participating system or role one full-height vertical lane.
+- Use global `rank` values for top-to-bottom order; assign the same rank to parallel steps.
+- Keep nodes structurally parented to their owning lanes.
+- Prefer three to five lanes per page; split dense exception detail when necessary.
+- Preserve stable IDs across revisions.
+- Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.
+
+## Package neutrality
+
+- Keep the package free of user data, organization names, proprietary terminology, and domain-specific sample flows.
+- Never store generated specifications, diagrams, previews, or test fixtures in the skill directory.
+- Keep the core workflow compatible with the Agent Skills directory format; isolate product-specific metadata in its optional metadata directory.
+
+## Limits
+
+Use this skill for editable vertical swimlane process diagrams. Use another representation for strict BPMN conformance, infrastructure topology, or free-form presentation graphics.

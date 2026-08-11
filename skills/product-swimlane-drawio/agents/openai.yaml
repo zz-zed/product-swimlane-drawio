@@ -1,0 +1,4 @@
+interface:
+  display_name: "Editable Draw.io Swimlanes"
+  short_description: "Create editable Draw.io swimlanes with safer routing"
+  default_prompt: "Use $product-swimlane-drawio to confirm my process structure, then create an editable vertical swimlane diagram."
