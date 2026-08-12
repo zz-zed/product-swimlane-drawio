@@ -56,6 +56,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 - Keep the main path top-to-bottom: enter from the top and continue from the bottom.
 - Reserve a decision's top for incoming flow. Send its forward branch from the right and its backward branch from the left unless the layout requires an explicit override.
 - Route retries and returns to earlier ranks outside the node stack and enter the historical target from a side.
+- Allow new-diagram layout to widen an automatic target lane when its side gutter cannot safely contain a return or retry trunk. Recompute downstream lane positions and automatic routes from the expanded geometry.
 - Give each connection a distinct port by default. Set `allow_port_reuse` only for an intentional convergence.
 - Keep cross-lane vertical segments at least 16 pixels away from lane boundaries.
 - Put labels on clear, independent segments and keep the primary path visually dominant.

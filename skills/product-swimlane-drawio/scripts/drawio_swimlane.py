@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -602,6 +603,46 @@ def canvas_values(spec: dict) -> dict:
     return values
 
 
+def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
+    requested = edge.get("route", "auto")
+    if requested != "auto":
+        return requested
+    source_rank = int(nodes[edge["from"]]["rank"])
+    target_rank = int(nodes[edge["to"]]["rank"])
+    if edge.get("type") == "retry" or target_rank < source_rank:
+        return "back"
+    if target_rank > source_rank:
+        return "forward"
+    return "side"
+
+
+def effective_lane_widths(spec: dict) -> dict[str, float]:
+    """Expand automatic-layout lanes enough to host internal back-route gutters."""
+    widths = {
+        lane["id"]: float(lane.get("width", 200))
+        for lane in spec["lanes"]
+    }
+    nodes = {node["id"]: node for node in spec["nodes"]}
+    required_gutter = LANE_BOUNDARY_CLEARANCE + 2 * GEOMETRY_TOLERANCE
+
+    for edge in spec["edges"]:
+        if inferred_spec_route_class(edge, nodes) != "back":
+            continue
+        entry_side = edge.get("entry_side", "left")
+        if entry_side not in {"left", "right"}:
+            continue
+        target = nodes[edge["to"]]
+        if "x" in target:
+            continue
+        target_width, _ = node_size(target)
+        minimum_width = math.ceil(
+            target_width + 2 * required_gutter + GEOMETRY_TOLERANCE
+        )
+        widths[target["lane"]] = max(widths[target["lane"]], float(minimum_width))
+
+    return widths
+
+
 def node_size(node: dict) -> tuple[float, float]:
     kind = node.get("type", "process")
     if kind not in NODE_SIZES:
@@ -944,6 +985,35 @@ def compact_points(points: list[tuple[float, float]]) -> list[tuple[float, float
     return compacted
 
 
+def remove_collinear_points(
+    points: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Remove middle points that do not change an orthogonal path's direction."""
+    simplified: list[tuple[float, float]] = []
+    for point in compact_points(points):
+        simplified.append(point)
+        while len(simplified) >= 3:
+            first, middle, last = simplified[-3:]
+            same_x = (
+                abs(first[0] - middle[0]) < GEOMETRY_TOLERANCE
+                and abs(middle[0] - last[0]) < GEOMETRY_TOLERANCE
+                and min(first[1], last[1]) - GEOMETRY_TOLERANCE
+                <= middle[1]
+                <= max(first[1], last[1]) + GEOMETRY_TOLERANCE
+            )
+            same_y = (
+                abs(first[1] - middle[1]) < GEOMETRY_TOLERANCE
+                and abs(middle[1] - last[1]) < GEOMETRY_TOLERANCE
+                and min(first[0], last[0]) - GEOMETRY_TOLERANCE
+                <= middle[0]
+                <= max(first[0], last[0]) + GEOMETRY_TOLERANCE
+            )
+            if not (same_x or same_y):
+                break
+            simplified.pop(-2)
+    return simplified
+
+
 def internal_lane_boundaries(lanes: dict[str, dict]) -> list[float]:
     right_edges = {
         round(record["geometry"]["x"] + record["geometry"]["width"], 4)
@@ -1059,6 +1129,101 @@ def automatic_waypoints(
     return compact_points([(route_x, sy), (route_x, ty)])
 
 
+def automatic_polyline_is_safe(
+    points: list[tuple[float, float]],
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    source_id: str,
+    target_id: str,
+) -> bool:
+    """Check geometry constraints before accepting an automatic simplification."""
+    lane_boundaries = internal_lane_boundaries(lanes)
+    obstacle_bounds = {
+        node_id: node_bounds_in_pool(record, lanes[record["lane"]])
+        for node_id, record in nodes.items()
+        if node_id not in {source_id, target_id}
+    }
+    for segment in zip(points, points[1:]):
+        axis = segment_axis(segment)
+        if axis == "diagonal":
+            return False
+        if axis == "vertical":
+            x = segment[0][0]
+            if any(
+                abs(x - boundary) < LANE_BOUNDARY_CLEARANCE
+                for boundary in lane_boundaries
+            ):
+                return False
+        if any(segment_crosses_bounds(segment, bounds) for bounds in obstacle_bounds.values()):
+            return False
+    return True
+
+
+def simplify_automatic_waypoints(
+    route_class: str,
+    source_point: tuple[float, float],
+    target_point: tuple[float, float],
+    exit_side: str,
+    entry_side: str,
+    points: list[tuple[float, float]],
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    source_id: str,
+    target_id: str,
+) -> list[tuple[float, float]]:
+    """Prefer the fewest safe bends for automatically generated orthogonal routes."""
+    full_path = remove_collinear_points([source_point, *points, target_point])
+
+    if route_class == "forward" and entry_side == "top":
+        sx, sy = source_point
+        tx, _ = target_point
+        exits_toward_target = (
+            exit_side == "right" and tx > sx + GEOMETRY_TOLERANCE
+        ) or (
+            exit_side == "left" and tx < sx - GEOMETRY_TOLERANCE
+        )
+        if exits_toward_target:
+            direct_elbow = remove_collinear_points(
+                [source_point, (tx, sy), target_point]
+            )
+            if automatic_polyline_is_safe(
+                direct_elbow,
+                lanes,
+                nodes,
+                source_id,
+                target_id,
+            ):
+                full_path = direct_elbow
+
+    if route_class == "back" and exit_side == entry_side and entry_side in {"left", "right"}:
+        target = nodes[target_id]
+        target_lane = lanes[target["lane"]]["geometry"]
+        target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
+        safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+        if entry_side == "left":
+            corridor_x = target_lane["x"] + safe_gap
+            has_internal_space = corridor_x < target_bounds["left"] - GEOMETRY_TOLERANCE
+        else:
+            corridor_x = target_lane["x"] + target_lane["width"] - safe_gap
+            has_internal_space = corridor_x > target_bounds["right"] + GEOMETRY_TOLERANCE
+        if has_internal_space:
+            _, sy = source_point
+            _, ty = target_point
+            target_lane_path = remove_collinear_points(
+                [source_point, (corridor_x, sy), (corridor_x, ty), target_point]
+            )
+            if automatic_polyline_is_safe(
+                target_lane_path,
+                lanes,
+                nodes,
+                source_id,
+                target_id,
+            ):
+                full_path = target_lane_path
+
+    return full_path[1:-1]
+
+
 def route_edge(
     edge: dict,
     lanes: dict[str, dict],
@@ -1086,10 +1251,10 @@ def route_edge(
     target_point = port_point(target_bounds, entry_side, entry_offset)
     pool_width = max(record["geometry"]["x"] + record["geometry"]["width"] for record in lanes.values())
     lane_boundaries = internal_lane_boundaries(lanes)
-    points = (
-        normalize_waypoints(edge["waypoints"])
-        if "waypoints" in edge
-        else automatic_waypoints(
+    if "waypoints" in edge:
+        points = normalize_waypoints(edge["waypoints"])
+    else:
+        points = automatic_waypoints(
             route_class,
             source_bounds,
             target_bounds,
@@ -1100,7 +1265,18 @@ def route_edge(
             pool_width,
             lane_boundaries,
         )
-    )
+        points = simplify_automatic_waypoints(
+            route_class,
+            source_point,
+            target_point,
+            exit_side,
+            entry_side,
+            points,
+            lanes,
+            nodes,
+            edge["from"],
+            edge["to"],
+        )
     return {
         "style": edge_style(
             edge.get("type", "flow"), exit_side, entry_side, exit_offset, entry_offset
@@ -1152,6 +1328,7 @@ def apply_edge_route(
             "data-exit-offset": number(routed["exit_offset"]),
             "data-entry-offset": number(routed["entry_offset"]),
             "data-allow-port-reuse": "1" if edge.get("allow_port_reuse") else "0",
+            "data-waypoints-origin": "explicit" if "waypoints" in edge else "automatic",
         }
     )
     if edge.get("branch"):
@@ -1189,9 +1366,10 @@ def build_tree(spec: dict) -> ET.ElementTree:
     schema_version = validate_build_spec(spec)
 
     values = canvas_values(spec)
+    lane_widths = effective_lane_widths(spec)
     max_rank = max((int(node["rank"]) for node in spec["nodes"]), default=1)
     current_lane_height = lane_height(max_rank, values)
-    pool_width = sum(float(lane.get("width", 200)) for lane in spec["lanes"])
+    pool_width = sum(lane_widths[lane["id"]] for lane in spec["lanes"])
     pool_height = values["title_height"] + current_lane_height
 
     mxfile = ET.Element("mxfile", {"host": "Electron", "modified": "product-swimlane-drawio"})
@@ -1227,7 +1405,7 @@ def build_tree(spec: dict) -> ET.ElementTree:
     lane_cells: dict[str, ET.Element] = {}
     offset_x = 0.0
     for lane in spec["lanes"]:
-        width = float(lane.get("width", 200))
+        width = lane_widths[lane["id"]]
         lane_cell = ET.SubElement(
             root,
             "mxCell",
@@ -1945,6 +2123,47 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                         subject={"kind": "edge", "id": edge_id},
                         evidence={"node": node_id},
                         supported_fixes=["reroute-edge"],
+                    )
+
+        if (
+            cell.attrib.get("data-route") == "back"
+            and cell.attrib.get("data-waypoints-origin") == "automatic"
+        ):
+            target_id = cell.attrib.get("data-to")
+            entry_port = port_from_style(cell, "entry")
+            if target_id in nodes and entry_port and entry_port[0] in {"left", "right"}:
+                target = nodes[target_id]
+                target_lane = lanes[target["lane"]]["geometry"]
+                target_bounds = node_bounds[target_id]
+                safe_gap = LANE_BOUNDARY_CLEARANCE - GEOMETRY_TOLERANCE
+                vertical_x_values = [
+                    segment[0][0]
+                    for segment in segments
+                    if segment_axis(segment) == "vertical"
+                ]
+                if entry_port[0] == "left":
+                    internal_corridor = any(
+                        target_lane["x"] + safe_gap <= x < target_bounds["left"]
+                        for x in vertical_x_values
+                    )
+                else:
+                    lane_right = target_lane["x"] + target_lane["width"]
+                    internal_corridor = any(
+                        target_bounds["right"] < x <= lane_right - safe_gap
+                        for x in vertical_x_values
+                    )
+                if not internal_corridor:
+                    add(
+                        "routing/back-corridor-outside-target-lane",
+                        "warning",
+                        f"Automatic back route borrows space outside the target lane: {edge_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        evidence={
+                            "target_lane": target["lane"],
+                            "entry_side": entry_port[0],
+                            "vertical_x": vertical_x_values,
+                        },
+                        supported_fixes=["increase-target-lane-gutter", "set-explicit-waypoints"],
                     )
 
     edge_ids = sorted(edge_segments)

@@ -42,7 +42,7 @@ Lane fields:
 
 - `id`: required semantic ID.
 - `label`: required visible label.
-- `width`: optional width; minimum `120`, default `200`.
+- `width`: optional requested width; minimum `120`, default `200`. For a new automatic layout, the tool may increase it when a back or retry target needs a safe internal side gutter. Nodes without explicit `x` coordinates are re-centered and later lanes shift with the expanded geometry.
 
 Optional `canvas` fields are `x`, `y`, `title_height`, `lane_header_height`, `row_gap`, `top_padding`, and `bottom_padding`.
 
@@ -86,7 +86,7 @@ Edge fields:
 - `allow_port_reuse`: optional boolean; default `false`.
 - `waypoints`: optional pool-local `{ "x": number, "y": number }` objects or two-number arrays.
 
-Use automatic routing first. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue.
+Use automatic routing first. It removes duplicate and collinear points, prefers a safe single elbow for a forward side-exit/top-entry connection, and keeps a back route inside the target lane gutter. A new build widens an automatic target lane when needed. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified automatically.
 
 ## Patch specification
 

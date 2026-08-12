@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- Simplify safe automatic forward routes from a decision side exit to a top-entry target instead of retaining short staircase doglegs.
+- Keep automatic back and retry trunks inside the historical target lane gutter when space permits, and diagnose fallback routes that borrow unrelated lanes.
+- Expand narrow automatic-layout target lanes before routing so returns and retries have a safe internal side gutter, then recenter nodes and recompute downstream geometry.
+- Preserve explicit manual waypoints while removing duplicate or collinear points only from automatically generated routes.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

@@ -102,6 +102,54 @@ def write_linear_v2_spec(path: Path, *, long_label: bool = False) -> None:
     )
 
 
+def write_adjacent_decision_spec(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "title": "Adjacent Lane Flow",
+                "lanes": [
+                    {"id": "lane-a", "label": "Lane A", "width": 180},
+                    {"id": "lane-b", "label": "Lane B", "width": 180},
+                    {"id": "lane-c", "label": "Lane C", "width": 140},
+                    {"id": "lane-d", "label": "Lane D", "width": 140},
+                ],
+                "nodes": [
+                    {"id": "start", "lane": "lane-a", "rank": 1, "type": "start", "label": ""},
+                    {"id": "step-a", "lane": "lane-a", "rank": 2, "type": "process", "label": "Step A"},
+                    {"id": "history", "lane": "lane-b", "rank": 3, "type": "process", "label": "History"},
+                    {"id": "decision", "lane": "lane-c", "rank": 4, "type": "decision", "label": "Condition"},
+                    {"id": "target", "lane": "lane-d", "rank": 5, "type": "process", "label": "Target"},
+                    {"id": "end", "lane": "lane-d", "rank": 6, "type": "end", "label": ""},
+                ],
+                "edges": [
+                    {"id": "edge-a", "from": "start", "to": "step-a"},
+                    {"id": "edge-b", "from": "step-a", "to": "history"},
+                    {"id": "edge-c", "from": "history", "to": "decision"},
+                    {
+                        "id": "edge-forward",
+                        "from": "decision",
+                        "to": "target",
+                        "branch": "positive",
+                        "label": "Continue"
+                    },
+                    {
+                        "id": "edge-back",
+                        "from": "decision",
+                        "to": "history",
+                        "route": "back",
+                        "branch": "negative",
+                        "label": "Return"
+                    },
+                    {"id": "edge-end", "from": "target", "to": "end"},
+                ],
+                "main_path": ["start", "step-a", "history", "decision", "target", "end"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class ReleasePackageTests(unittest.TestCase):
     def test_readme_language_navigation_and_structure(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -567,6 +615,115 @@ class DiagramWorkflowTests(unittest.TestCase):
             points = retry.findall("./mxGeometry/Array[@as='points']/mxPoint")
             self.assertTrue(points)
             self.assertTrue(all(abs(float(point.attrib["x"]) - 220) >= 16 for point in points))
+
+    def test_adjacent_decision_forward_route_uses_single_safe_elbow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "adjacent-decision.json"
+            output = directory / "adjacent-decision.drawio"
+            write_adjacent_decision_spec(spec)
+
+            result = run_tool("build", "--spec", str(spec), "--output", str(output))
+            self.assertEqual(json.loads(result.stdout)["warnings"], [])
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            forward = next(edge for edge in report["edges"] if edge["id"] == "edge-forward")
+            self.assertEqual(forward["exit_side"], "right")
+            self.assertEqual(forward["entry_side"], "top")
+            self.assertEqual(forward["waypoints"], [{"x": 570.0, "y": 396.0}])
+            self.assertGreaterEqual(abs(forward["waypoints"][0]["x"] - 500.0), 16)
+
+    def test_back_route_prefers_target_lane_internal_gutter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "adjacent-decision.json"
+            output = directory / "adjacent-decision.drawio"
+            write_adjacent_decision_spec(spec)
+
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            back = next(edge for edge in report["edges"] if edge["id"] == "edge-back")
+            self.assertEqual(back["label"], "Return")
+            self.assertEqual(back["route"], "back")
+            vertical_x = {point["x"] for point in back["waypoints"]}
+            self.assertEqual(len(vertical_x), 1)
+            corridor_x = vertical_x.pop()
+            self.assertGreaterEqual(corridor_x - 180.0, 16.0)
+            self.assertLess(corridor_x, 204.0)
+            validation = report["validation"]
+            self.assertTrue(validation["valid"])
+            self.assertEqual(validation["warnings"], [])
+
+    def test_narrow_back_target_lane_is_expanded_before_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "adjacent-decision.json"
+            output = directory / "adjacent-decision.drawio"
+            write_adjacent_decision_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            next(lane for lane in value["lanes"] if lane["id"] == "lane-b")["width"] = 140
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            result = run_tool("build", "--spec", str(spec), "--output", str(output))
+            self.assertEqual(json.loads(result.stdout)["warnings"], [])
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            lanes = {lane["id"]: lane for lane in report["lanes"]}
+            nodes = {node["id"]: node for node in report["nodes"]}
+            self.assertGreaterEqual(lanes["lane-b"]["width"], 168.0)
+            expected_x = (lanes["lane-b"]["width"] - nodes["history"]["width"]) / 2
+            self.assertEqual(nodes["history"]["x"], expected_x)
+            self.assertEqual(
+                lanes["lane-c"]["x"],
+                lanes["lane-b"]["x"] + lanes["lane-b"]["width"],
+            )
+            back = next(edge for edge in report["edges"] if edge["id"] == "edge-back")
+            corridor_x = back["waypoints"][0]["x"]
+            self.assertGreaterEqual(corridor_x - lanes["lane-b"]["x"], 16.0)
+            self.assertLess(
+                corridor_x,
+                lanes["lane-b"]["x"] + nodes["history"]["x"],
+            )
+            self.assertEqual(report["validation"]["warnings"], [])
+
+    def test_back_route_outside_target_lane_is_diagnosed_when_gutter_is_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "adjacent-decision.json"
+            output = directory / "adjacent-decision.drawio"
+            write_adjacent_decision_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            history = next(node for node in value["nodes"] if node["id"] == "history")
+            history.update({"x": 4, "width": 172})
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            result = run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(result.stdout)
+            codes = {diagnostic["code"] for diagnostic in report["diagnostics"]}
+            self.assertIn("routing/back-corridor-outside-target-lane", codes)
+
+    def test_explicit_waypoints_are_not_simplified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "adjacent-decision.json"
+            output = directory / "adjacent-decision.drawio"
+            write_adjacent_decision_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            explicit = [{"x": 520, "y": 396}, {"x": 520, "y": 430}, {"x": 570, "y": 430}]
+            next(edge for edge in value["edges"] if edge["id"] == "edge-forward")["waypoints"] = explicit
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            forward = next(edge for edge in report["edges"] if edge["id"] == "edge-forward")
+            self.assertEqual(
+                forward["waypoints"],
+                [
+                    {"x": 520.0, "y": 396.0},
+                    {"x": 520.0, "y": 430.0},
+                    {"x": 570.0, "y": 430.0},
+                ],
+            )
 
     def test_near_lane_boundary_connector_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
