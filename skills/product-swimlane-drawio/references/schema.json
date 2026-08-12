@@ -64,7 +64,18 @@
         "height": {"type": "number", "exclusiveMinimum": 0},
         "x": {"type": "number"},
         "y": {"type": "number"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"type": {"const": "end"}},
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {"label": {"const": ""}}
+          }
+        }
+      ]
     },
     "waypoint": {
       "oneOf": [

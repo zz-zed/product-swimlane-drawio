@@ -74,6 +74,12 @@ Node fields:
 - `type` is `start`, `end`, `process`, `decision`, or `note`.
 - `width`, `height`, `x`, and `y` are optional geometry. Avoid fixed positions for new diagrams unless reproducing an approved layout.
 
+Node geometry rules:
+
+- `start` and `end` are fixed-aspect circles. If only `width` or `height` is supplied, the tool uses that value for both dimensions. If both are supplied, they must be equal. A labeled `start` is at least `48 x 48`.
+- `end` is an unlabeled solid termination point. Its `label` must be an empty string; use a preceding process node when visible completion text is required.
+- A `process` without an explicit `height` grows from the `42` pixel default according to estimated wrapped text lines, up to `66` pixels. Longer text remains subject to the overflow diagnostic. An explicit height is preserved, but strict validation warns when it creates substantially more vertical padding than the label requires.
+
 Edge fields:
 
 - `id`, `from`, and `to` are required.

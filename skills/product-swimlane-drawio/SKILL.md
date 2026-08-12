@@ -70,6 +70,7 @@ Require strict validation to have no warnings. It checks:
 - Broken endpoints and duplicate semantic IDs.
 - Nodes outside their lanes.
 - Likely node-label overflow for multilingual text.
+- Fixed-aspect start/end geometry, unlabeled solid end nodes, and excessive process padding.
 - Reused ports.
 - Connectors collinear with lane boundaries.
 - Connectors crossing nodes.

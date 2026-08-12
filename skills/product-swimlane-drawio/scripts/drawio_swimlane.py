@@ -42,6 +42,13 @@ NODE_STYLES = {
     "note": "shape=note;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontColor=#333333;fontSize=11;",
 }
 
+FIXED_ASPECT_NODE_TYPES = {"start", "end"}
+LABELED_FIXED_NODE_MIN_SIZE = 48.0
+PROCESS_TEXT_LINE_HEIGHT = 14.0
+PROCESS_VERTICAL_PADDING = 10.0
+MAX_AUTOMATIC_PROCESS_HEIGHT = 66.0
+EXCESSIVE_HEIGHT_TOLERANCE = 8.0
+
 PORT_OFFSETS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.275, 0.725)
 PORT_SIDES = {"top", "bottom", "left", "right"}
 ROUTE_CLASSES = {"auto", "forward", "back", "side"}
@@ -275,12 +282,33 @@ def validate_node_object(node: dict, subject: str) -> None:
             evidence={"field": "type", "allowed": sorted(NODE_STYLES)},
         )
     require_string(node["label"], f"{subject}.label", allow_empty=True)
+    if node["type"] == "end" and node["label"].strip():
+        raise DiagramError(
+            f"{subject}.label must be empty for a solid end node",
+            code="schema/end-label-not-empty",
+            subject={"kind": "node", "id": node.get("id")},
+            evidence={"label": node["label"]},
+            supported_fixes=["clear-end-label"],
+        )
     for field in ("width", "height"):
         if field in node:
             validate_number(node[field], f"{subject}.{field}", minimum=1)
     for field in ("x", "y"):
         if field in node:
             validate_number(node[field], f"{subject}.{field}")
+    if (
+        node["type"] in FIXED_ASPECT_NODE_TYPES
+        and "width" in node
+        and "height" in node
+        and abs(float(node["width"]) - float(node["height"])) >= GEOMETRY_TOLERANCE
+    ):
+        raise DiagramError(
+            f"{subject} requires equal width and height for fixed-aspect node type {node['type']}",
+            code="geometry/fixed-aspect-ratio",
+            subject={"kind": "node", "id": node.get("id")},
+            evidence={"width": node["width"], "height": node["height"]},
+            supported_fixes=["set-equal-width-and-height", "remove-one-size-dimension"],
+        )
 
 
 def validate_edge_object(edge: dict, subject: str, *, update: bool = False) -> None:
@@ -643,12 +671,68 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
     return widths
 
 
+def estimated_text_lines(text: str, width: float, *, diamond: bool = False) -> int:
+    usable_width = max(12.0, width - (28.0 if diamond else 16.0))
+    capacity = max(1, int(usable_width / 7.0))
+    lines = 0
+    for logical_line in (text.splitlines() or [""]):
+        units = sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in logical_line
+        )
+        lines += max(1, (units + capacity - 1) // capacity)
+    return lines
+
+
+def recommended_process_height(label: str, width: float) -> float:
+    if not label:
+        return float(NODE_SIZES["process"][1])
+    lines = estimated_text_lines(label, width)
+    return min(
+        MAX_AUTOMATIC_PROCESS_HEIGHT,
+        max(
+            float(NODE_SIZES["process"][1]),
+            PROCESS_VERTICAL_PADDING + PROCESS_TEXT_LINE_HEIGHT * lines,
+        ),
+    )
+
+
 def node_size(node: dict) -> tuple[float, float]:
     kind = node.get("type", "process")
     if kind not in NODE_SIZES:
         raise DiagramError(f"Unsupported node type: {kind}")
     default_width, default_height = NODE_SIZES[kind]
-    return float(node.get("width", default_width)), float(node.get("height", default_height))
+    explicit_width = node.get("width")
+    explicit_height = node.get("height")
+    if kind in FIXED_ASPECT_NODE_TYPES:
+        if explicit_width is not None and explicit_height is not None:
+            if abs(float(explicit_width) - float(explicit_height)) >= GEOMETRY_TOLERANCE:
+                raise DiagramError(
+                    f"Fixed-aspect node {node.get('id', '<unknown>')} requires equal width and height",
+                    code="geometry/fixed-aspect-ratio",
+                    subject={"kind": "node", "id": node.get("id")},
+                    evidence={"width": explicit_width, "height": explicit_height},
+                    supported_fixes=["set-equal-width-and-height", "remove-one-size-dimension"],
+                )
+            diameter = float(explicit_width)
+        elif explicit_width is not None:
+            diameter = float(explicit_width)
+        elif explicit_height is not None:
+            diameter = float(explicit_height)
+        else:
+            diameter = float(default_width)
+        if str(node.get("label", "")).strip():
+            diameter = max(diameter, LABELED_FIXED_NODE_MIN_SIZE)
+        return diameter, diameter
+
+    width = float(explicit_width if explicit_width is not None else default_width)
+    if explicit_height is not None:
+        height = float(explicit_height)
+    elif kind == "process":
+        height = recommended_process_height(str(node.get("label", "")), width)
+    else:
+        height = float(default_height)
+    return width, height
 
 
 def lane_height(max_rank: int, values: dict) -> float:
@@ -1699,9 +1783,27 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             moved_node_ids.add(semantic_id)
             geom = cell.find("mxGeometry")
             assert geom is not None
+            kind = cell.attrib.get("data-node-type", "process")
+            geometry_update = dict(update)
+            if kind in FIXED_ASPECT_NODE_TYPES:
+                update_width = geometry_update.get("width")
+                update_height = geometry_update.get("height")
+                if update_width is not None and update_height is not None:
+                    if abs(float(update_width) - float(update_height)) >= GEOMETRY_TOLERANCE:
+                        raise DiagramError(
+                            f"Fixed-aspect node {semantic_id} requires equal width and height",
+                            code="geometry/fixed-aspect-ratio",
+                            subject={"kind": "node", "id": semantic_id},
+                            evidence={"width": update_width, "height": update_height},
+                            supported_fixes=["set-equal-width-and-height", "remove-one-size-dimension"],
+                        )
+                elif update_width is not None:
+                    geometry_update["height"] = update_width
+                elif update_height is not None:
+                    geometry_update["width"] = update_height
             for key in ("x", "y", "width", "height"):
-                if key in update:
-                    geom.attrib[key] = number(update[key])
+                if key in geometry_update:
+                    geom.attrib[key] = number(geometry_update[key])
             nodes[semantic_id]["geometry"] = parse_geometry(cell)
 
     new_nodes = changes.get("nodes", [])
@@ -1922,19 +2024,6 @@ def segments_conflict(
     return False
 
 
-def estimated_text_lines(text: str, width: float, *, diamond: bool = False) -> int:
-    usable_width = max(12.0, width - (28.0 if diamond else 16.0))
-    capacity = max(1, int(usable_width / 7.0))
-    lines = 0
-    for logical_line in (text.splitlines() or [""]):
-        units = sum(
-            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
-            for character in logical_line
-        )
-        lines += max(1, (units + capacity - 1) // capacity)
-    return lines
-
-
 def validate_tree(tree: ET.ElementTree) -> dict:
     diagnostics: list[dict] = []
 
@@ -2027,12 +2116,39 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         if schema_version == SCHEMA_VERSION:
             label = record["cell"].attrib.get("value", "")
             node_type = record["cell"].attrib.get("data-node-type", "process")
+            if (
+                node_type in FIXED_ASPECT_NODE_TYPES
+                and abs(node_geom["width"] - node_geom["height"]) >= GEOMETRY_TOLERANCE
+            ):
+                add(
+                    "geometry/fixed-aspect-ratio",
+                    "error",
+                    f"Fixed-aspect node is not square: {semantic_id}",
+                    subject={"kind": "node", "id": semantic_id},
+                    evidence={"width": node_geom["width"], "height": node_geom["height"]},
+                    supported_fixes=["set-equal-width-and-height"],
+                )
+            if node_type == "end" and label.strip():
+                add(
+                    "schema/end-label-not-empty",
+                    "error",
+                    f"Solid end node must not contain a label: {semantic_id}",
+                    subject={"kind": "node", "id": semantic_id},
+                    evidence={"label": label},
+                    supported_fixes=["clear-end-label"],
+                )
             required_lines = estimated_text_lines(
                 label,
                 node_geom["width"],
                 diamond=node_type == "decision",
             )
-            available_lines = max(1, int(max(0.0, node_geom["height"] - 8.0) / 16.0))
+            if node_type == "process":
+                available_lines = max(
+                    1,
+                    int(max(0.0, node_geom["height"] - PROCESS_VERTICAL_PADDING) / PROCESS_TEXT_LINE_HEIGHT),
+                )
+            else:
+                available_lines = max(1, int(max(0.0, node_geom["height"] - 8.0) / 16.0))
             if label and required_lines > available_lines:
                 add(
                     "text/node-overflow-risk",
@@ -2042,6 +2158,21 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     evidence={"estimated_lines": required_lines, "available_lines": available_lines},
                     supported_fixes=["increase-node-height", "shorten-label"],
                 )
+            if node_type == "process":
+                recommended_height = recommended_process_height(label, node_geom["width"])
+                if node_geom["height"] > recommended_height + EXCESSIVE_HEIGHT_TOLERANCE:
+                    add(
+                        "layout/excessive-node-height",
+                        "warning",
+                        f"Process node is substantially taller than its label requires: {semantic_id}",
+                        subject={"kind": "node", "id": semantic_id},
+                        evidence={
+                            "actual_height": node_geom["height"],
+                            "recommended_height": recommended_height,
+                            "estimated_lines": required_lines,
+                        },
+                        supported_fixes=["remove-explicit-height", "reduce-node-height"],
+                    )
 
     port_usage: dict[tuple[str, str, float], list[str]] = {}
     for cell in edge_cells:

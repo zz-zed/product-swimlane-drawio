@@ -150,6 +150,49 @@ def write_adjacent_decision_spec(path: Path) -> None:
     )
 
 
+def write_geometry_spec(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "title": "Geometry Flow",
+                "lanes": [{"id": "lane-a", "label": "Lane A", "width": 220}],
+                "nodes": [
+                    {
+                        "id": "start",
+                        "lane": "lane-a",
+                        "rank": 1,
+                        "type": "start",
+                        "label": "Begin",
+                        "height": 48,
+                    },
+                    {
+                        "id": "step",
+                        "lane": "lane-a",
+                        "rank": 2,
+                        "type": "process",
+                        "label": "First line\nSecond line\nThird line",
+                    },
+                    {
+                        "id": "end",
+                        "lane": "lane-a",
+                        "rank": 3,
+                        "type": "end",
+                        "label": "",
+                        "width": 52,
+                    },
+                ],
+                "edges": [
+                    {"id": "edge-a", "from": "start", "to": "step"},
+                    {"id": "edge-b", "from": "step", "to": "end"},
+                ],
+                "main_path": ["start", "step", "end"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class ReleasePackageTests(unittest.TestCase):
     def test_readme_language_navigation_and_structure(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -558,9 +601,134 @@ class DiagramWorkflowTests(unittest.TestCase):
             spec = directory / "long-label.json"
             output = directory / "long-label.drawio"
             write_linear_v2_spec(spec, long_label=True)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            value["nodes"][1]["height"] = 42
+            spec.write_text(json.dumps(value), encoding="utf-8")
             build = run_tool("build", "--spec", str(spec), "--output", str(output))
             report = json.loads(build.stdout)
             self.assertIn("text/node-overflow-risk", {item["code"] for item in report["diagnostics"]})
+
+    def test_fixed_aspect_nodes_sync_single_size_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+
+            build = run_tool("build", "--spec", str(spec), "--output", str(output))
+            self.assertEqual(json.loads(build.stdout)["warnings"], [])
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            nodes = {node["id"]: node for node in report["nodes"]}
+            self.assertEqual((nodes["start"]["width"], nodes["start"]["height"]), (48.0, 48.0))
+            self.assertEqual((nodes["end"]["width"], nodes["end"]["height"]), (52.0, 52.0))
+
+    def test_fixed_aspect_node_rejects_unequal_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            value["nodes"][0].update({"width": 48, "height": 52})
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            result = run_tool("build", "--spec", str(spec), "--output", str(output), check=False)
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["diagnostics"][0]["code"], "geometry/fixed-aspect-ratio")
+
+    def test_solid_end_node_rejects_nonempty_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            value["nodes"][-1]["label"] = "Complete"
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            result = run_tool("build", "--spec", str(spec), "--output", str(output), check=False)
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["diagnostics"][0]["code"], "schema/end-label-not-empty")
+
+    def test_end_node_is_unlabeled_solid_black_circle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+
+            tree = ET.parse(output)
+            end = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "end"
+            )
+            self.assertEqual(end.attrib.get("value"), "")
+            self.assertIn("ellipse", end.attrib["style"])
+            self.assertIn("aspect=fixed", end.attrib["style"])
+            self.assertIn("fillColor=#333333", end.attrib["style"])
+            self.assertNotIn("fontColor=#ffffff", end.attrib["style"])
+
+    def test_strict_validation_reports_malformed_existing_end_node(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+
+            tree = ET.parse(output)
+            end = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "end"
+            )
+            end.attrib["value"] = "Complete"
+            geometry = end.find("mxGeometry")
+            self.assertIsNotNone(geometry)
+            geometry.attrib["height"] = "48"
+            tree.write(output, encoding="utf-8", xml_declaration=False)
+
+            validate = run_tool("validate", "--input", str(output), "--strict", check=False)
+            self.assertNotEqual(validate.returncode, 0)
+            codes = {item["code"] for item in json.loads(validate.stdout)["diagnostics"]}
+            self.assertIn("schema/end-label-not-empty", codes)
+            self.assertIn("geometry/fixed-aspect-ratio", codes)
+
+    def test_multiline_process_uses_recommended_automatic_height(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            step = next(node for node in report["nodes"] if node["id"] == "step")
+            self.assertEqual(step["height"], 52.0)
+            self.assertEqual(report["validation"]["warnings"], [])
+
+    def test_excessive_process_height_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "geometry.json"
+            output = directory / "geometry.drawio"
+            write_geometry_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            value["nodes"][1]["height"] = 80
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            build = run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(build.stdout)
+            self.assertIn(
+                "layout/excessive-node-height",
+                {item["code"] for item in report["diagnostics"]},
+            )
+            strict = run_tool("validate", "--input", str(output), "--strict", check=False)
+            self.assertNotEqual(strict.returncode, 0)
 
     def test_unintentional_port_reuse_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

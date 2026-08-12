@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Keep start and end nodes circular when only one size dimension is provided, and reject conflicting fixed-aspect dimensions.
+- Keep solid end nodes unlabeled and diagnose non-empty end labels.
+- Auto-size multiline process nodes from estimated text lines and warn about excessive explicit height.
 - Simplify safe automatic forward routes from a decision side exit to a top-entry target instead of retaining short staircase doglegs.
 - Keep automatic back and retry trunks inside the historical target lane gutter when space permits, and diagnose fallback routes that borrow unrelated lanes.
 - Expand narrow automatic-layout target lanes before routing so returns and retries have a safe internal side gutter, then recenter nodes and recompute downstream geometry.
