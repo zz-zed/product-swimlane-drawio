@@ -69,18 +69,44 @@ The bundled Python tool uses only the standard library. Draw.io MCP is not requi
 
 ## Install
 
-Install to the shared global Skill directory with [`npx skills`](https://github.com/vercel-labs/skills):
+Installing with [`npx skills`](https://github.com/vercel-labs/skills) requires Node.js and npm. The Skill itself runs locally with Python and does not require Node.js after installation.
+
+### Quick install (recommended)
+
+Run this command in your terminal:
+
+```bash
+npx skills add zz-zed/product-swimlane-drawio
+```
+
+The installer detects supported agents and guides you through the installation scope. The repository contains only one Skill, so `--skill` is unnecessary.
+
+For a shared user-level installation, add `-g`:
 
 ```bash
 npx skills add zz-zed/product-swimlane-drawio -g
 ```
 
-The repository contains only one Skill, so `--skill` is unnecessary. Without `-a`, the installer can detect or ask which supported agents should receive links. Use agent-selection flags only for unattended or explicitly targeted installation. Remove `-g` if you want a project-local installation instead.
+### Ask an agent
 
-Inspect discovery before installing:
+Tell Codex, Claude Code, or another Agent Skills-compatible coding agent:
+
+> Please install the `product-swimlane-drawio` Skill from `github.com/zz-zed/product-swimlane-drawio`.
+
+The agent may ask which installation scope and supported agents to use, and may request permission before running `npx`.
+
+### Verify installation
+
+List project-level Skills:
 
 ```bash
-npx skills add zz-zed/product-swimlane-drawio --list
+npx skills list
+```
+
+For a global installation, add `-g`:
+
+```bash
+npx skills list -g
 ```
 
 ## Use with an agent

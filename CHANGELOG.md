@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Refresh the English and Chinese README introductions with language-specific project infographics and focused workflow and quality-gate illustrations.
 - Clarify that generation does not require Draw.io MCP and document the latest fixed-aspect and node-height diagnostics.
+- Separate quick terminal installation from agent-assisted installation in both README versions, keeping the recommended command minimal and advanced scope flags optional.
 
 ### Fixed
 

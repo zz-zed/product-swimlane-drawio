@@ -69,18 +69,44 @@ Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python �
 
 ## 安装
 
-通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装到全局共享 Skill 目录：
+通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装需要 Node.js 和 npm。安装完成后，该 Skill 只依赖本地 Python，不需要继续使用 Node.js。
+
+### 快速安装（推荐）
+
+在终端中运行：
+
+```bash
+npx skills add zz-zed/product-swimlane-drawio
+```
+
+安装器会检测支持的 Agent，并引导选择安装范围。仓库中只有一个 Skill，因此不需要 `--skill`。
+
+如需安装到用户级共享目录，添加 `-g`：
 
 ```bash
 npx skills add zz-zed/product-swimlane-drawio -g
 ```
 
-仓库中只有一个 Skill，因此不需要 `--skill`。不指定 `-a` 时，安装器可以自动检测或询问需要建立链接的 Agent；只有无人值守或需要定向安装时才需要添加 Agent 参数。如果只想安装到当前项目，则去掉 `-g`。
+### 告诉 Agent 安装
 
-安装前检查仓库中的可发现 Skill：
+直接告诉 Codex、Claude Code 或其他兼容 Agent Skills 的编程 Agent：
+
+> 请帮我安装 `github.com/zz-zed/product-swimlane-drawio` 中的 `product-swimlane-drawio` Skill。
+
+Agent 可能会询问安装范围和目标 Agent，并在运行 `npx` 前请求你的授权。
+
+### 验证安装结果
+
+查看项目级 Skill：
 
 ```bash
-npx skills add zz-zed/product-swimlane-drawio --list
+npx skills list
+```
+
+如果采用全局安装，则添加 `-g`：
+
+```bash
+npx skills list -g
 ```
 
 ## 通过 Agent 使用

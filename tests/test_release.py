@@ -201,11 +201,21 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("[English](README.md)", chinese)
         self.assertIn("**Quick navigation:**", english)
         self.assertIn("**快速导航：**", chinese)
-        install_command = "npx skills add zz-zed/product-swimlane-drawio -g"
+        install_command = "npx skills add zz-zed/product-swimlane-drawio"
         self.assertIn(install_command, english)
         self.assertIn(install_command, chinese)
         self.assertNotIn("--skill product-swimlane-drawio", english)
         self.assertNotIn("--skill product-swimlane-drawio", chinese)
+        self.assertIn("### Quick install (recommended)", english)
+        self.assertIn("### Ask an agent", english)
+        self.assertIn("### Verify installation", english)
+        self.assertIn("### 快速安装（推荐）", chinese)
+        self.assertIn("### 告诉 Agent 安装", chinese)
+        self.assertIn("### 验证安装结果", chinese)
+        self.assertIn("github.com/zz-zed/product-swimlane-drawio", english)
+        self.assertIn("github.com/zz-zed/product-swimlane-drawio", chinese)
+        self.assertIn("npx skills list -g", english)
+        self.assertIn("npx skills list -g", chinese)
         self.assertIn(
             "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)",
             english,
