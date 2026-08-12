@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh the English and Chinese README introductions with language-specific project infographics and focused workflow and quality-gate illustrations.
+- Clarify that generation does not require Draw.io MCP and document the latest fixed-aspect and node-height diagnostics.
+
 ### Fixed
 
 - Keep start and end nodes circular when only one size dimension is provided, and reject conflicting fixed-aspect dimensions.

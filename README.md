@@ -6,11 +6,13 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![Agent Skill](https://img.shields.io/badge/Agent%20Skill-compatible-5B5BD6.svg)](https://agentskills.io/)
 
-![product-swimlane-drawio overview](docs/product-swimlane-overview.png)
+![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)
 
-Create and incrementally update native, editable Draw.io vertical swimlane diagrams from natural language.
+Turn a confirmed process into a native `.drawio` file, then keep editing it locally.
 
-The skill focuses on process diagrams where each participant, role, or system owns a vertical lane. It combines structure confirmation, a versioned semantic schema, deterministic layout, stable IDs, safe incremental updates, and structured quality diagnostics.
+This Agent Skill creates and incrementally updates vertical swimlane diagrams in which each participant, role, or system owns a lane. The agent handles process semantics; a deterministic local engine handles layout, routing, validation, and editable Draw.io output. Generation does not require Draw.io MCP.
+
+**Quick navigation:** [Why this skill](#why-this-skill) · [Workflow](#workflow) · [Install](#install) · [Use with an agent](#use-with-an-agent) · [Local tool](#use-the-local-tool-directly) · [Incremental editing](#incremental-editing-boundary) · [Validation](#validation) · [Output reliability](#model-capability-and-output-reliability)
 
 ## Why this skill
 
@@ -26,7 +28,7 @@ Directly generated Draw.io XML often produces tangled connectors, unclear return
 - Semantic inspection, explicit deletion, and affected-edge repair for existing diagrams
 - Strict structural and routing-quality checks
 - Structured diagnostics and atomic output receipts with SHA-256
-- No Draw.io dependency for generation
+- No Draw.io application or Draw.io MCP dependency for generation
 - Local editing in Draw.io Desktop or diagrams.net
 
 ## Workflow
@@ -45,6 +47,8 @@ Strict validation and capability-aware visual review
 Edit locally, inspect the saved file, or apply a semantic patch
 ```
 
+![Create and update workflows](docs/illustrations/product-swimlane-readme/create-update.png)
+
 ## Supported agents
 
 The package follows the Agent Skills directory format and targets:
@@ -61,19 +65,17 @@ Agent-specific metadata is isolated under `agents/`; the workflow and Python too
 - An Agent Skills-compatible coding agent
 - Optional: Draw.io Desktop or [diagrams.net](https://app.diagrams.net/) for visual editing and export
 
-The bundled Python tool uses only the standard library.
+The bundled Python tool uses only the standard library. Draw.io MCP is not required.
 
 ## Install
 
-Install globally for Codex and Claude Code with [`npx skills`](https://github.com/vercel-labs/skills):
+Install to the shared global Skill directory with [`npx skills`](https://github.com/vercel-labs/skills):
 
 ```bash
-npx skills add zz-zed/product-swimlane-drawio \
-  --skill product-swimlane-drawio \
-  -g \
-  -a codex \
-  -a claude-code
+npx skills add zz-zed/product-swimlane-drawio -g
 ```
+
+The repository contains only one Skill, so `--skill` is unnecessary. Without `-a`, the installer can detect or ask which supported agents should receive links. Use agent-selection flags only for unattended or explicitly targeted installation. Remove `-g` if you want a project-local installation instead.
 
 Inspect discovery before installing:
 
@@ -146,6 +148,8 @@ Strict validation checks structural integrity and routing heuristics, including:
 - Missing endpoints and duplicate semantic IDs
 - Nodes outside their lanes
 - Likely multilingual node-label overflow
+- Fixed-aspect start and end node geometry
+- Unlabeled solid end nodes and excessive process-node padding
 - Unintentional port reuse
 - Connectors aligned with or too close to lane boundaries
 - Connectors crossing nodes
@@ -154,6 +158,8 @@ Strict validation checks structural integrity and routing heuristics, including:
 Automated validation does not replace visual review. Always validate the final saved `.drawio` file. If Draw.io opens, edits, moves, or saves the diagram, run strict validation again before handoff.
 
 Validation returns stable diagnostic codes, evidence, affected semantic IDs, and supported fixes. Build and patch commands write atomically and return the output path, byte count, and SHA-256 digest. Existing output files are not replaced unless `--force` is supplied intentionally.
+
+![Validation and visual review provide separate evidence](docs/illustrations/product-swimlane-readme/quality-gate.png)
 
 ## Model capability and output reliability
 

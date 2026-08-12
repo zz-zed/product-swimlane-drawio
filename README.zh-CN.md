@@ -6,11 +6,13 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![Agent Skill](https://img.shields.io/badge/Agent%20Skill-compatible-5B5BD6.svg)](https://agentskills.io/)
 
-![product-swimlane-drawio overview](docs/product-swimlane-overview.png)
+![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-zh.png)
 
-根据自然语言创建和增量修改原生、可编辑的 Draw.io 垂直泳道图。
+将已确认的流程生成原生 `.drawio` 文件，并继续在本地编辑。
 
-该 Skill 面向每个参与方、角色或系统分别占据一条垂直泳道的流程图，通过结构确认、版本化语义规格、确定性布局、稳定 ID、安全增量修改和结构化质量诊断，提高生成结果的清晰度和可维护性。
+该 Agent Skill 用于创建和增量修改垂直泳道图，每个参与方、角色或系统分别占据一条泳道。Agent 负责理解流程语义，确定性本地引擎负责布局、路由、校验和生成可编辑的 Draw.io 文件。生成过程不需要 Draw.io MCP。
+
+**快速导航：** [为什么使用](#为什么使用这个-skill) · [工作流程](#工作流程) · [安装](#安装) · [通过 Agent 使用](#通过-agent-使用) · [本地工具](#直接使用本地工具) · [增量修改](#增量修改的适用边界) · [校验能力](#校验能力) · [输出可靠度](#模型能力与输出可靠度)
 
 ## 为什么使用这个 Skill
 
@@ -26,7 +28,7 @@
 - 支持语义检查、显式删除和已有图受影响连线修复
 - 提供严格的结构与路由质量检查
 - 提供结构化诊断和带 SHA-256 的原子输出收据
-- 生成过程不依赖 Draw.io
+- 生成过程不依赖 Draw.io 应用或 Draw.io MCP
 - 可在 Draw.io Desktop 或 diagrams.net 中本地编辑
 
 ## 工作流程
@@ -45,6 +47,8 @@
 本地编辑、检查最新文件或应用语义补丁
 ```
 
+![从零生成与增量修改工作流](docs/illustrations/product-swimlane-readme/create-update.png)
+
 ## 支持的 Agent
 
 该包遵循 Agent Skills 目录格式，主要面向：
@@ -61,19 +65,17 @@ Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python �
 - 兼容 Agent Skills 的编程 Agent
 - 可选：用于可视化编辑和导出的 Draw.io Desktop 或 [diagrams.net](https://app.diagrams.net/)
 
-随附的 Python 工具只使用标准库。
+随附的 Python 工具只使用标准库，不需要 Draw.io MCP。
 
 ## 安装
 
-通过 [`npx skills`](https://github.com/vercel-labs/skills) 为 Codex 和 Claude Code 进行全局安装：
+通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装到全局共享 Skill 目录：
 
 ```bash
-npx skills add zz-zed/product-swimlane-drawio \
-  --skill product-swimlane-drawio \
-  -g \
-  -a codex \
-  -a claude-code
+npx skills add zz-zed/product-swimlane-drawio -g
 ```
+
+仓库中只有一个 Skill，因此不需要 `--skill`。不指定 `-a` 时，安装器可以自动检测或询问需要建立链接的 Agent；只有无人值守或需要定向安装时才需要添加 Agent 参数。如果只想安装到当前项目，则去掉 `-g`。
 
 安装前检查仓库中的可发现 Skill：
 
@@ -146,6 +148,8 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 - 缺失端点和重复语义 ID
 - 节点超出所属泳道
 - 多语言节点文字可能溢出
+- 开始和结束节点的固定宽高比
+- 结束节点必须无标签且为实心圆，以及流程节点留白过多
 - 非预期端口复用
 - 连线与泳道边界重合或距离过近
 - 连线穿过节点
@@ -154,6 +158,8 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 自动校验不能替代视觉检查。必须校验最终保存的 `.drawio` 文件。如果文件经过 Draw.io 打开、编辑、移动或保存，则交付前必须再次执行严格校验。
 
 校验结果会返回稳定的诊断代码、证据、受影响的语义 ID 和可用修复方式。生成和补丁命令采用原子写入，并返回输出路径、字节数和 SHA-256 摘要。只有明确使用 `--force` 时才会替换已存在的输出文件。
+
+![严格校验与视觉检查提供两类独立证据](docs/illustrations/product-swimlane-readme/quality-gate.png)
 
 ## 模型能力与输出可靠度
 

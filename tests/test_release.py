@@ -199,19 +199,45 @@ class ReleasePackageTests(unittest.TestCase):
         chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
         self.assertIn("[简体中文](README.zh-CN.md)", english)
         self.assertIn("[English](README.md)", chinese)
-        image_reference = "![product-swimlane-drawio overview](docs/product-swimlane-overview.png)"
-        self.assertIn(image_reference, english)
-        self.assertIn(image_reference, chinese)
+        self.assertIn("**Quick navigation:**", english)
+        self.assertIn("**快速导航：**", chinese)
+        install_command = "npx skills add zz-zed/product-swimlane-drawio -g"
+        self.assertIn(install_command, english)
+        self.assertIn(install_command, chinese)
+        self.assertNotIn("--skill product-swimlane-drawio", english)
+        self.assertNotIn("--skill product-swimlane-drawio", chinese)
+        self.assertIn(
+            "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)",
+            english,
+        )
+        self.assertIn(
+            "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-zh.png)",
+            chinese,
+        )
+        shared_images = {
+            "docs/illustrations/product-swimlane-readme/create-update.png",
+            "docs/illustrations/product-swimlane-readme/quality-gate.png",
+        }
+        for image_reference in shared_images:
+            self.assertIn(image_reference, english)
+            self.assertIn(image_reference, chinese)
         self.assertEqual(english.count("\n## "), chinese.count("\n## "))
         self.assertEqual(english.count("```"), chinese.count("```"))
 
     def test_readme_infographic_is_valid_landscape_png(self) -> None:
-        image_path = ROOT / "docs" / "product-swimlane-overview.png"
-        data = image_path.read_bytes()
-        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-        width, height = struct.unpack(">II", data[16:24])
-        self.assertGreater(width, height)
-        self.assertAlmostEqual(width / height, 16 / 9, delta=0.03)
+        image_dir = ROOT / "docs" / "illustrations" / "product-swimlane-readme"
+        image_names = {
+            "overview-en.png",
+            "overview-zh.png",
+            "create-update.png",
+            "quality-gate.png",
+        }
+        for image_name in image_names:
+            data = (image_dir / image_name).read_bytes()
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            width, height = struct.unpack(">II", data[16:24])
+            self.assertGreater(width, height)
+            self.assertAlmostEqual(width / height, 16 / 9, delta=0.03)
 
     def test_readme_discloses_multimodal_review_reliability(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
