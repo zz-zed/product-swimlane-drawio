@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zz-zed/product-swimlane-drawio/schema/v2.json",
+  "title": "Product Swimlane Draw.io build specification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "title", "lanes", "nodes", "edges", "main_path"],
+  "properties": {
+    "schema_version": {"const": "2"},
+    "title": {"type": "string", "minLength": 1},
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/lane"}
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/node"}
+    },
+    "edges": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/edge"}
+    },
+    "main_path": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/semantic_id"}
+    },
+    "phases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/phase"}
+    },
+    "canvas": {"$ref": "#/$defs/canvas"}
+  },
+  "$defs": {
+    "semantic_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": {"$ref": "#/$defs/semantic_id"},
+        "label": {"type": "string", "minLength": 1},
+        "width": {"type": "number", "minimum": 120}
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "lane", "rank", "type", "label"],
+      "properties": {
+        "id": {"$ref": "#/$defs/semantic_id"},
+        "lane": {"$ref": "#/$defs/semantic_id"},
+        "rank": {"type": "integer", "minimum": 1},
+        "type": {"enum": ["start", "end", "process", "decision", "note"]},
+        "label": {"type": "string"},
+        "width": {"type": "number", "exclusiveMinimum": 0},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "x": {"type": "number"},
+        "y": {"type": "number"}
+      }
+    },
+    "waypoint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": {"type": "number"},
+            "y": {"type": "number"}
+          }
+        },
+        {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to"],
+      "properties": {
+        "id": {"$ref": "#/$defs/semantic_id"},
+        "from": {"$ref": "#/$defs/semantic_id"},
+        "to": {"$ref": "#/$defs/semantic_id"},
+        "type": {"enum": ["flow", "call", "return", "retry", "async"]},
+        "label": {"type": "string"},
+        "route": {"enum": ["auto", "forward", "back", "side"]},
+        "branch": {"enum": ["positive", "negative"]},
+        "exit_side": {"enum": ["top", "bottom", "left", "right"]},
+        "entry_side": {"enum": ["top", "bottom", "left", "right"]},
+        "exit_offset": {"type": "number", "minimum": 0.05, "maximum": 0.95},
+        "entry_offset": {"type": "number", "minimum": 0.05, "maximum": 0.95},
+        "allow_port_reuse": {"type": "boolean"},
+        "waypoints": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/waypoint"}
+        }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "from_rank", "to_rank"],
+      "properties": {
+        "id": {"$ref": "#/$defs/semantic_id"},
+        "label": {"type": "string", "minLength": 1},
+        "from_rank": {"type": "integer", "minimum": 1},
+        "to_rank": {"type": "integer", "minimum": 1},
+        "fill_color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      }
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "title_height": {"type": "number", "exclusiveMinimum": 0},
+        "lane_header_height": {"type": "number", "exclusiveMinimum": 0},
+        "row_gap": {"type": "number", "exclusiveMinimum": 0},
+        "top_padding": {"type": "number"},
+        "bottom_padding": {"type": "number"}
+      }
+    }
+  }
+}

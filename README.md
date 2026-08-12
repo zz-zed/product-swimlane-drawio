@@ -10,7 +10,7 @@
 
 Create and incrementally update native, editable Draw.io vertical swimlane diagrams from natural language.
 
-The skill focuses on process diagrams where each participant, role, or system owns a vertical lane. It combines structure confirmation, deterministic layout, semantic connector ports, stable IDs, incremental updates, and routing-quality validation.
+The skill focuses on process diagrams where each participant, role, or system owns a vertical lane. It combines structure confirmation, a versioned semantic schema, deterministic layout, stable IDs, safe incremental updates, and structured quality diagnostics.
 
 ## Why this skill
 
@@ -19,10 +19,13 @@ Directly generated Draw.io XML often produces tangled connectors, unclear return
 - Native, uncompressed `.drawio` output
 - Full-height vertical swimlanes
 - Global top-to-bottom process ranks
+- Schema v2 with an explicit confirmed main path and optional horizontal phases
 - Decisions, branches, returns, retries, and cross-lane flows
 - Semantic port allocation and orthogonal routing
 - Stable IDs for incremental changes
+- Semantic inspection, explicit deletion, and affected-edge repair for existing diagrams
 - Strict structural and routing-quality checks
+- Structured diagnostics and atomic output receipts with SHA-256
 - No Draw.io dependency for generation
 - Local editing in Draw.io Desktop or diagrams.net
 
@@ -33,13 +36,13 @@ Natural-language process
         ↓
 Confirm lanes, main path, branches, and assumptions
         ↓
-Neutral JSON specification
+Strict v2 JSON specification
         ↓
 Build native .drawio
         ↓
 Strict validation and capability-aware visual review
         ↓
-Edit locally or apply a semantic patch
+Edit locally, inspect the saved file, or apply a semantic patch
 ```
 
 ## Supported agents
@@ -118,26 +121,39 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json
 ```
 
+Inspect the latest locally edited file before preparing a patch:
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  inspect --input process.drawio
+```
+
 The semantic input format is documented in [`references/schema.md`](skills/product-swimlane-drawio/references/schema.md).
 
 ## Incremental editing boundary
 
 Safe patching depends on semantic metadata and stable IDs produced by this skill. A manually created or incompatible `.drawio` file may require migration or a controlled rebuild before semantic patching is reliable.
 
-By default, patching preserves existing node geometry. Geometry updates require an explicit command-line flag and should only be used when movement or resizing was intentionally requested.
+By default, patching preserves existing node geometry and manual waypoints. Geometry updates require an explicit command-line flag. If movement or resizing invalidates an incident connector, only the affected connector is rerouted and recorded in the patch receipt.
+
+Nodes, edges, and phases can be deleted by stable semantic ID. Node deletion fails unless every incident edge is explicitly included, and deleting a main-path node requires a replacement main path.
 
 ## Validation
 
 Strict validation checks structural integrity and routing heuristics, including:
 
+- Main-path continuity, reachability, decision outcomes, retry direction, and phase ranges
 - Missing endpoints and duplicate semantic IDs
 - Nodes outside their lanes
+- Likely multilingual node-label overflow
 - Unintentional port reuse
 - Connectors aligned with or too close to lane boundaries
 - Connectors crossing nodes
 - Overlapping, crossing, or non-orthogonal connector segments
 
 Automated validation does not replace visual review. Always validate the final saved `.drawio` file. If Draw.io opens, edits, moves, or saves the diagram, run strict validation again before handoff.
+
+Validation returns stable diagnostic codes, evidence, affected semantic IDs, and supported fixes. Build and patch commands write atomically and return the output path, byte count, and SHA-256 digest. Existing output files are not replaced unless `--force` is supplied intentionally.
 
 ## Model capability and output reliability
 

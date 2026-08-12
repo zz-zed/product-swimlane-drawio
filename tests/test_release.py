@@ -1,4 +1,5 @@
 import json
+import hashlib
 import re
 import subprocess
 import struct
@@ -74,6 +75,33 @@ def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
     )
 
 
+def write_linear_v2_spec(path: Path, *, long_label: bool = False) -> None:
+    label = "多语言文字" * 20 if long_label else "Step"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "title": "Linear Flow",
+                "lanes": [{"id": "lane-a", "label": "Lane A", "width": 220}],
+                "nodes": [
+                    {"id": "start", "lane": "lane-a", "rank": 1, "type": "start", "label": ""},
+                    {"id": "step", "lane": "lane-a", "rank": 2, "type": "process", "label": label},
+                    {"id": "end", "lane": "lane-a", "rank": 3, "type": "end", "label": ""},
+                ],
+                "edges": [
+                    {"id": "edge-a", "from": "start", "to": "step"},
+                    {"id": "edge-b", "from": "step", "to": "end"},
+                ],
+                "main_path": ["start", "step", "end"],
+                "phases": [
+                    {"id": "phase-a", "label": "Phase A", "from_rank": 1, "to_rank": 3}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class ReleasePackageTests(unittest.TestCase):
     def test_readme_language_navigation_and_structure(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -113,10 +141,19 @@ class ReleasePackageTests(unittest.TestCase):
             {
                 "SKILL.md",
                 "agents/openai.yaml",
+                "references/schema.json",
                 "references/schema.md",
                 "scripts/drawio_swimlane.py",
             },
         )
+
+    def test_v2_json_schema_is_strict_and_valid_json(self) -> None:
+        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("schema_version", schema["required"])
+        self.assertIn("main_path", schema["required"])
+        self.assertFalse(schema["$defs"]["edge"]["additionalProperties"])
 
     def test_frontmatter_is_minimal(self) -> None:
         content = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -190,6 +227,292 @@ class DiagramWorkflowTests(unittest.TestCase):
                 str(changes),
             )
             self.assertTrue(json.loads(compare.stdout)["preserved"])
+
+    def test_build_rejects_unknown_fields_with_structured_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+            spec["unexpected"] = True
+            spec_path = directory / "invalid.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            result = run_tool(
+                "build",
+                "--spec",
+                str(spec_path),
+                "--output",
+                str(directory / "invalid.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["diagnostics"][0]["code"], "schema/unknown-field")
+            self.assertFalse((directory / "invalid.drawio").exists())
+
+    def test_build_rejects_broken_main_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+            spec["main_path"] = ["start", "condition", "step-b", "end"]
+            spec_path = directory / "invalid-main.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            result = run_tool(
+                "build",
+                "--spec",
+                str(spec_path),
+                "--output",
+                str(directory / "invalid-main.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                json.loads(result.stdout)["diagnostics"][0]["code"],
+                "semantic/main-path-edge",
+            )
+
+    def test_inspect_returns_semantics_geometry_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            diagram = self.build_diagram(Path(temp))
+            result = run_tool("inspect", "--input", str(diagram))
+            report = json.loads(result.stdout)
+            self.assertTrue(report["compatible"])
+            self.assertEqual(report["schema_version"], "2")
+            self.assertEqual(report["main_path"][0], "start")
+            self.assertEqual(len(report["phases"]), 2)
+            self.assertIn("x", report["nodes"][0])
+            self.assertTrue(report["validation"]["valid"])
+            self.assertEqual(report["validation"]["diagnostics"], [])
+
+    def test_geometry_update_repairs_only_invalid_incident_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "linear.json"
+            before = directory / "linear.drawio"
+            after = directory / "linear-moved.drawio"
+            patch = directory / "move.json"
+            write_linear_v2_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(before))
+            patch.write_text(
+                json.dumps({"update_nodes": [{"id": "step", "x": 10}]}),
+                encoding="utf-8",
+            )
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(patch),
+                "--output",
+                str(after),
+                "--allow-geometry-updates",
+            )
+            report = json.loads(result.stdout)
+            self.assertEqual(report["patch_receipt"]["auto_rerouted_edges"], ["edge-a", "edge-b"])
+            self.assertEqual(report["warnings"], [])
+            compare = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(after),
+                "--changes",
+                str(patch),
+            )
+            self.assertTrue(json.loads(compare.stdout)["preserved"])
+
+    def test_geometry_update_preserves_valid_manual_waypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec_path = directory / "manual-route.json"
+            write_linear_v2_spec(spec_path)
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            spec["edges"][0]["waypoints"] = [{"x": 110, "y": 150}]
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            before = directory / "manual-route.drawio"
+            after = directory / "manual-route-moved.drawio"
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            patch = directory / "move-vertical.json"
+            patch.write_text(
+                json.dumps({"update_nodes": [{"id": "step", "y": 155}]}),
+                encoding="utf-8",
+            )
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(patch),
+                "--output",
+                str(after),
+                "--allow-geometry-updates",
+            )
+            self.assertEqual(json.loads(result.stdout)["patch_receipt"]["auto_rerouted_edges"], [])
+            before_inspect = json.loads(run_tool("inspect", "--input", str(before)).stdout)
+            after_inspect = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            before_edge = next(edge for edge in before_inspect["edges"] if edge["id"] == "edge-a")
+            after_edge = next(edge for edge in after_inspect["edges"] if edge["id"] == "edge-a")
+            self.assertEqual(before_edge["waypoints"], after_edge["waypoints"])
+
+    def test_invalid_replacement_main_path_is_not_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            patch = directory / "invalid-main-patch.json"
+            patch.write_text(
+                json.dumps({"main_path": ["start", "step-a", "condition", "end"]}),
+                encoding="utf-8",
+            )
+            output = directory / "invalid-main.drawio"
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(patch),
+                "--output",
+                str(output),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+            report = json.loads(result.stdout)
+            self.assertEqual(report["diagnostics"][0]["code"], "delivery/validation-failed")
+
+    def test_deleting_node_requires_explicit_incident_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            patch = directory / "unsafe-delete.json"
+            patch.write_text(json.dumps({"delete_nodes": ["step-b"]}), encoding="utf-8")
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(patch),
+                "--output",
+                str(directory / "unsafe.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)["diagnostics"][0]["code"], "patch/incident-edge")
+
+    def test_declared_deletion_preserves_unrelated_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            expanded = directory / "expanded.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(FIXTURES / "neutral-patch.json"),
+                "--output",
+                str(expanded),
+            )
+            delete_patch = directory / "delete.json"
+            delete_patch.write_text(
+                json.dumps(
+                    {
+                        "delete_nodes": ["note-new", "step-new"],
+                        "delete_edges": ["edge-new-a", "edge-new-b"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            after = directory / "contracted.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(expanded),
+                "--changes",
+                str(delete_patch),
+                "--output",
+                str(after),
+            )
+            validate = run_tool("validate", "--input", str(after), "--strict")
+            self.assertEqual(json.loads(validate.stdout)["warnings"], [])
+            compare = run_tool(
+                "compare",
+                "--before",
+                str(expanded),
+                "--after",
+                str(after),
+                "--changes",
+                str(delete_patch),
+            )
+            report = json.loads(compare.stdout)
+            self.assertTrue(report["preserved"])
+            self.assertEqual(report["unexpected_missing"], [])
+
+    def test_phase_patch_is_inspectable_and_preserves_other_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            patch = directory / "phases.json"
+            patch.write_text(
+                json.dumps(
+                    {
+                        "update_phases": [{"id": "phase-a", "label": "Phase Updated"}],
+                        "delete_phases": ["phase-b"],
+                        "phases": [
+                            {"id": "phase-c", "label": "Phase C", "from_rank": 4, "to_rank": 5}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            after = directory / "phases-updated.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(patch),
+                "--output",
+                str(after),
+            )
+            report = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            phases = {phase["id"]: phase for phase in report["phases"]}
+            self.assertEqual(set(phases), {"phase-a", "phase-c"})
+            self.assertEqual(phases["phase-a"]["label"], "Phase Updated")
+            compare = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(after),
+                "--changes",
+                str(patch),
+            )
+            self.assertTrue(json.loads(compare.stdout)["preserved"])
+
+    def test_existing_output_is_not_replaced_without_force(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            output = self.build_diagram(directory)
+            before_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+            result = run_tool(
+                "build",
+                "--spec",
+                str(FIXTURES / "neutral-flow.json"),
+                "--output",
+                str(output),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout)["diagnostics"][0]["code"], "delivery/output-exists")
+            self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), before_hash)
+
+    def test_v2_reports_text_overflow_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "long-label.json"
+            output = directory / "long-label.drawio"
+            write_linear_v2_spec(spec, long_label=True)
+            build = run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(build.stdout)
+            self.assertIn("text/node-overflow-risk", {item["code"] for item in report["diagnostics"]})
 
     def test_unintentional_port_reuse_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

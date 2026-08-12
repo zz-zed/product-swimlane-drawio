@@ -1,111 +1,154 @@
-# Semantic schema
+# Semantic schema and patch contract
 
-Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language.
+Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language. The executable v2 contract is [schema.json](schema.json).
+
+## Contents
+
+- [Build specification](#build-specification)
+- [Main path and phases](#main-path-and-phases)
+- [Nodes and edges](#nodes-and-edges)
+- [Patch specification](#patch-specification)
+- [Inspection and diagnostics](#inspection-and-diagnostics)
+- [Compatibility](#compatibility)
 
 ## Build specification
 
-Required top-level fields:
-
-- `title`: visible diagram title.
-- `lanes`: ordered vertical lanes.
-- `nodes`: lane-owned steps.
-- `edges`: directed connections.
-
-Neutral skeleton:
+New diagrams use `schema_version: "2"`. Unknown fields are rejected at every level.
 
 ```json
 {
+  "schema_version": "2",
   "title": "<diagram-title>",
   "lanes": [
     {"id": "lane-a", "label": "<lane-label>", "width": 200}
   ],
   "nodes": [
-    {"id": "node-a", "lane": "lane-a", "rank": 1, "type": "start", "label": ""}
-  ],
-  "edges": []
-}
-```
-
-### Lane fields
-
-- `id`: required stable semantic ID.
-- `label`: required visible label.
-- `width`: optional pixel width; default `200`.
-
-### Node fields
-
-- `id`: required stable semantic ID.
-- `lane`: required owning lane ID.
-- `rank`: required global sequence number starting at `1`.
-- `type`: required; `start`, `end`, `process`, `decision`, or `note`.
-- `label`: required visible label; it may be empty.
-- `width`, `height`, `x`, `y`: optional geometry. Avoid fixed positions unless reproducing an approved layout.
-
-### Edge fields
-
-- `id`: required stable semantic ID.
-- `from`, `to`: required source and target node IDs.
-- `type`: optional; `flow`, `call`, `return`, `retry`, or `async`.
-- `label`: optional visible label.
-- `route`: optional; `auto`, `forward`, `back`, or `side`.
-  - `auto`: infer from ranks and edge type.
-  - `forward`: normal progress to a later rank; defaults to bottom exit and top entry.
-  - `back`: return to an earlier step; defaults to side ports and an outer route.
-  - `side`: same-rank or lateral interaction; defaults to facing side ports.
-- `branch`: optional decision hint; `positive` or `negative`. It changes the default decision exit to right or left.
-- `exit_side`, `entry_side`: optional; `top`, `bottom`, `left`, or `right`.
-- `exit_offset`, `entry_offset`: optional position along the selected side from `0.05` to `0.95`. The tool allocates distinct offsets when omitted.
-- `allow_port_reuse`: optional boolean; default `false`.
-- `waypoints`: optional pool-local coordinates as `{ "x": number, "y": number }` objects or two-number arrays.
-
-Use automatic routing first. Add explicit ports or waypoints only after a strict-validation warning or rendered-preview issue.
-
-### Canvas fields
-
-Optional `canvas` fields are `x`, `y`, `title_height`, `lane_header_height`, `row_gap`, `top_padding`, and `bottom_padding`.
-
-## Patch specification
-
-A patch may contain `update_nodes`, `update_edges`, `nodes`, and `edges`. Include only requested changes.
-
-Neutral skeleton:
-
-```json
-{
-  "update_nodes": [
-    {"id": "<existing-node-id>", "label": "<updated-label>"}
-  ],
-  "update_edges": [
-    {
-      "id": "<existing-edge-id>",
-      "reroute": true,
-      "exit_side": "left",
-      "entry_side": "left"
-    }
-  ],
-  "nodes": [
-    {"id": "node-new", "lane": "lane-a", "rank": 2, "type": "process", "label": "<new-label>"}
+    {"id": "node-start", "lane": "lane-a", "rank": 1, "type": "start", "label": ""},
+    {"id": "node-end", "lane": "lane-a", "rank": 2, "type": "end", "label": ""}
   ],
   "edges": [
-    {"id": "edge-new", "from": "<existing-node-id>", "to": "node-new", "type": "flow", "label": ""}
+    {"id": "edge-a", "from": "node-start", "to": "node-end"}
+  ],
+  "main_path": ["node-start", "node-end"],
+  "phases": [
+    {"id": "phase-a", "label": "<phase-label>", "from_rank": 1, "to_rank": 2}
   ]
 }
 ```
 
-`update_edges` behavior:
+Required v2 fields are `schema_version`, `title`, `lanes`, `nodes`, `edges`, and `main_path`. `phases` and `canvas` are optional.
 
-- Updating only `label` preserves the existing route and waypoints.
-- Supplying `reroute: true` recomputes the route from the existing semantic fields.
-- Supplying any routing field recomputes only that edge.
-- Explicit port changes reserve the selected ports and fail on unintended reuse.
+Lane fields:
 
-Ordinary patching preserves node geometry. Supplying `x`, `y`, `width`, or `height` for an existing node requires `--allow-geometry-updates`.
+- `id`: required semantic ID.
+- `label`: required visible label.
+- `width`: optional width; minimum `120`, default `200`.
 
-## Validation constraints
+Optional `canvas` fields are `x`, `y`, `title_height`, `lane_header_height`, `row_gap`, `top_padding`, and `bottom_padding`.
 
-- Lane, node, and edge IDs must be unique within their collections.
-- Every node must reference an existing lane.
-- Every edge must reference existing source and target nodes.
-- Every node rank must be an integer greater than or equal to `1`.
-- New patch IDs must not collide with existing semantic IDs.
-- Strict validation fails when routing-quality warnings remain.
+## Main path and phases
+
+`main_path` records the user-confirmed normal path. It must:
+
+- Contain at least two distinct node IDs.
+- Begin with a `start` node and end with an `end` node.
+- Reference existing nodes.
+- Have an edge for every consecutive node pair.
+- Progress through non-decreasing global ranks.
+
+Do not put returns, retries, or exception-only nodes in `main_path`.
+
+A phase is an optional horizontal band across every vertical lane:
+
+- `id`: required semantic ID.
+- `label`: required visible label.
+- `from_rank`, `to_rank`: inclusive rank range; `to_rank` must not exceed the maximum node rank.
+- `fill_color`: optional `#RRGGBB` value.
+
+## Nodes and edges
+
+Node fields:
+
+- `id`, `lane`, `rank`, `type`, and `label` are required.
+- `rank` is a global integer starting at `1`; equal ranks represent parallel steps.
+- `type` is `start`, `end`, `process`, `decision`, or `note`.
+- `width`, `height`, `x`, and `y` are optional geometry. Avoid fixed positions for new diagrams unless reproducing an approved layout.
+
+Edge fields:
+
+- `id`, `from`, and `to` are required.
+- `type`: optional `flow`, `call`, `return`, `retry`, or `async`.
+- `label`: optional visible label.
+- `route`: optional `auto`, `forward`, `back`, or `side`.
+- `branch`: optional `positive` or `negative` decision outcome.
+- `exit_side`, `entry_side`: optional `top`, `bottom`, `left`, or `right`.
+- `exit_offset`, `entry_offset`: optional value from `0.05` to `0.95`.
+- `allow_port_reuse`: optional boolean; default `false`.
+- `waypoints`: optional pool-local `{ "x": number, "y": number }` objects or two-number arrays.
+
+Use automatic routing first. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue.
+
+## Patch specification
+
+A patch may contain:
+
+- `update_nodes`, `update_edges`, `update_phases`.
+- New `nodes`, `edges`, or `phases`.
+- `delete_nodes`, `delete_edges`, `delete_phases` as arrays of semantic IDs.
+- `main_path` to replace the confirmed normal path.
+
+```json
+{
+  "update_nodes": [
+    {"id": "node-a", "label": "<updated-label>"}
+  ],
+  "update_edges": [
+    {"id": "edge-a", "reroute": true}
+  ],
+  "delete_edges": ["edge-b"]
+}
+```
+
+Patch rules:
+
+- Include only requested changes.
+- Updating only an edge label preserves its existing route and waypoints.
+- `reroute: true` or any routing field recomputes that edge.
+- Existing node geometry requires `--allow-geometry-updates`.
+- Moving or resizing a node automatically reroutes only incident edges whose routes become invalid.
+- Valid manual waypoints and unrelated geometry remain unchanged.
+- Deleting a node requires explicitly listing every incident edge in `delete_edges`.
+- Deleting a node on `main_path` requires a replacement `main_path` in the same patch.
+- Write to a new output path. Use `--force` only when replacing a reviewed output intentionally.
+
+## Inspection and diagnostics
+
+Inspect a compatible file before patching:
+
+```bash
+python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
+```
+
+The result includes schema version, main path, phases, lane order, node geometry, edge ports, waypoints, and current validation.
+
+Validation keeps the legacy `errors` and `warnings` arrays and also returns structured diagnostics:
+
+```json
+{
+  "code": "routing/non-orthogonal",
+  "severity": "warning",
+  "message": "<message>",
+  "subject": {"kind": "edge", "id": "edge-a"},
+  "evidence": {},
+  "supported_fixes": ["reroute-edge"]
+}
+```
+
+Strict validation fails when warnings remain. Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Patch output includes the IDs added, updated, deleted, and automatically rerouted.
+
+## Compatibility
+
+- Specifications without `schema_version` are treated as legacy v1 inputs and remain buildable.
+- Compatible v0.1.x `.drawio` files remain inspectable and patchable.
+- v2-only semantic checks apply after a v2 build or after a patch explicitly supplies `main_path`.
+- Manually created Draw.io files without compatible semantic metadata require migration or a controlled rebuild.

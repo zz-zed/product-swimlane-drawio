@@ -1,4 +1,5 @@
 {
+  "schema_version": "2",
   "title": "Neutral Flow",
   "lanes": [
     {"id": "lane-a", "label": "Lane A", "width": 210},
@@ -14,8 +15,13 @@
   "edges": [
     {"id": "edge-1", "from": "start", "to": "step-a", "type": "flow", "label": ""},
     {"id": "edge-2", "from": "step-a", "to": "condition", "type": "flow", "label": ""},
-    {"id": "edge-3", "from": "condition", "to": "step-b", "type": "call", "label": "Path A"},
+    {"id": "edge-3", "from": "condition", "to": "step-b", "type": "call", "branch": "positive", "label": "Path A"},
     {"id": "edge-4", "from": "step-b", "to": "end", "type": "return", "label": ""},
-    {"id": "edge-5", "from": "condition", "to": "step-a", "type": "retry", "label": "Path B"}
+    {"id": "edge-5", "from": "condition", "to": "step-a", "type": "retry", "branch": "negative", "label": "Path B"}
+  ],
+  "main_path": ["start", "step-a", "condition", "step-b", "end"],
+  "phases": [
+    {"id": "phase-a", "label": "Phase A", "from_rank": 1, "to_rank": 3},
+    {"id": "phase-b", "label": "Phase B", "from_rank": 4, "to_rank": 5}
   ]
 }

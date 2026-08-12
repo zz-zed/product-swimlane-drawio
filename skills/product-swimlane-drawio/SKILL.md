@@ -1,6 +1,6 @@
 ---
 name: product-swimlane-drawio
-description: Create and incrementally update native, editable Draw.io vertical swimlane process diagrams with structure confirmation, semantic port allocation, global ranks, decisions, retries, cross-lane routing, stable IDs, and visual-quality checks. Use when an agent must turn a natural-language process into a local .drawio file or safely revise a compatible diagram without discarding manual layout changes.
+description: Create, inspect, and incrementally update native, editable Draw.io vertical swimlane process diagrams with a versioned semantic schema, confirmed main path, phases, stable IDs, safe deletion, geometry-preserving patches, structured diagnostics, and visual-quality checks. Use when an agent must turn a natural-language process into a local .drawio file or safely revise a compatible diagram without discarding manual layout changes.
 ---
 
 # Editable Draw.io Swimlanes
@@ -38,8 +38,8 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 
 ## Build after confirmation
 
-1. Read [references/schema.md](references/schema.md).
-2. Translate the confirmed structure into a task-local JSON specification with stable semantic IDs.
+1. Read [references/schema.md](references/schema.md). Use its v2 contract for new diagrams.
+2. Translate the confirmed structure into a task-local JSON specification with `schema_version: "2"`, stable semantic IDs, and the confirmed `main_path`. Add `phases` only when the process has meaningful horizontal stages.
 3. Mark primary progress as `route: forward`, historical return or retry as `route: back`, and same-rank interaction as `route: side`. Use `branch` or explicit ports for decision outputs.
 4. Build and run strict validation:
 
@@ -48,7 +48,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
    python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<diagram.drawio>" --strict
    ```
 
-5. If strict validation reports a routing warning, adjust edge semantics or ports and rebuild. Do not declare completion from XML validity alone.
+5. Follow structured diagnostic codes and `supported_fixes`. If strict validation reports a warning, correct the specification and rebuild. Do not declare completion from XML validity alone.
 6. When a renderer is available, export a preview before handoff. Inspect it only when the current agent can analyze images; otherwise ask the user to review it and report that model visual review was not performed.
 
 ## Routing semantics
@@ -65,8 +65,10 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 
 Require strict validation to have no warnings. It checks:
 
+- Schema version, main-path continuity, reachability, decisions, retries, and phase ranges.
 - Broken endpoints and duplicate semantic IDs.
 - Nodes outside their lanes.
+- Likely node-label overflow for multilingual text.
 - Reused ports.
 - Connectors collinear with lane boundaries.
 - Connectors crossing nodes.
@@ -83,9 +85,15 @@ Treat automated validation and visual review as separate evidence:
 ## Update an existing diagram
 
 1. Start from the latest user-saved `.drawio`, never an older JSON specification.
-2. Confirm that the file contains compatible semantic metadata. Otherwise explain that migration or rebuilding is required for safe patching.
-3. Put only requested `update_nodes`, `update_edges`, new nodes, and new edges in a task-local patch file.
-4. Write to a new output file, validate, and compare against the declared patch:
+2. Inspect the file before planning a patch:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
+   ```
+
+3. Confirm that the result is compatible. Otherwise explain that migration or rebuilding is required for safe patching.
+4. Put only requested updates, additions, deletions, phase changes, or a replacement `main_path` in a task-local patch file. Explicitly list incident edges when deleting a node.
+5. Write to a new output file, validate, and compare against the declared patch:
 
    ```bash
    python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --changes "<changes.json>" --output "<updated.drawio>"
@@ -93,9 +101,10 @@ Treat automated validation and visual review as separate evidence:
    python3 "<skill-root>/scripts/drawio_swimlane.py" compare --before "<current.drawio>" --after "<updated.drawio>" --changes "<changes.json>"
    ```
 
-5. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
-6. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes.
-7. Keep the input unchanged until the user approves replacement.
+6. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
+7. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. The tool reroutes only incident edges that become invalid and reports their IDs.
+8. Keep valid manual waypoints and all unrelated geometry unchanged.
+9. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
 
 ## Layout and handoff
 
@@ -104,6 +113,8 @@ Treat automated validation and visual review as separate evidence:
 - Keep nodes structurally parented to their owning lanes.
 - Prefer three to five lanes per page; split dense exception detail when necessary.
 - Preserve stable IDs across revisions.
+- Report added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
+- Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.
 
 ## Package neutrality

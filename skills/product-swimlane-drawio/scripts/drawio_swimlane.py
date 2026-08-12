@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Build, patch, validate, and compare editable Draw.io swimlane diagrams."""
+"""Build, inspect, patch, validate, and compare editable Draw.io swimlane diagrams."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
+import unicodedata
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -41,6 +45,7 @@ PORT_OFFSETS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.275, 0.725)
 PORT_SIDES = {"top", "bottom", "left", "right"}
 ROUTE_CLASSES = {"auto", "forward", "back", "side"}
 BRANCH_CLASSES = {"positive", "negative"}
+EDGE_TYPES = {"flow", "call", "return", "retry", "async"}
 ROUTING_FIELDS = {
     "from", "to", "type", "route", "branch", "exit_side", "entry_side",
     "exit_offset", "entry_offset", "waypoints", "allow_port_reuse", "reroute",
@@ -49,10 +54,144 @@ ROUTE_CLEARANCE = 24.0
 LANE_BOUNDARY_CLEARANCE = 16.0
 POOL_EDGE_MARGIN = 8.0
 GEOMETRY_TOLERANCE = 0.75
+SCHEMA_VERSION = "2"
+
+TOP_LEVEL_FIELDS = {
+    "schema_version", "title", "lanes", "nodes", "edges", "canvas",
+    "main_path", "phases",
+}
+LANE_FIELDS = {"id", "label", "width"}
+NODE_FIELDS = {"id", "lane", "rank", "type", "label", "width", "height", "x", "y"}
+EDGE_FIELDS = {
+    "id", "from", "to", "type", "label", "route", "branch",
+    "exit_side", "entry_side", "exit_offset", "entry_offset",
+    "allow_port_reuse", "waypoints",
+}
+CANVAS_FIELDS = {
+    "x", "y", "title_height", "lane_header_height", "row_gap",
+    "top_padding", "bottom_padding",
+}
+PHASE_FIELDS = {"id", "label", "from_rank", "to_rank", "fill_color"}
+PATCH_FIELDS = {
+    "update_nodes", "update_edges", "nodes", "edges", "delete_nodes",
+    "delete_edges", "update_phases", "phases", "delete_phases", "main_path",
+}
+NODE_UPDATE_FIELDS = {"id", "label", "type", "x", "y", "width", "height"}
+EDGE_UPDATE_FIELDS = EDGE_FIELDS | {"reroute"}
+PHASE_UPDATE_FIELDS = PHASE_FIELDS
 
 
 class DiagramError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "input/invalid",
+        subject: dict | None = None,
+        evidence: dict | None = None,
+        supported_fixes: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.subject = subject
+        self.evidence = evidence or {}
+        self.supported_fixes = supported_fixes or []
+
+    def diagnostic(self) -> dict:
+        return make_diagnostic(
+            self.code,
+            "error",
+            str(self),
+            subject=self.subject,
+            evidence=self.evidence,
+            supported_fixes=self.supported_fixes,
+        )
+
+
+def make_diagnostic(
+    code: str,
+    severity: str,
+    message: str,
+    *,
+    subject: dict | None = None,
+    evidence: dict | None = None,
+    supported_fixes: list[str] | None = None,
+) -> dict:
+    diagnostic = {
+        "code": code,
+        "severity": severity,
+        "message": message,
+        "evidence": evidence or {},
+        "supported_fixes": supported_fixes or [],
+    }
+    if subject:
+        diagnostic["subject"] = subject
+    return diagnostic
+
+
+def reject_unknown_fields(value: dict, allowed: set[str], subject: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise DiagramError(
+            f"Unknown field(s) in {subject}: {', '.join(unknown)}",
+            code="schema/unknown-field",
+            subject={"kind": subject},
+            evidence={"fields": unknown},
+            supported_fixes=["remove-unknown-fields"],
+        )
+
+
+def require_mapping(value, subject: str) -> dict:
+    if not isinstance(value, dict):
+        raise DiagramError(
+            f"{subject} must be an object",
+            code="schema/type",
+            subject={"kind": subject},
+            evidence={"expected": "object", "actual": type(value).__name__},
+        )
+    return value
+
+
+def require_list(value, subject: str) -> list:
+    if not isinstance(value, list):
+        raise DiagramError(
+            f"{subject} must be an array",
+            code="schema/type",
+            subject={"kind": subject},
+            evidence={"expected": "array", "actual": type(value).__name__},
+        )
+    return value
+
+
+def require_string(value, subject: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value):
+        qualifier = "a string" if allow_empty else "a non-empty string"
+        raise DiagramError(
+            f"{subject} must be {qualifier}",
+            code="schema/type",
+            subject={"kind": subject},
+            evidence={"expected": qualifier},
+        )
+    return value
+
+
+def validate_number(value, subject: str, *, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DiagramError(
+            f"{subject} must be a number",
+            code="schema/type",
+            subject={"kind": subject},
+            evidence={"expected": "number"},
+        )
+    number_value = float(value)
+    if minimum is not None and number_value < minimum:
+        raise DiagramError(
+            f"{subject} must be at least {number(minimum)}",
+            code="schema/range",
+            subject={"kind": subject},
+            evidence={"minimum": minimum, "actual": number_value},
+        )
+    return number_value
 
 
 def load_json(path: Path) -> dict:
@@ -93,6 +232,368 @@ def require_unique(items: list[dict], label: str) -> None:
         if semantic_id in seen:
             raise DiagramError(f"Duplicate {label} id: {semantic_id}")
         seen.add(semantic_id)
+
+
+def validate_semantic_id(value, subject: str) -> str:
+    value = require_string(value, subject)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise DiagramError(
+            f"{subject} must contain only ASCII letters, digits, underscores, or hyphens",
+            code="schema/id-format",
+            subject={"kind": subject, "id": value},
+            supported_fixes=["replace-semantic-id"],
+        )
+    return value
+
+
+def validate_node_object(node: dict, subject: str) -> None:
+    require_mapping(node, subject)
+    reject_unknown_fields(node, NODE_FIELDS, subject)
+    for field in ("id", "lane", "rank", "type", "label"):
+        if field not in node:
+            raise DiagramError(
+                f"Missing required field in {subject}: {field}",
+                code="schema/required",
+                subject={"kind": subject},
+                evidence={"field": field},
+            )
+    validate_semantic_id(node["id"], f"{subject}.id")
+    validate_semantic_id(node["lane"], f"{subject}.lane")
+    if isinstance(node["rank"], bool) or not isinstance(node["rank"], int) or node["rank"] < 1:
+        raise DiagramError(
+            f"{subject}.rank must be an integer greater than or equal to 1",
+            code="schema/range",
+            subject={"kind": "node", "id": node.get("id")},
+            evidence={"field": "rank", "actual": node.get("rank")},
+        )
+    if node["type"] not in NODE_STYLES:
+        raise DiagramError(
+            f"Unsupported node type: {node['type']}",
+            code="schema/enum",
+            subject={"kind": "node", "id": node.get("id")},
+            evidence={"field": "type", "allowed": sorted(NODE_STYLES)},
+        )
+    require_string(node["label"], f"{subject}.label", allow_empty=True)
+    for field in ("width", "height"):
+        if field in node:
+            validate_number(node[field], f"{subject}.{field}", minimum=1)
+    for field in ("x", "y"):
+        if field in node:
+            validate_number(node[field], f"{subject}.{field}")
+
+
+def validate_edge_object(edge: dict, subject: str, *, update: bool = False) -> None:
+    require_mapping(edge, subject)
+    reject_unknown_fields(edge, EDGE_UPDATE_FIELDS if update else EDGE_FIELDS, subject)
+    required = ("id",) if update else ("id", "from", "to")
+    for field in required:
+        if field not in edge:
+            raise DiagramError(
+                f"Missing required field in {subject}: {field}",
+                code="schema/required",
+                subject={"kind": subject},
+                evidence={"field": field},
+            )
+    validate_semantic_id(edge["id"], f"{subject}.id")
+    for field in ("from", "to"):
+        if field in edge:
+            validate_semantic_id(edge[field], f"{subject}.{field}")
+    if "type" in edge and edge["type"] not in EDGE_TYPES:
+        raise DiagramError(
+            f"Unsupported edge type: {edge['type']}",
+            code="schema/enum",
+            subject={"kind": "edge", "id": edge.get("id")},
+            evidence={"field": "type", "allowed": sorted(EDGE_TYPES)},
+        )
+    if "route" in edge and edge["route"] not in ROUTE_CLASSES:
+        raise DiagramError(
+            f"Unsupported route class: {edge['route']}",
+            code="schema/enum",
+            subject={"kind": "edge", "id": edge.get("id")},
+            evidence={"field": "route", "allowed": sorted(ROUTE_CLASSES)},
+        )
+    if "branch" in edge and edge["branch"] not in BRANCH_CLASSES:
+        raise DiagramError(
+            f"Unsupported branch class: {edge['branch']}",
+            code="schema/enum",
+            subject={"kind": "edge", "id": edge.get("id")},
+            evidence={"field": "branch", "allowed": sorted(BRANCH_CLASSES)},
+        )
+    for field in ("exit_side", "entry_side"):
+        if field in edge:
+            validate_side(edge[field], field)
+    for field in ("exit_offset", "entry_offset"):
+        if field in edge:
+            validate_offset(edge[field], field)
+    if "label" in edge:
+        require_string(edge["label"], f"{subject}.label", allow_empty=True)
+    if "allow_port_reuse" in edge and not isinstance(edge["allow_port_reuse"], bool):
+        raise DiagramError(
+            f"{subject}.allow_port_reuse must be a boolean",
+            code="schema/type",
+            subject={"kind": "edge", "id": edge.get("id")},
+        )
+    if "reroute" in edge and not isinstance(edge["reroute"], bool):
+        raise DiagramError(
+            f"{subject}.reroute must be a boolean",
+            code="schema/type",
+            subject={"kind": "edge", "id": edge.get("id")},
+        )
+    if "waypoints" in edge:
+        require_list(edge["waypoints"], f"{subject}.waypoints")
+        normalize_waypoints(edge["waypoints"])
+
+
+def validate_phase_object(phase: dict, subject: str, *, update: bool = False) -> None:
+    require_mapping(phase, subject)
+    reject_unknown_fields(phase, PHASE_UPDATE_FIELDS, subject)
+    required = ("id",) if update else ("id", "label", "from_rank", "to_rank")
+    for field in required:
+        if field not in phase:
+            raise DiagramError(
+                f"Missing required field in {subject}: {field}",
+                code="schema/required",
+                subject={"kind": subject},
+                evidence={"field": field},
+            )
+    validate_semantic_id(phase["id"], f"{subject}.id")
+    if "label" in phase:
+        require_string(phase["label"], f"{subject}.label")
+    for field in ("from_rank", "to_rank"):
+        if field in phase:
+            value = phase[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise DiagramError(
+                    f"{subject}.{field} must be an integer greater than or equal to 1",
+                    code="schema/range",
+                    subject={"kind": "phase", "id": phase.get("id")},
+                    evidence={"field": field, "actual": value},
+                )
+    if "from_rank" in phase and "to_rank" in phase and phase["to_rank"] < phase["from_rank"]:
+        raise DiagramError(
+            f"{subject}.to_rank must not be less than from_rank",
+            code="schema/range",
+            subject={"kind": "phase", "id": phase.get("id")},
+        )
+    if "fill_color" in phase:
+        color = require_string(phase["fill_color"], f"{subject}.fill_color")
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+            raise DiagramError(
+                f"{subject}.fill_color must use #RRGGBB format",
+                code="schema/format",
+                subject={"kind": "phase", "id": phase.get("id")},
+            )
+
+
+def validate_id_list(values, subject: str) -> list[str]:
+    values = require_list(values, subject)
+    result: list[str] = []
+    for index, value in enumerate(values):
+        result.append(validate_semantic_id(value, f"{subject}[{index}]"))
+    if len(result) != len(set(result)):
+        raise DiagramError(
+            f"{subject} must not contain duplicate IDs",
+            code="schema/duplicate",
+            subject={"kind": subject},
+        )
+    return result
+
+
+def validate_build_spec(spec: dict) -> str:
+    require_mapping(spec, "spec")
+    reject_unknown_fields(spec, TOP_LEVEL_FIELDS, "spec")
+    for field in ("title", "lanes", "nodes", "edges"):
+        if field not in spec:
+            raise DiagramError(
+                f"Missing required field: {field}",
+                code="schema/required",
+                subject={"kind": "spec"},
+                evidence={"field": field},
+            )
+
+    if "schema_version" in spec:
+        require_string(spec["schema_version"], "spec.schema_version")
+    schema_version = spec.get("schema_version", "1")
+    if schema_version not in {"1", SCHEMA_VERSION}:
+        raise DiagramError(
+            f"Unsupported schema_version: {schema_version}",
+            code="schema/version",
+            subject={"kind": "spec"},
+            evidence={"supported": ["1", SCHEMA_VERSION], "actual": schema_version},
+            supported_fixes=["migrate-spec"],
+        )
+    require_string(spec["title"], "spec.title")
+    lanes = require_list(spec["lanes"], "spec.lanes")
+    nodes = require_list(spec["nodes"], "spec.nodes")
+    edges = require_list(spec["edges"], "spec.edges")
+    if not lanes:
+        raise DiagramError("spec.lanes must contain at least one lane", code="schema/min-items")
+    if schema_version == SCHEMA_VERSION and len(nodes) < 2:
+        raise DiagramError("schema version 2 requires at least two nodes", code="schema/min-items")
+
+    for index, lane in enumerate(lanes):
+        subject = f"lane[{index}]"
+        require_mapping(lane, subject)
+        reject_unknown_fields(lane, LANE_FIELDS, subject)
+        for field in ("id", "label"):
+            if field not in lane:
+                raise DiagramError(
+                    f"Missing required field in {subject}: {field}",
+                    code="schema/required",
+                    subject={"kind": subject},
+                    evidence={"field": field},
+                )
+        validate_semantic_id(lane["id"], f"{subject}.id")
+        require_string(lane["label"], f"{subject}.label")
+        if "width" in lane:
+            validate_number(
+                lane["width"],
+                f"{subject}.width",
+                minimum=120 if schema_version == SCHEMA_VERSION else 1,
+            )
+
+    for index, node in enumerate(nodes):
+        validate_node_object(node, f"node[{index}]")
+    for index, edge in enumerate(edges):
+        validate_edge_object(edge, f"edge[{index}]")
+    require_unique(lanes, "lane")
+    require_unique(nodes, "node")
+    require_unique(edges, "edge")
+
+    lane_ids = {lane["id"] for lane in lanes}
+    node_ids = {node["id"] for node in nodes}
+    node_by_id = {node["id"]: node for node in nodes}
+    for node in nodes:
+        if node["lane"] not in lane_ids:
+            raise DiagramError(
+                f"Node {node['id']} references an unknown lane",
+                code="semantic/unknown-lane",
+                subject={"kind": "node", "id": node["id"]},
+                evidence={"lane": node["lane"]},
+            )
+    for edge in edges:
+        missing = [field for field in ("from", "to") if edge[field] not in node_ids]
+        if missing:
+            raise DiagramError(
+                f"Edge {edge['id']} references a missing node",
+                code="semantic/missing-endpoint",
+                subject={"kind": "edge", "id": edge["id"]},
+                evidence={field: edge[field] for field in missing},
+            )
+
+    if "canvas" in spec:
+        canvas = require_mapping(spec["canvas"], "spec.canvas")
+        reject_unknown_fields(canvas, CANVAS_FIELDS, "spec.canvas")
+        for field, value in canvas.items():
+            minimum = 1 if field in {"title_height", "lane_header_height", "row_gap"} else None
+            validate_number(value, f"spec.canvas.{field}", minimum=minimum)
+
+    main_path = spec.get("main_path")
+    if schema_version == SCHEMA_VERSION and main_path is None:
+        raise DiagramError(
+            "schema_version 2 requires main_path",
+            code="schema/required",
+            subject={"kind": "spec"},
+            evidence={"field": "main_path"},
+        )
+    if main_path is not None:
+        main_path = validate_id_list(main_path, "spec.main_path")
+        if len(main_path) < 2:
+            raise DiagramError("spec.main_path must contain at least two nodes", code="schema/min-items")
+        missing = [node_id for node_id in main_path if node_id not in node_ids]
+        if missing:
+            raise DiagramError(
+                "main_path references missing nodes",
+                code="semantic/main-path-node",
+                subject={"kind": "main_path"},
+                evidence={"missing": missing},
+            )
+        edge_pairs = {(edge["from"], edge["to"]) for edge in edges}
+        for source_id, target_id in zip(main_path, main_path[1:]):
+            if (source_id, target_id) not in edge_pairs:
+                raise DiagramError(
+                    f"main_path has no edge from {source_id} to {target_id}",
+                    code="semantic/main-path-edge",
+                    subject={"kind": "main_path"},
+                    evidence={"from": source_id, "to": target_id},
+                    supported_fixes=["add-main-path-edge", "correct-main-path"],
+                )
+            if node_by_id[target_id]["rank"] < node_by_id[source_id]["rank"]:
+                raise DiagramError(
+                    f"main_path moves backward from {source_id} to {target_id}",
+                    code="semantic/main-path-rank",
+                    subject={"kind": "main_path"},
+                    evidence={"from": source_id, "to": target_id},
+                    supported_fixes=["correct-rank", "remove-return-from-main-path"],
+                )
+        if node_by_id[main_path[0]]["type"] != "start":
+            raise DiagramError(
+                "main_path must begin with a start node",
+                code="semantic/main-path-start",
+                subject={"kind": "main_path"},
+                evidence={"node": main_path[0]},
+                supported_fixes=["correct-main-path", "change-node-type"],
+            )
+        if node_by_id[main_path[-1]]["type"] != "end":
+            raise DiagramError(
+                "main_path must end with an end node",
+                code="semantic/main-path-end",
+                subject={"kind": "main_path"},
+                evidence={"node": main_path[-1]},
+                supported_fixes=["correct-main-path", "change-node-type"],
+            )
+
+    phases = require_list(spec.get("phases", []), "spec.phases")
+    for index, phase in enumerate(phases):
+        validate_phase_object(phase, f"phase[{index}]")
+    require_unique(phases, "phase")
+    max_rank = max((node["rank"] for node in nodes), default=1)
+    for phase in phases:
+        if phase["to_rank"] > max_rank:
+            raise DiagramError(
+                f"Phase {phase['id']} extends beyond the maximum node rank",
+                code="semantic/phase-range",
+                subject={"kind": "phase", "id": phase["id"]},
+                evidence={"to_rank": phase["to_rank"], "max_rank": max_rank},
+            )
+    return schema_version
+
+
+def validate_patch_spec(changes: dict) -> None:
+    require_mapping(changes, "patch")
+    reject_unknown_fields(changes, PATCH_FIELDS, "patch")
+    for field in ("update_nodes", "update_edges", "nodes", "edges", "update_phases", "phases"):
+        if field in changes:
+            require_list(changes[field], f"patch.{field}")
+    for index, update in enumerate(changes.get("update_nodes", [])):
+        require_mapping(update, f"update_node[{index}]")
+        reject_unknown_fields(update, NODE_UPDATE_FIELDS, f"update_node[{index}]")
+        validate_semantic_id(update.get("id"), f"update_node[{index}].id")
+        if "type" in update and update["type"] not in NODE_STYLES:
+            raise DiagramError(f"Unsupported node type: {update['type']}", code="schema/enum")
+        if "label" in update:
+            require_string(update["label"], f"update_node[{index}].label", allow_empty=True)
+        for field in ("x", "y", "width", "height"):
+            if field in update:
+                validate_number(update[field], f"update_node[{index}].{field}", minimum=1 if field in {"width", "height"} else None)
+    for index, update in enumerate(changes.get("update_edges", [])):
+        validate_edge_object(update, f"update_edge[{index}]", update=True)
+    for index, node in enumerate(changes.get("nodes", [])):
+        validate_node_object(node, f"new_node[{index}]")
+    for index, edge in enumerate(changes.get("edges", [])):
+        validate_edge_object(edge, f"new_edge[{index}]")
+    for index, update in enumerate(changes.get("update_phases", [])):
+        validate_phase_object(update, f"update_phase[{index}]", update=True)
+    for index, phase in enumerate(changes.get("phases", [])):
+        validate_phase_object(phase, f"new_phase[{index}]")
+    for field in ("delete_nodes", "delete_edges", "delete_phases"):
+        if field in changes:
+            validate_id_list(changes[field], f"patch.{field}")
+    if "main_path" in changes:
+        validate_id_list(changes["main_path"], "patch.main_path")
+    for field in ("update_nodes", "update_edges", "nodes", "edges", "update_phases", "phases"):
+        if field in changes:
+            require_unique(changes[field], field)
 
 
 def canvas_values(spec: dict) -> dict:
@@ -145,6 +646,58 @@ def create_node_cell(root: ET.Element, parent: ET.Element, node: dict, lane_widt
     return cell
 
 
+def phase_geometry_values(phase: dict, values: dict, pool_width: float) -> dict[str, float]:
+    first_center = (
+        values["title_height"]
+        + values["lane_header_height"]
+        + values["top_padding"]
+        + (int(phase["from_rank"]) - 1) * values["row_gap"]
+    )
+    last_center = (
+        values["title_height"]
+        + values["lane_header_height"]
+        + values["top_padding"]
+        + (int(phase["to_rank"]) - 1) * values["row_gap"]
+    )
+    top = max(values["title_height"] + values["lane_header_height"], first_center - values["row_gap"] / 2)
+    bottom = last_center + values["row_gap"] / 2
+    return {"x": 0.0, "y": top, "width": pool_width, "height": max(24.0, bottom - top)}
+
+
+def create_phase_cell(
+    root: ET.Element,
+    pool: ET.Element,
+    phase: dict,
+    values: dict,
+    pool_width: float,
+) -> ET.Element:
+    fill_color = phase.get("fill_color", "#f5f5f5")
+    cell = ET.SubElement(
+        root,
+        "mxCell",
+        {
+            "id": mx_id("phase", phase["id"]),
+            "parent": pool.attrib["id"],
+            "vertex": "1",
+            "connectable": "0",
+            "value": str(phase["label"]),
+            "style": (
+                "rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;"
+                "spacingTop=4;spacingLeft=6;fontSize=10;fontStyle=1;fontColor=#666666;"
+                f"fillColor={fill_color};fillOpacity=12;strokeColor=#b3b3b3;"
+                "strokeOpacity=55;dashed=1;pointerEvents=0;"
+            ),
+            "data-kind": "phase",
+            "data-semantic-id": phase["id"],
+            "data-from-rank": str(phase["from_rank"]),
+            "data-to-rank": str(phase["to_rank"]),
+            "data-fill-color": fill_color,
+        },
+    )
+    geometry(cell, **phase_geometry_values(phase, values, pool_width))
+    return cell
+
+
 def parse_geometry(cell: ET.Element) -> dict[str, float]:
     geom = cell.find("mxGeometry")
     if geom is None:
@@ -179,6 +732,17 @@ def lane_node_records(root: ET.Element, pool: ET.Element) -> tuple[dict[str, dic
                 "lane": lane_semantic_id,
             }
     return lanes, nodes
+
+
+def phase_records(root: ET.Element, pool: ET.Element) -> dict[str, ET.Element]:
+    return {
+        child.attrib["data-semantic-id"]: child
+        for child in list(root)
+        if child.tag == "mxCell"
+        and child.attrib.get("data-kind") == "phase"
+        and child.attrib.get("parent") == pool.attrib["id"]
+        and child.attrib.get("data-semantic-id")
+    }
 
 
 def node_center_in_pool(node_record: dict, lane_record: dict) -> tuple[float, float]:
@@ -622,18 +1186,7 @@ def create_edge_cell(
 
 
 def build_tree(spec: dict) -> ET.ElementTree:
-    for field in ("title", "lanes", "nodes", "edges"):
-        if field not in spec:
-            raise DiagramError(f"Missing required field: {field}")
-    require_unique(spec["lanes"], "lane")
-    require_unique(spec["nodes"], "node")
-    require_unique(spec["edges"], "edge")
-    lane_ids = {lane["id"] for lane in spec["lanes"]}
-    for node in spec["nodes"]:
-        if node.get("lane") not in lane_ids:
-            raise DiagramError(f"Node {node.get('id')} references an unknown lane")
-        if int(node.get("rank", 0)) < 1:
-            raise DiagramError(f"Node {node.get('id')} must have rank >= 1")
+    schema_version = validate_build_spec(spec)
 
     values = canvas_values(spec)
     max_rank = max((int(node["rank"]) for node in spec["nodes"]), default=1)
@@ -665,6 +1218,8 @@ def build_tree(spec: dict) -> ET.ElementTree:
             "data-lane-header-height": number(values["lane_header_height"]), "data-row-gap": number(values["row_gap"]),
             "data-top-padding": number(values["top_padding"]), "data-bottom-padding": number(values["bottom_padding"]),
             "data-max-rank": str(max_rank),
+            "data-schema-version": schema_version,
+            "data-main-path": json.dumps(spec.get("main_path", []), ensure_ascii=True, separators=(",", ":")),
         },
     )
     geometry(pool, x=values["x"], y=values["y"], width=pool_width, height=pool_height)
@@ -686,6 +1241,9 @@ def build_tree(spec: dict) -> ET.ElementTree:
         geometry(lane_cell, x=offset_x, y=values["title_height"], width=width, height=current_lane_height)
         lane_cells[lane["id"]] = lane_cell
         offset_x += width
+
+    for phase in spec.get("phases", []):
+        create_phase_cell(root, pool, phase, values, pool_width)
 
     for node in spec["nodes"]:
         lane_cell = lane_cells[node["lane"]]
@@ -806,14 +1364,142 @@ def existing_edge_spec(cell: ET.Element) -> dict:
     }
     if cell.attrib.get("data-branch"):
         spec["branch"] = cell.attrib["data-branch"]
+    exit_port = port_from_style(cell, "exit")
+    entry_port = port_from_style(cell, "entry")
+    if exit_port:
+        spec["exit_side"], spec["exit_offset"] = exit_port
+    if entry_port:
+        spec["entry_side"], spec["entry_offset"] = entry_port
     return spec
 
 
-def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool) -> ET.ElementTree:
+def phase_cell_spec(cell: ET.Element) -> dict:
+    return {
+        "id": cell.attrib["data-semantic-id"],
+        "label": cell.attrib.get("value", ""),
+        "from_rank": int(cell.attrib.get("data-from-rank", "1")),
+        "to_rank": int(cell.attrib.get("data-to-rank", "1")),
+        "fill_color": cell.attrib.get("data-fill-color", "#f5f5f5"),
+    }
+
+
+def apply_phase_update(
+    cell: ET.Element,
+    phase: dict,
+    values: dict,
+    pool_width: float,
+) -> None:
+    current = phase_cell_spec(cell)
+    current.update(phase)
+    validate_phase_object(current, f"phase[{current['id']}]")
+    cell.attrib["value"] = str(current["label"])
+    cell.attrib["data-from-rank"] = str(current["from_rank"])
+    cell.attrib["data-to-rank"] = str(current["to_rank"])
+    cell.attrib["data-fill-color"] = current["fill_color"]
+    style = cell.attrib.get("style", "")
+    style = re.sub(r"fillColor=#[0-9A-Fa-f]{6}", f"fillColor={current['fill_color']}", style)
+    cell.attrib["style"] = style
+    geom = cell.find("mxGeometry")
+    if geom is None:
+        geom = geometry(cell)
+    geom.attrib.update(
+        {key: number(value) for key, value in phase_geometry_values(current, values, pool_width).items()}
+    )
+
+
+def edge_route_is_locally_valid(
+    cell: ET.Element,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+) -> bool:
+    points = edge_polyline(cell, lanes, nodes)
+    if len(points) < 2:
+        return False
+    boundaries = internal_lane_boundaries(lanes)
+    node_bounds = {
+        semantic_id: node_bounds_in_pool(record, lanes[record["lane"]])
+        for semantic_id, record in nodes.items()
+    }
+    for segment in zip(points, points[1:]):
+        axis = segment_axis(segment)
+        if axis == "diagonal":
+            return False
+        if axis == "vertical" and any(
+            abs(segment[0][0] - boundary) < LANE_BOUNDARY_CLEARANCE
+            for boundary in boundaries
+        ):
+            return False
+        for node_id, bounds in node_bounds.items():
+            if node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}:
+                continue
+            if segment_crosses_bounds(segment, bounds):
+                return False
+    return True
+
+
+def read_main_path(pool: ET.Element) -> list[str]:
+    raw = pool.attrib.get("data-main-path", "[]")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool) -> dict:
+    validate_patch_spec(changes)
     pool = find_pool(tree)
     root = graph_root(tree)
     values = values_from_pool(pool)
     lanes, nodes = lane_node_records(root, pool)
+    existing_edges = edge_records(root)
+    phases = phase_records(root, pool)
+    pool_width = max(
+        record["geometry"]["x"] + record["geometry"]["width"]
+        for record in lanes.values()
+    )
+
+    deleted_edge_ids = set(changes.get("delete_edges", []))
+    deleted_node_ids = set(changes.get("delete_nodes", []))
+    deleted_phase_ids = set(changes.get("delete_phases", []))
+    for edge_id in deleted_edge_ids:
+        if edge_id not in existing_edges:
+            raise DiagramError(f"Cannot delete missing edge: {edge_id}", code="patch/missing-edge")
+    for node_id in deleted_node_ids:
+        if node_id not in nodes:
+            raise DiagramError(f"Cannot delete missing node: {node_id}", code="patch/missing-node")
+    for phase_id in deleted_phase_ids:
+        if phase_id not in phases:
+            raise DiagramError(f"Cannot delete missing phase: {phase_id}", code="patch/missing-phase")
+
+    undeclared_incident = sorted(
+        edge_id
+        for edge_id, cell in existing_edges.items()
+        if edge_id not in deleted_edge_ids
+        and (
+            cell.attrib.get("data-from") in deleted_node_ids
+            or cell.attrib.get("data-to") in deleted_node_ids
+        )
+    )
+    if undeclared_incident:
+        raise DiagramError(
+            "Deleting a node requires explicitly deleting every incident edge",
+            code="patch/incident-edge",
+            evidence={"edges": undeclared_incident},
+            supported_fixes=["add-delete-edges"],
+        )
+
+    for edge_id in deleted_edge_ids:
+        root.remove(existing_edges[edge_id])
+    for node_id in deleted_node_ids:
+        root.remove(nodes[node_id]["cell"])
+    for phase_id in deleted_phase_ids:
+        root.remove(phases[phase_id])
+
+    lanes, nodes = lane_node_records(root, pool)
+    existing_edges = edge_records(root)
+    phases = phase_records(root, pool)
+    moved_node_ids: set[str] = set()
 
     for update in changes.get("update_nodes", []):
         semantic_id = update.get("id")
@@ -832,6 +1518,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         if requested_geometry and not allow_geometry_updates:
             raise DiagramError("Existing geometry update requires --allow-geometry-updates")
         if requested_geometry:
+            moved_node_ids.add(semantic_id)
             geom = cell.find("mxGeometry")
             assert geom is not None
             for key in ("x", "y", "width", "height"):
@@ -840,7 +1527,6 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             nodes[semantic_id]["geometry"] = parse_geometry(cell)
 
     new_nodes = changes.get("nodes", [])
-    require_unique(new_nodes, "new node")
     for node in new_nodes:
         if node["id"] in nodes:
             raise DiagramError(f"Node already exists: {node['id']}")
@@ -853,35 +1539,73 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     lanes, nodes = lane_node_records(root, pool)
     existing_edges = edge_records(root)
     edge_updates = changes.get("update_edges", [])
-    require_unique(edge_updates, "edge update")
-    reroute_ids = {
+    for update in edge_updates:
+        if update["id"] not in existing_edges:
+            raise DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
+        if "label" in update:
+            existing_edges[update["id"]].attrib["value"] = str(update["label"])
+
+    explicit_reroute_ids = {
         update["id"]
         for update in edge_updates
         if update.get("reroute") or any(
             key in update for key in ROUTING_FIELDS if key != "reroute"
         )
     }
+    auto_reroute_ids = {
+        edge_id
+        for edge_id, cell in existing_edges.items()
+        if (
+            cell.attrib.get("data-from") in moved_node_ids
+            or cell.attrib.get("data-to") in moved_node_ids
+        )
+        and not edge_route_is_locally_valid(cell, lanes, nodes)
+    }
+    reroute_ids = explicit_reroute_ids | auto_reroute_ids
     allocator = PortAllocator()
     reserve_existing_ports(root, allocator, exclude=reroute_ids)
-
-    for update in edge_updates:
-        semantic_id = update.get("id")
-        if semantic_id not in existing_edges:
-            raise DiagramError(f"Cannot update missing edge: {semantic_id}")
+    update_by_id = {update["id"]: update for update in edge_updates}
+    for semantic_id in sorted(reroute_ids):
         cell = existing_edges[semantic_id]
-        if "label" in update:
-            cell.attrib["value"] = str(update["label"])
-        if semantic_id in reroute_ids:
-            edge = existing_edge_spec(cell)
-            edge.update({key: value for key, value in update.items() if key != "reroute"})
-            apply_edge_route(cell, edge, lanes, nodes, allocator)
+        edge = existing_edge_spec(cell)
+        edge.update(
+            {
+                key: value
+                for key, value in update_by_id.get(semantic_id, {}).items()
+                if key != "reroute"
+            }
+        )
+        apply_edge_route(cell, edge, lanes, nodes, allocator)
 
     new_edges = changes.get("edges", [])
-    require_unique(new_edges, "new edge")
     for edge in new_edges:
         if edge["id"] in existing_edges:
             raise DiagramError(f"Edge already exists: {edge['id']}")
         create_edge_cell(root, pool, edge, lanes, nodes, allocator)
+
+    phases = phase_records(root, pool)
+    for update in changes.get("update_phases", []):
+        phase_id = update["id"]
+        if phase_id not in phases:
+            raise DiagramError(f"Cannot update missing phase: {phase_id}", code="patch/missing-phase")
+        apply_phase_update(phases[phase_id], update, values, pool_width)
+    for phase in changes.get("phases", []):
+        if phase["id"] in phases:
+            raise DiagramError(f"Phase already exists: {phase['id']}", code="patch/duplicate-phase")
+        create_phase_cell(root, pool, phase, values, pool_width)
+
+    if "main_path" in changes:
+        pool.attrib["data-main-path"] = json.dumps(
+            changes["main_path"], ensure_ascii=True, separators=(",", ":")
+        )
+        pool.attrib["data-schema-version"] = SCHEMA_VERSION
+    elif deleted_node_ids.intersection(read_main_path(pool)):
+        raise DiagramError(
+            "Deleting a main_path node requires supplying the replacement main_path",
+            code="patch/main-path",
+            evidence={"deleted_nodes": sorted(deleted_node_ids.intersection(read_main_path(pool)))},
+            supported_fixes=["supply-main-path"],
+        )
 
     requested_max_rank = max(
         [int(pool.attrib.get("data-max-rank", "1"))]
@@ -896,7 +1620,23 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         pool_geom.attrib["height"] = number(values["title_height"] + new_lane_height)
         pool.attrib["data-max-rank"] = str(requested_max_rank)
 
-    return tree
+    phases = phase_records(root, pool)
+    for cell in phases.values():
+        apply_phase_update(cell, phase_cell_spec(cell), values, pool_width)
+
+    return {
+        "updated_nodes": sorted(update["id"] for update in changes.get("update_nodes", [])),
+        "updated_edges": sorted(update["id"] for update in edge_updates),
+        "auto_rerouted_edges": sorted(auto_reroute_ids - explicit_reroute_ids),
+        "added_nodes": sorted(node["id"] for node in new_nodes),
+        "added_edges": sorted(edge["id"] for edge in new_edges),
+        "deleted_nodes": sorted(deleted_node_ids),
+        "deleted_edges": sorted(deleted_edge_ids),
+        "added_phases": sorted(phase["id"] for phase in changes.get("phases", [])),
+        "updated_phases": sorted(phase["id"] for phase in changes.get("update_phases", [])),
+        "deleted_phases": sorted(deleted_phase_ids),
+        "main_path_updated": "main_path" in changes,
+    }
 
 
 def edge_waypoints(cell: ET.Element) -> list[tuple[float, float]]:
@@ -1004,15 +1744,56 @@ def segments_conflict(
     return False
 
 
+def estimated_text_lines(text: str, width: float, *, diamond: bool = False) -> int:
+    usable_width = max(12.0, width - (28.0 if diamond else 16.0))
+    capacity = max(1, int(usable_width / 7.0))
+    lines = 0
+    for logical_line in (text.splitlines() or [""]):
+        units = sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in logical_line
+        )
+        lines += max(1, (units + capacity - 1) // capacity)
+    return lines
+
+
 def validate_tree(tree: ET.ElementTree) -> dict:
-    errors: list[str] = []
-    warnings: list[str] = []
+    diagnostics: list[dict] = []
+
+    def add(
+        code: str,
+        severity: str,
+        message: str,
+        *,
+        subject: dict | None = None,
+        evidence: dict | None = None,
+        supported_fixes: list[str] | None = None,
+    ) -> None:
+        diagnostics.append(
+            make_diagnostic(
+                code,
+                severity,
+                message,
+                subject=subject,
+                evidence=evidence,
+                supported_fixes=supported_fixes,
+            )
+        )
+
     try:
         pool = find_pool(tree)
         root = graph_root(tree)
         lanes, nodes = lane_node_records(root, pool)
     except DiagramError as exc:
-        return {"valid": False, "errors": [str(exc)], "warnings": []}
+        diagnostic = exc.diagnostic()
+        return {
+            "valid": False,
+            "errors": [str(exc)],
+            "warnings": [],
+            "diagnostics": [diagnostic],
+        }
+
+    schema_version = pool.attrib.get("data-schema-version", "1")
 
     semantic_ids: set[str] = set()
     for cell in root.iter("mxCell"):
@@ -1021,7 +1802,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         if semantic_id and kind:
             composite = f"{kind}:{semantic_id}"
             if composite in semantic_ids:
-                errors.append(f"Duplicate semantic cell: {composite}")
+                add(
+                    "structure/duplicate-semantic-id",
+                    "error",
+                    f"Duplicate semantic cell: {composite}",
+                    subject={"kind": kind, "id": semantic_id},
+                    supported_fixes=["replace-semantic-id"],
+                )
             semantic_ids.add(composite)
 
     cell_ids = {cell.attrib.get("id") for cell in tree.iter("mxCell")}
@@ -1030,16 +1817,53 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     ]
     for cell in edge_cells:
         if cell.attrib.get("source") not in cell_ids or cell.attrib.get("target") not in cell_ids:
-            errors.append(f"Broken edge endpoints: {cell.attrib.get('data-semantic-id')}")
+            edge_id = cell.attrib.get("data-semantic-id")
+            add(
+                "structure/broken-endpoint",
+                "error",
+                f"Broken edge endpoints: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                supported_fixes=["repair-edge-endpoints"],
+            )
 
     for semantic_id, record in nodes.items():
         lane = lanes[record["lane"]]
         node_geom = record["geometry"]
         lane_geom = lane["geometry"]
         if node_geom["x"] < 0 or node_geom["x"] + node_geom["width"] > lane_geom["width"]:
-            warnings.append(f"Node outside lane horizontally: {semantic_id}")
+            add(
+                "layout/node-outside-lane-horizontal",
+                "warning",
+                f"Node outside lane horizontally: {semantic_id}",
+                subject={"kind": "node", "id": semantic_id},
+                supported_fixes=["move-node-inside-lane"],
+            )
         if node_geom["y"] < 0 or node_geom["y"] + node_geom["height"] > lane_geom["height"]:
-            warnings.append(f"Node outside lane vertically: {semantic_id}")
+            add(
+                "layout/node-outside-lane-vertical",
+                "warning",
+                f"Node outside lane vertically: {semantic_id}",
+                subject={"kind": "node", "id": semantic_id},
+                supported_fixes=["move-node-inside-lane", "increase-lane-height"],
+            )
+        if schema_version == SCHEMA_VERSION:
+            label = record["cell"].attrib.get("value", "")
+            node_type = record["cell"].attrib.get("data-node-type", "process")
+            required_lines = estimated_text_lines(
+                label,
+                node_geom["width"],
+                diamond=node_type == "decision",
+            )
+            available_lines = max(1, int(max(0.0, node_geom["height"] - 8.0) / 16.0))
+            if label and required_lines > available_lines:
+                add(
+                    "text/node-overflow-risk",
+                    "warning",
+                    f"Node label may not fit: {semantic_id}",
+                    subject={"kind": "node", "id": semantic_id},
+                    evidence={"estimated_lines": required_lines, "available_lines": available_lines},
+                    supported_fixes=["increase-node-height", "shorten-label"],
+                )
 
     port_usage: dict[tuple[str, str, float], list[str]] = {}
     for cell in edge_cells:
@@ -1054,8 +1878,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 port_usage.setdefault(key, []).append(edge_id)
     for (node_id, side, offset), used_by in sorted(port_usage.items()):
         if len(used_by) > 1:
-            warnings.append(
-                f"Port reused at node {node_id} ({side}@{number(offset)}): {', '.join(sorted(used_by))}"
+            add(
+                "routing/port-reuse",
+                "warning",
+                f"Port reused at node {node_id} ({side}@{number(offset)}): {', '.join(sorted(used_by))}",
+                subject={"kind": "node", "id": node_id},
+                evidence={"side": side, "offset": offset, "edges": sorted(used_by)},
+                supported_fixes=["allocate-distinct-port"],
             )
 
     internal_boundaries = internal_lane_boundaries(lanes)
@@ -1072,25 +1901,51 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         for segment in segments:
             axis = segment_axis(segment)
             if axis == "diagonal":
-                warnings.append(f"Non-orthogonal connector segment: {edge_id}")
+                add(
+                    "routing/non-orthogonal",
+                    "warning",
+                    f"Non-orthogonal connector segment: {edge_id}",
+                    subject={"kind": "edge", "id": edge_id},
+                    supported_fixes=["reroute-edge"],
+                )
                 continue
             if axis == "vertical":
                 x = segment[0][0]
                 if any(abs(x - boundary) < GEOMETRY_TOLERANCE for boundary in internal_boundaries):
-                    warnings.append(f"Connector overlaps a lane boundary: {edge_id}")
+                    add(
+                        "routing/lane-boundary-overlap",
+                        "warning",
+                        f"Connector overlaps a lane boundary: {edge_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        evidence={"x": x},
+                        supported_fixes=["reroute-edge", "change-routing-zone"],
+                    )
                 elif any(
                     abs(x - boundary) < LANE_BOUNDARY_CLEARANCE
                     for boundary in internal_boundaries
                 ):
-                    warnings.append(
+                    nearest = min(abs(x - boundary) for boundary in internal_boundaries)
+                    add(
+                        "routing/lane-boundary-clearance",
+                        "warning",
                         "Connector is too close to a lane boundary "
-                        f"(< {number(LANE_BOUNDARY_CLEARANCE)} px): {edge_id}"
+                        f"(< {number(LANE_BOUNDARY_CLEARANCE)} px): {edge_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        evidence={"distance": nearest, "minimum": LANE_BOUNDARY_CLEARANCE},
+                        supported_fixes=["reroute-edge", "change-routing-zone"],
                     )
             for node_id, bounds in node_bounds.items():
                 if node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}:
                     continue
                 if segment_crosses_bounds(segment, bounds):
-                    warnings.append(f"Connector crosses node: {edge_id} -> {node_id}")
+                    add(
+                        "routing/node-crossing",
+                        "warning",
+                        f"Connector crosses node: {edge_id} -> {node_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        evidence={"node": node_id},
+                        supported_fixes=["reroute-edge"],
+                    )
 
     edge_ids = sorted(edge_segments)
     for index, first_id in enumerate(edge_ids):
@@ -1100,14 +1955,205 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 for first_segment in edge_segments[first_id]
                 for second_segment in edge_segments[second_id]
             ):
-                warnings.append(f"Connector segments cross or overlap: {first_id} / {second_id}")
+                add(
+                    "routing/edge-conflict",
+                    "warning",
+                    f"Connector segments cross or overlap: {first_id} / {second_id}",
+                    subject={"kind": "edge", "id": first_id},
+                    evidence={"other_edge": second_id},
+                    supported_fixes=["reroute-edge"],
+                )
 
-    warnings = sorted(set(warnings))
+    if schema_version == SCHEMA_VERSION:
+        node_ranks = {
+            node_id: int(record["cell"].attrib.get("data-rank", "0"))
+            for node_id, record in nodes.items()
+        }
+        main_path = read_main_path(pool)
+        if len(main_path) < 2:
+            add(
+                "semantic/main-path-missing",
+                "error",
+                "Schema version 2 requires a main path with at least two nodes",
+                subject={"kind": "main_path"},
+                supported_fixes=["supply-main-path"],
+            )
+        elif len(main_path) != len(set(main_path)):
+            add(
+                "semantic/main-path-duplicate",
+                "error",
+                "Main path contains duplicate nodes",
+                subject={"kind": "main_path"},
+                supported_fixes=["correct-main-path"],
+            )
+        if main_path and main_path[0] in nodes and nodes[main_path[0]]["cell"].attrib.get("data-node-type") != "start":
+            add(
+                "semantic/main-path-start",
+                "error",
+                "Main path must begin with a start node",
+                subject={"kind": "main_path"},
+                evidence={"node": main_path[0]},
+                supported_fixes=["correct-main-path", "change-node-type"],
+            )
+        if main_path and main_path[-1] in nodes and nodes[main_path[-1]]["cell"].attrib.get("data-node-type") != "end":
+            add(
+                "semantic/main-path-end",
+                "error",
+                "Main path must end with an end node",
+                subject={"kind": "main_path"},
+                evidence={"node": main_path[-1]},
+                supported_fixes=["correct-main-path", "change-node-type"],
+            )
+        edge_pairs = {
+            (cell.attrib.get("data-from"), cell.attrib.get("data-to")): cell
+            for cell in edge_cells
+        }
+        for source_id, target_id in zip(main_path, main_path[1:]):
+            if source_id not in nodes or target_id not in nodes:
+                add(
+                    "semantic/main-path-node",
+                    "error",
+                    f"Main path references a missing node: {source_id} -> {target_id}",
+                    subject={"kind": "main_path"},
+                    evidence={"from": source_id, "to": target_id},
+                    supported_fixes=["correct-main-path"],
+                )
+                continue
+            edge = edge_pairs.get((source_id, target_id))
+            if edge is None:
+                add(
+                    "semantic/main-path-edge",
+                    "error",
+                    f"Main path has no edge from {source_id} to {target_id}",
+                    subject={"kind": "main_path"},
+                    evidence={"from": source_id, "to": target_id},
+                    supported_fixes=["add-main-path-edge", "correct-main-path"],
+                )
+            elif edge.attrib.get("data-route") == "back" or node_ranks[target_id] < node_ranks[source_id]:
+                add(
+                    "semantic/main-path-rank",
+                    "error",
+                    f"Main path moves backward from {source_id} to {target_id}",
+                    subject={"kind": "main_path"},
+                    evidence={"from": source_id, "to": target_id},
+                    supported_fixes=["correct-rank", "remove-return-from-main-path"],
+                )
+
+        outgoing: dict[str, list[ET.Element]] = {}
+        for cell in edge_cells:
+            outgoing.setdefault(cell.attrib.get("data-from", ""), []).append(cell)
+            if cell.attrib.get("data-edge-type") == "retry":
+                source_id = cell.attrib.get("data-from")
+                target_id = cell.attrib.get("data-to")
+                if source_id in node_ranks and target_id in node_ranks and node_ranks[target_id] >= node_ranks[source_id]:
+                    edge_id = cell.attrib.get("data-semantic-id")
+                    add(
+                        "semantic/retry-direction",
+                        "warning",
+                        f"Retry edge does not return to an earlier rank: {edge_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        supported_fixes=["correct-rank", "change-edge-type"],
+                    )
+
+        for node_id, record in nodes.items():
+            if record["cell"].attrib.get("data-node-type") != "decision":
+                continue
+            decision_edges = outgoing.get(node_id, [])
+            if len(decision_edges) < 2:
+                add(
+                    "semantic/decision-branches",
+                    "warning",
+                    f"Decision node has fewer than two outgoing branches: {node_id}",
+                    subject={"kind": "node", "id": node_id},
+                    supported_fixes=["add-decision-branch"],
+                )
+                continue
+            branches = [edge.attrib.get("data-branch") for edge in decision_edges]
+            if any(branch not in BRANCH_CLASSES for branch in branches) or len(set(branches)) != len(branches):
+                add(
+                    "semantic/decision-outcome",
+                    "warning",
+                    f"Decision branches must use distinct positive/negative outcomes: {node_id}",
+                    subject={"kind": "node", "id": node_id},
+                    evidence={"branches": branches},
+                    supported_fixes=["label-decision-branches"],
+                )
+
+        starts = [
+            node_id
+            for node_id, record in nodes.items()
+            if record["cell"].attrib.get("data-node-type") == "start"
+        ]
+        if not starts:
+            add(
+                "semantic/start-missing",
+                "warning",
+                "No start node is defined",
+                supported_fixes=["add-start-node"],
+            )
+        else:
+            reachable = set(starts)
+            frontier = list(starts)
+            adjacency: dict[str, list[str]] = {}
+            for cell in edge_cells:
+                adjacency.setdefault(cell.attrib.get("data-from", ""), []).append(cell.attrib.get("data-to", ""))
+            while frontier:
+                current = frontier.pop()
+                for target in adjacency.get(current, []):
+                    if target in nodes and target not in reachable:
+                        reachable.add(target)
+                        frontier.append(target)
+            for node_id, record in nodes.items():
+                if node_id not in reachable and record["cell"].attrib.get("data-node-type") != "note":
+                    add(
+                        "semantic/unreachable-node",
+                        "warning",
+                        f"Node is unreachable from a start node: {node_id}",
+                        subject={"kind": "node", "id": node_id},
+                        supported_fixes=["connect-node", "remove-node"],
+                    )
+
+        max_rank = max(node_ranks.values(), default=1)
+        for phase_id, cell in phase_records(root, pool).items():
+            try:
+                from_rank = int(cell.attrib.get("data-from-rank", "0"))
+                to_rank = int(cell.attrib.get("data-to-rank", "0"))
+            except ValueError:
+                from_rank = to_rank = 0
+            if from_rank < 1 or to_rank < from_rank or to_rank > max_rank:
+                add(
+                    "semantic/phase-range",
+                    "warning",
+                    f"Phase has an invalid rank range: {phase_id}",
+                    subject={"kind": "phase", "id": phase_id},
+                    evidence={"from_rank": from_rank, "to_rank": to_rank, "max_rank": max_rank},
+                    supported_fixes=["correct-phase-range"],
+                )
+
+    unique_diagnostics: list[dict] = []
+    seen_diagnostics: set[str] = set()
+    for diagnostic in diagnostics:
+        key = json.dumps(diagnostic, ensure_ascii=False, sort_keys=True)
+        if key not in seen_diagnostics:
+            seen_diagnostics.add(key)
+            unique_diagnostics.append(diagnostic)
+    diagnostics = sorted(
+        unique_diagnostics,
+        key=lambda item: (
+            0 if item["severity"] == "error" else 1,
+            item["code"],
+            item["message"],
+        ),
+    )
+    errors = [item["message"] for item in diagnostics if item["severity"] == "error"]
+    warnings = [item["message"] for item in diagnostics if item["severity"] == "warning"]
 
     return {
         "valid": not errors,
         "errors": errors,
         "warnings": warnings,
+        "diagnostics": diagnostics,
+        "schema_version": schema_version,
         "lanes": len(lanes),
         "nodes": len(nodes),
         "edges": len(edge_cells),
@@ -1144,6 +2190,20 @@ def allowed_changes_from_patch(changes: dict | None, before: ET.ElementTree, aft
     allowed.update(
         f"edge:{item['id']}" for item in changes.get("update_edges", []) if item.get("id")
     )
+    allowed.update(
+        f"phase:{item['id']}" for item in changes.get("update_phases", []) if item.get("id")
+    )
+    geometry_nodes = {
+        item["id"]
+        for item in changes.get("update_nodes", [])
+        if item.get("id") and any(field in item for field in ("x", "y", "width", "height"))
+    }
+    if geometry_nodes:
+        for edge_id, cell in edge_records(graph_root(before)).items():
+            if cell.attrib.get("data-from") in geometry_nodes or cell.attrib.get("data-to") in geometry_nodes:
+                allowed.add(f"edge:{edge_id}")
+    if "main_path" in changes:
+        allowed.add("pool:main")
     if changes.get("nodes"):
         before_pool = find_pool(before)
         after_pool = find_pool(after)
@@ -1152,6 +2212,15 @@ def allowed_changes_from_patch(changes: dict | None, before: ET.ElementTree, aft
             after_root = graph_root(after)
             after_lanes, _ = lane_node_records(after_root, after_pool)
             allowed.update(f"lane:{lane_id}" for lane_id in after_lanes)
+    return allowed
+
+
+def allowed_missing_from_patch(changes: dict | None) -> set[str]:
+    if not changes:
+        return set()
+    allowed = {f"node:{semantic_id}" for semantic_id in changes.get("delete_nodes", [])}
+    allowed.update(f"edge:{semantic_id}" for semantic_id in changes.get("delete_edges", []))
+    allowed.update(f"phase:{semantic_id}" for semantic_id in changes.get("delete_phases", []))
     return allowed
 
 
@@ -1174,9 +2243,11 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
             changed_attributes.append(key)
 
     allowed = allowed_changes_from_patch(changes, before, after)
+    allowed_missing = allowed_missing_from_patch(changes)
+    unexpected_missing = sorted(set(missing) - allowed_missing)
     unexpected_geometry = sorted(set(changed_geometry) - allowed)
     unexpected_attributes = sorted(set(changed_attributes) - allowed)
-    preserved = not missing and not unexpected_geometry and not unexpected_attributes
+    preserved = not unexpected_missing and not unexpected_geometry and not unexpected_attributes
     return {
         "preserved": preserved,
         "existing_cells_checked": len(set(before_cells) & set(after_cells)),
@@ -1185,15 +2256,115 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         "changed_geometry": changed_geometry,
         "changed_attributes": changed_attributes,
         "allowed_changes": sorted(allowed),
+        "allowed_missing": sorted(allowed_missing),
+        "unexpected_missing": unexpected_missing,
         "unexpected_geometry": unexpected_geometry,
         "unexpected_attributes": unexpected_attributes,
     }
 
 
+def inspect_tree(tree: ET.ElementTree) -> dict:
+    pool = find_pool(tree)
+    root = graph_root(tree)
+    lanes, nodes = lane_node_records(root, pool)
+    phases = phase_records(root, pool)
+    lane_items = sorted(lanes.items(), key=lambda item: item[1]["geometry"]["x"])
+    lane_index = {lane_id: index for index, (lane_id, _) in enumerate(lane_items)}
+
+    lane_specs = [
+        {
+            "id": lane_id,
+            "label": record["cell"].attrib.get("value", ""),
+            "x": record["geometry"]["x"],
+            "width": record["geometry"]["width"],
+        }
+        for lane_id, record in lane_items
+    ]
+    node_specs = []
+    for node_id, record in sorted(
+        nodes.items(),
+        key=lambda item: (
+            int(item[1]["cell"].attrib.get("data-rank", "0")),
+            lane_index.get(item[1]["lane"], 999),
+            item[0],
+        ),
+    ):
+        node_specs.append(
+            {
+                "id": node_id,
+                "lane": record["lane"],
+                "rank": int(record["cell"].attrib.get("data-rank", "0")),
+                "type": record["cell"].attrib.get("data-node-type", "process"),
+                "label": record["cell"].attrib.get("value", ""),
+                **record["geometry"],
+            }
+        )
+
+    edge_specs = []
+    for edge_id, cell in sorted(edge_records(root).items()):
+        edge = existing_edge_spec(cell)
+        points = edge_waypoints(cell)
+        if points:
+            edge["waypoints"] = [{"x": x, "y": y} for x, y in points]
+        edge_specs.append(edge)
+
+    phase_specs = [phase_cell_spec(cell) for _, cell in sorted(phases.items())]
+    validation = validate_tree(tree)
+    return {
+        "compatible": True,
+        "schema_version": pool.attrib.get("data-schema-version", "1"),
+        "title": pool.attrib.get("value", ""),
+        "main_path": read_main_path(pool),
+        "lanes": lane_specs,
+        "phases": phase_specs,
+        "nodes": node_specs,
+        "edges": edge_specs,
+        "validation": validation,
+    }
+
+
+def ensure_output_available(output: Path, force: bool) -> None:
+    if output.exists() and not force:
+        raise DiagramError(
+            f"Output already exists: {output}; use --force to replace it",
+            code="delivery/output-exists",
+            evidence={"output": str(output)},
+            supported_fixes=["choose-new-output", "use-force"],
+        )
+
+
 def write_tree(tree: ET.ElementTree, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     ET.indent(tree, space="  ")
-    tree.write(output, encoding="utf-8", xml_declaration=False, short_empty_elements=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".candidate", dir=output.parent
+    )
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        tree.write(
+            temporary_path,
+            encoding="utf-8",
+            xml_declaration=False,
+            short_empty_elements=True,
+        )
+        with temporary_path.open("ab") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, output)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def file_receipt(path: Path) -> dict:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"path": str(path), "bytes": size, "sha256": digest.hexdigest()}
 
 
 def ensure_different(input_path: Path, output_path: Path) -> None:
@@ -1202,18 +2373,42 @@ def ensure_different(input_path: Path, output_path: Path) -> None:
 
 
 def command_build(args: argparse.Namespace) -> None:
+    ensure_output_available(args.output, args.force)
     spec = load_json(args.spec)
     tree = build_tree(spec)
+    result = validate_tree(tree)
+    if not result["valid"]:
+        raise DiagramError(
+            "Generated diagram failed validation",
+            code="delivery/validation-failed",
+            evidence={"diagnostics": result["diagnostics"]},
+        )
     write_tree(tree, args.output)
-    print(json.dumps(validate_tree(tree), ensure_ascii=False, indent=2))
+    result.update({"operation": "build", "output": file_receipt(args.output)})
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def command_patch(args: argparse.Namespace) -> None:
     ensure_different(args.input, args.output)
+    ensure_output_available(args.output, args.force)
     tree = ET.parse(args.input)
-    patch_tree(tree, load_json(args.changes), args.allow_geometry_updates)
+    patch_receipt = patch_tree(tree, load_json(args.changes), args.allow_geometry_updates)
+    result = validate_tree(tree)
+    if not result["valid"]:
+        raise DiagramError(
+            "Patched diagram failed validation",
+            code="delivery/validation-failed",
+            evidence={"diagnostics": result["diagnostics"]},
+        )
     write_tree(tree, args.output)
-    print(json.dumps(validate_tree(tree), ensure_ascii=False, indent=2))
+    result.update(
+        {
+            "operation": "patch",
+            "patch_receipt": patch_receipt,
+            "output": file_receipt(args.output),
+        }
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def command_validate(args: argparse.Namespace) -> None:
@@ -1231,6 +2426,10 @@ def command_compare(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def command_inspect(args: argparse.Namespace) -> None:
+    print(json.dumps(inspect_tree(ET.parse(args.input)), ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1238,6 +2437,7 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build", help="Build a new editable Draw.io file")
     build.add_argument("--spec", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
+    build.add_argument("--force", action="store_true", help="Replace an existing output file")
     build.set_defaults(func=command_build)
 
     patch = subparsers.add_parser("patch", help="Incrementally patch an existing generated Draw.io file")
@@ -1245,6 +2445,7 @@ def build_parser() -> argparse.ArgumentParser:
     patch.add_argument("--changes", type=Path, required=True)
     patch.add_argument("--output", type=Path, required=True)
     patch.add_argument("--allow-geometry-updates", action="store_true")
+    patch.add_argument("--force", action="store_true", help="Replace an existing output file")
     patch.set_defaults(func=command_patch)
 
     validate = subparsers.add_parser("validate", help="Validate structure and visual routing heuristics")
@@ -1257,6 +2458,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--after", type=Path, required=True)
     compare.add_argument("--changes", type=Path, help="Allow cells named in a patch file to change")
     compare.set_defaults(func=command_compare)
+
+    inspect = subparsers.add_parser("inspect", help="Inspect compatible semantic metadata and geometry")
+    inspect.add_argument("--input", type=Path, required=True)
+    inspect.set_defaults(func=command_inspect)
     return parser
 
 
@@ -1265,8 +2470,44 @@ def main() -> int:
         args = build_parser().parse_args()
         args.func(args)
         return 0
-    except (DiagramError, json.JSONDecodeError, ET.ParseError, OSError, KeyError) as exc:
+    except DiagramError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "valid": False,
+                    "errors": [str(exc)],
+                    "warnings": [],
+                    "diagnostics": [exc.diagnostic()],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
+    except (json.JSONDecodeError, ET.ParseError, OSError, KeyError, TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if isinstance(exc, json.JSONDecodeError):
+            code = "input/json-invalid"
+        elif isinstance(exc, ET.ParseError):
+            code = "input/drawio-xml-invalid"
+        elif isinstance(exc, OSError):
+            code = "delivery/io-error"
+        else:
+            code = "input/invalid"
+        diagnostic = make_diagnostic(code, "error", str(exc))
+        print(
+            json.dumps(
+                {
+                    "valid": False,
+                    "errors": [str(exc)],
+                    "warnings": [],
+                    "diagnostics": [diagnostic],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 2
 
 

@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
+### Added
+
+- Add a strict, versioned v2 JSON Schema with explicit `main_path` and optional horizontal phases.
+- Add structured diagnostics with stable codes, subjects, evidence, and supported fixes.
+- Add `inspect` output for compatible semantic metadata, geometry, ports, waypoints, and validation.
+- Add explicit node, edge, and phase deletion with incident-edge and main-path safety checks.
+- Add atomic build and patch output receipts with byte counts and SHA-256 digests.
+
+### Changed
+
+- Reject unknown specification and patch fields while retaining legacy v0.1.x input compatibility.
+- Automatically reroute only invalid incident edges after an authorized node geometry update.
+- Preserve valid manual waypoints and unrelated semantic-cell geometry during incremental updates.
+- Refuse to replace an existing output unless `--force` is supplied.
+- Extend strict validation to main-path continuity, reachability, decision outcomes, retry direction, phase ranges, and multilingual text-fit risk.
+
+### Tests
+
+- Expand neutral regression coverage for Schema v2, structured errors, inspection, safe deletion, atomic output protection, text-fit diagnostics, and geometry-aware edge repair.
+
 ## [0.1.1] - 2026-08-11
 
 ### Changed
@@ -38,6 +60,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/zz-zed/product-swimlane-drawio/releases/tag/v0.1.0
