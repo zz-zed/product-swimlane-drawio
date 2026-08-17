@@ -409,6 +409,39 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertTrue(report["validation"]["valid"])
             self.assertEqual(report["validation"]["diagnostics"], [])
 
+    def test_inspect_reports_manually_redrawn_connector_without_semantic_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "linear.json"
+            diagram = directory / "linear.drawio"
+            write_linear_v2_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(diagram))
+
+            tree = ET.parse(diagram)
+            edge = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "edge-a"
+            )
+            edge.attrib["id"] = "drawio-redrawn-connector"
+            for attribute in (
+                "data-kind",
+                "data-semantic-id",
+                "data-from",
+                "data-to",
+                "data-edge-type",
+                "data-route",
+            ):
+                edge.attrib.pop(attribute, None)
+            tree.write(diagram, encoding="utf-8", xml_declaration=True)
+
+            report = json.loads(run_tool("inspect", "--input", str(diagram)).stdout)
+            self.assertEqual(len(report["unmanaged_edges"]), 1)
+            recovered = report["unmanaged_edges"][0]
+            self.assertEqual((recovered["from"], recovered["to"]), ("start", "step"))
+            codes = {item["code"] for item in report["validation"]["diagnostics"]}
+            self.assertIn("interoperability/unmanaged-edges", codes)
+
     def test_geometry_update_repairs_only_invalid_incident_edges(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
@@ -613,6 +646,176 @@ class DiagramWorkflowTests(unittest.TestCase):
                 str(patch),
             )
             self.assertTrue(json.loads(compare.stdout)["preserved"])
+
+    def test_phase_backgrounds_precede_editable_layers_and_lanes_are_transparent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            diagram = self.build_diagram(Path(temp))
+            root = ET.parse(diagram).find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(root)
+            layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
+            layers = [
+                layer_order[cell.attrib["data-kind"]]
+                for cell in list(root)
+                if cell.attrib.get("data-kind") in layer_order
+            ]
+            self.assertEqual(layers, sorted(layers))
+            lanes = [
+                cell for cell in list(root) if cell.attrib.get("data-kind") == "lane"
+            ]
+            self.assertTrue(lanes)
+            self.assertTrue(
+                all("swimlaneFillColor=none;" in lane.attrib.get("style", "") for lane in lanes)
+            )
+            phases = [
+                cell for cell in list(root) if cell.attrib.get("data-kind") == "phase"
+            ]
+            self.assertTrue(phases)
+            self.assertTrue(
+                all(
+                    phase.attrib.get("connectable") == "0"
+                    and "pointerEvents=0;" in phase.attrib.get("style", "")
+                    for phase in phases
+                )
+            )
+
+    def test_without_phases_lane_bodies_remain_opaque(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+            spec.pop("phases", None)
+            spec_path = directory / "no-phases.json"
+            output = directory / "no-phases.drawio"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            run_tool("build", "--spec", str(spec_path), "--output", str(output))
+            lanes = [
+                cell
+                for cell in ET.parse(output).iter("mxCell")
+                if cell.attrib.get("data-kind") == "lane"
+            ]
+            self.assertTrue(lanes)
+            self.assertTrue(
+                all(
+                    "swimlaneFillColor=#ffffff;" in lane.attrib.get("style", "")
+                    for lane in lanes
+                )
+            )
+
+    def test_strict_validate_rejects_phase_above_editable_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            diagram = self.build_diagram(directory)
+            tree = ET.parse(diagram)
+            root = tree.find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(root)
+            phase = next(
+                cell for cell in list(root) if cell.attrib.get("data-kind") == "phase"
+            )
+            root.remove(phase)
+            root.append(phase)
+            broken = directory / "phase-above-content.drawio"
+            tree.write(broken, encoding="utf-8", xml_declaration=True)
+
+            result = run_tool(
+                "validate", "--input", str(broken), "--strict", check=False
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertIn(
+                "layout/phase-z-order",
+                {item["code"] for item in report["diagnostics"]},
+            )
+
+    def test_patch_adds_phase_with_safe_layering(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+            spec.pop("phases", None)
+            spec_path = directory / "before.json"
+            before = directory / "before.drawio"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            changes = directory / "add-phase.json"
+            changes.write_text(
+                json.dumps(
+                    {
+                        "phases": [
+                            {
+                                "id": "phase-new",
+                                "label": "New phase",
+                                "from_rank": 2,
+                                "to_rank": 4,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            after = directory / "after.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+            validate = run_tool("validate", "--input", str(after), "--strict")
+            self.assertEqual(json.loads(validate.stdout)["warnings"], [])
+            root = ET.parse(after).find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(root)
+            kinds = [
+                cell.attrib.get("data-kind")
+                for cell in list(root)
+                if cell.attrib.get("data-kind") in {"phase", "lane", "node", "edge"}
+            ]
+            self.assertLess(kinds.index("phase"), kinds.index("lane"))
+            lanes = [cell for cell in list(root) if cell.attrib.get("data-kind") == "lane"]
+            self.assertTrue(
+                all("swimlaneFillColor=none;" in lane.attrib.get("style", "") for lane in lanes)
+            )
+
+    def test_patch_without_phases_preserves_custom_lane_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+            spec.pop("phases", None)
+            spec_path = directory / "custom-lane.json"
+            before = directory / "custom-lane.drawio"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            tree = ET.parse(before)
+            lane = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "lane"
+            )
+            lane.attrib["style"] = lane.attrib["style"].replace(
+                "swimlaneFillColor=#ffffff",
+                "swimlaneFillColor=#ffeeee",
+            )
+            tree.write(before, encoding="utf-8", xml_declaration=True)
+            changes = directory / "label-only.json"
+            changes.write_text(
+                json.dumps({"update_nodes": [{"id": "step-a", "label": "Updated"}]}),
+                encoding="utf-8",
+            )
+            after = directory / "custom-lane-updated.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+            patched_lane = next(
+                cell
+                for cell in ET.parse(after).iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == lane.attrib["data-semantic-id"]
+            )
+            self.assertIn("swimlaneFillColor=#ffeeee;", patched_lane.attrib["style"])
 
     def test_existing_output_is_not_replaced_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -836,6 +1039,33 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertEqual(forward["waypoints"], [{"x": 570.0, "y": 396.0}])
             self.assertGreaterEqual(abs(forward["waypoints"][0]["x"] - 500.0), 16)
 
+    def test_cross_lane_adjacent_rank_flow_prefers_center_ports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "center-ports.json"
+            output = directory / "center-ports.drawio"
+            write_adjacent_decision_spec(spec)
+
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            edges = {edge["id"]: edge for edge in report["edges"]}
+
+            # These adjacent-rank main-path edges cross lanes vertically.  A
+            # clear centered carrier is preferable to 0.1/0.9 endpoint
+            # staggering that only reduces the horizontal span locally.
+            for edge_id in ("edge-b", "edge-c"):
+                self.assertEqual(edges[edge_id]["exit_side"], "bottom")
+                self.assertEqual(edges[edge_id]["entry_side"], "top")
+                self.assertEqual(edges[edge_id]["exit_offset"], 0.5)
+                self.assertEqual(edges[edge_id]["entry_offset"], 0.5)
+
+            pool = next(
+                cell
+                for cell in ET.parse(output).iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            self.assertEqual(float(pool.attrib["data-row-gap"]), 96.0)
+
     def test_back_route_prefers_target_lane_internal_gutter(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
@@ -955,6 +1185,271 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertTrue(
                 any("too close to a lane boundary" in warning for warning in report["warnings"])
             )
+
+    def test_same_lane_main_path_stays_vertical_and_retry_uses_side_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "paired-return.json"
+            output = directory / "paired-return.drawio"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2",
+                        "title": "Paired Return",
+                        "lanes": [
+                            {"id": "lane-a", "label": "Lane A", "width": 180},
+                            {"id": "lane-b", "label": "Lane B", "width": 180},
+                        ],
+                        "nodes": [
+                            {"id": "start", "lane": "lane-a", "rank": 1, "type": "start", "label": ""},
+                            {"id": "check", "lane": "lane-a", "rank": 2, "type": "decision", "label": "Check"},
+                            {"id": "work", "lane": "lane-a", "rank": 3, "type": "process", "label": "Work"},
+                            {"id": "alternate", "lane": "lane-b", "rank": 3, "type": "process", "label": "Alternate"},
+                            {"id": "end", "lane": "lane-a", "rank": 4, "type": "end", "label": ""},
+                        ],
+                        "edges": [
+                            {"id": "edge-start", "from": "start", "to": "check"},
+                            {"id": "edge-main", "from": "check", "to": "work", "branch": "positive", "label": "Continue"},
+                            {"id": "edge-alt", "from": "check", "to": "alternate", "branch": "negative", "label": "Alternate"},
+                            {"id": "edge-return", "from": "work", "to": "check", "type": "retry", "label": "Recheck"},
+                            {"id": "edge-end", "from": "work", "to": "end"},
+                        ],
+                        "main_path": ["start", "check", "work", "end"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            build = json.loads(
+                run_tool("build", "--spec", str(spec), "--output", str(output)).stdout
+            )
+            self.assertEqual(build["warnings"], [])
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            edges = {edge["id"]: edge for edge in report["edges"]}
+            self.assertEqual(edges["edge-main"]["exit_side"], "bottom")
+            self.assertEqual(edges["edge-main"]["entry_side"], "top")
+            self.assertNotIn("waypoints", edges["edge-main"])
+            self.assertTrue(edges["edge-return"].get("waypoints"))
+            self.assertEqual(report["validation"]["short_segments"], 0)
+            self.assertEqual(report["validation"]["reciprocal_ambiguities"], 0)
+
+    def test_same_rank_long_label_and_phase_crossing_are_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "same-rank.json"
+            output = directory / "same-rank.drawio"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2",
+                        "title": "Same Rank",
+                        "lanes": [
+                            {"id": "lane-a", "label": "Lane A", "width": 260},
+                            {"id": "lane-b", "label": "Lane B", "width": 260},
+                            {"id": "lane-c", "label": "Lane C", "width": 260},
+                        ],
+                        "nodes": [
+                            {"id": "start", "lane": "lane-a", "rank": 1, "type": "start", "label": ""},
+                            {"id": "send", "lane": "lane-a", "rank": 2, "type": "process", "label": "Send"},
+                            {"id": "receive", "lane": "lane-c", "rank": 2, "type": "process", "label": "Receive"},
+                            {"id": "end", "lane": "lane-c", "rank": 3, "type": "end", "label": ""},
+                        ],
+                        "edges": [
+                            {"id": "edge-start", "from": "start", "to": "send"},
+                            {
+                                "id": "edge-side",
+                                "from": "send",
+                                "to": "receive",
+                                "label": "条件满足后进入下一处理环节",
+                            },
+                            {"id": "edge-end", "from": "receive", "to": "end"},
+                        ],
+                        "main_path": ["start", "send", "receive", "end"],
+                        "phases": [
+                            {"id": "phase-a", "label": "Phase A", "from_rank": 1, "to_rank": 2},
+                            {"id": "phase-b", "label": "Phase B", "from_rank": 3, "to_rank": 3},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = json.loads(
+                run_tool("build", "--spec", str(spec), "--output", str(output)).stdout
+            )
+            self.assertEqual(report["warnings"], [])
+            self.assertEqual(report["label_conflicts"], 0)
+            inspected = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            side = next(edge for edge in inspected["edges"] if edge["id"] == "edge-side")
+            self.assertEqual(side["route"], "side")
+            self.assertEqual(side["exit_side"], "right")
+            self.assertEqual(side["entry_side"], "left")
+
+    def test_explicit_waypoint_quality_issues_are_diagnosed_not_rewritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "manual-quality.json"
+            output = directory / "manual-quality.drawio"
+            write_adjacent_decision_spec(spec)
+            value = json.loads(spec.read_text(encoding="utf-8"))
+            explicit = [
+                {"x": 520, "y": 396},
+                {"x": 510, "y": 396},
+                {"x": 510, "y": 430},
+                {"x": 570, "y": 430},
+            ]
+            next(edge for edge in value["edges"] if edge["id"] == "edge-forward")[
+                "waypoints"
+            ] = explicit
+            spec.write_text(json.dumps(value), encoding="utf-8")
+
+            build = json.loads(
+                run_tool("build", "--spec", str(spec), "--output", str(output)).stdout
+            )
+            codes = {item["code"] for item in build["diagnostics"]}
+            self.assertIn("routing/short-segment", codes)
+            self.assertIn("routing/hairpin", codes)
+            strict = run_tool(
+                "validate", "--input", str(output), "--strict", check=False
+            )
+            self.assertNotEqual(strict.returncode, 0)
+            inspected = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            edge = next(item for item in inspected["edges"] if item["id"] == "edge-forward")
+            self.assertEqual(edge["waypoints"], [{"x": float(p["x"]), "y": float(p["y"])} for p in explicit])
+
+    def test_near_parallel_reciprocal_and_label_diagnostics_fail_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "diagnostics.json"
+            output = directory / "diagnostics.drawio"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "title": "Diagnostics",
+                        "canvas": {"row_gap": 60},
+                        "lanes": [{"id": "lane-a", "label": "Lane A", "width": 220}],
+                        "nodes": [
+                            {"id": "first", "lane": "lane-a", "rank": 1, "type": "process", "label": "First"},
+                            {"id": "second", "lane": "lane-a", "rank": 2, "type": "process", "label": "Second"},
+                        ],
+                        "edges": [
+                            {"id": "forward", "from": "first", "to": "second", "label": "A label that has no clear carrier span"},
+                            {
+                                "id": "return",
+                                "from": "second",
+                                "to": "first",
+                                "type": "retry",
+                                "exit_side": "top",
+                                "entry_side": "bottom",
+                                "exit_offset": 0.6,
+                                "entry_offset": 0.6,
+                                "waypoints": [],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            build = json.loads(
+                run_tool("build", "--spec", str(spec), "--output", str(output)).stdout
+            )
+            codes = {item["code"] for item in build["diagnostics"]}
+            self.assertIn("routing/near-parallel-conflict", codes)
+            self.assertIn("routing/reciprocal-ambiguity", codes)
+            self.assertIn("text/edge-label-no-clear-span", codes)
+            strict = run_tool(
+                "validate", "--input", str(output), "--strict", check=False
+            )
+            self.assertNotEqual(strict.returncode, 0)
+
+    def test_legacy_v2_without_new_route_metadata_remains_patchable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "legacy-v2.json"
+            before = directory / "legacy-v2.drawio"
+            after = directory / "legacy-v2-patched.drawio"
+            changes = directory / "changes.json"
+            write_linear_v2_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(before))
+            tree = ET.parse(before)
+            for cell in tree.iter("mxCell"):
+                if cell.attrib.get("data-kind") != "edge":
+                    continue
+                for key in list(cell.attrib):
+                    if key.endswith("-explicit"):
+                        cell.attrib.pop(key)
+            tree.write(before, encoding="utf-8", xml_declaration=False)
+            changes.write_text(
+                json.dumps(
+                    {
+                        "update_edges": [
+                            {"id": "edge-a", "label": "Updated", "reroute": True}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+            inspected = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            self.assertTrue(inspected["compatible"])
+            self.assertEqual(inspected["schema_version"], "2")
+            self.assertEqual(inspected["validation"]["warnings"], [])
+
+    def test_zigzag_excessive_bends_and_label_overlaps_are_diagnosed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "zigzag.json"
+            output = directory / "zigzag.drawio"
+            write_linear_v2_spec(spec)
+            run_tool("build", "--spec", str(spec), "--output", str(output))
+            tree = ET.parse(output)
+            edges = {
+                cell.attrib.get("data-semantic-id"): cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "edge"
+            }
+            zigzag = edges["edge-a"]
+            zigzag.attrib["data-waypoints-origin"] = "explicit"
+            geometry = zigzag.find("mxGeometry")
+            self.assertIsNotNone(geometry)
+            assert geometry is not None
+            for child in list(geometry):
+                geometry.remove(child)
+            points = ET.SubElement(geometry, "Array", {"as": "points"})
+            for x, y in ((110, 142), (140, 142), (140, 167), (110, 167)):
+                ET.SubElement(points, "mxPoint", {"x": str(x), "y": str(y)})
+
+            for edge in (edges["edge-a"], edges["edge-b"]):
+                edge.attrib.update(
+                    {
+                        "value": "Overlap",
+                        "data-label-left": "44",
+                        "data-label-top": "183",
+                        "data-label-width": "60",
+                        "data-label-height": "18",
+                        "data-label-segment": "1",
+                    }
+                )
+            tree.write(output, encoding="utf-8", xml_declaration=False)
+
+            validate = run_tool(
+                "validate", "--input", str(output), "--strict", check=False
+            )
+            self.assertNotEqual(validate.returncode, 0)
+            codes = {
+                item["code"]
+                for item in json.loads(validate.stdout)["diagnostics"]
+            }
+            self.assertIn("routing/excessive-bends", codes)
+            self.assertIn("layout/main-path-zigzag", codes)
+            self.assertIn("text/edge-label-node-overlap", codes)
+            self.assertIn("text/edge-label-edge-overlap", codes)
 
 
 if __name__ == "__main__":

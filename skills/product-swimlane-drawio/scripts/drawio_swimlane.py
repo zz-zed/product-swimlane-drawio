@@ -48,6 +48,16 @@ PROCESS_TEXT_LINE_HEIGHT = 14.0
 PROCESS_VERTICAL_PADDING = 10.0
 MAX_AUTOMATIC_PROCESS_HEIGHT = 66.0
 EXCESSIVE_HEIGHT_TOLERANCE = 8.0
+MIN_INTERNAL_SEGMENT = 16.0
+NEAR_PARALLEL_CLEARANCE = 16.0
+EDGE_LABEL_FONT_SIZE = 11.0
+EDGE_LABEL_HEIGHT = 18.0
+EDGE_LABEL_PADDING = 8.0
+EDGE_LABEL_VERTICAL_PADDING = 2.0
+EDGE_LABEL_GAP = 5.0
+ROUTE_BEND_PENALTY = 32.0
+ROUTE_CONFLICT_PENALTY = 4000.0
+ROUTE_LABEL_CONFLICT_PENALTY = 2500.0
 
 PORT_OFFSETS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.275, 0.725)
 PORT_SIDES = {"top", "bottom", "left", "right"}
@@ -222,7 +232,7 @@ def number(value) -> str:
     value = float(value)
     if value.is_integer():
         return str(int(value))
-    return f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
 def geometry(parent: ET.Element, **attrs) -> ET.Element:
@@ -635,8 +645,13 @@ def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
     requested = edge.get("route", "auto")
     if requested != "auto":
         return requested
-    source_rank = int(nodes[edge["from"]]["rank"])
-    target_rank = int(nodes[edge["to"]]["rank"])
+    def rank(node: dict) -> int:
+        if "rank" in node:
+            return int(node["rank"])
+        return int(node["cell"].attrib.get("data-rank", "0"))
+
+    source_rank = rank(nodes[edge["from"]])
+    target_rank = rank(nodes[edge["to"]])
     if edge.get("type") == "retry" or target_rank < source_rank:
         return "back"
     if target_rank > source_rank:
@@ -653,11 +668,17 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
     nodes = {node["id"]: node for node in spec["nodes"]}
     required_gutter = LANE_BOUNDARY_CLEARANCE + 2 * GEOMETRY_TOLERANCE
 
+    for node in spec["nodes"]:
+        if "x" in node:
+            continue
+        node_width, _ = node_size(node)
+        widths[node["lane"]] = max(
+            widths[node["lane"]],
+            math.ceil(node_width + 8.0),
+        )
+
     for edge in spec["edges"]:
         if inferred_spec_route_class(edge, nodes) != "back":
-            continue
-        entry_side = edge.get("entry_side", "left")
-        if entry_side not in {"left", "right"}:
             continue
         target = nodes[edge["to"]]
         if "x" in target:
@@ -725,14 +746,62 @@ def node_size(node: dict) -> tuple[float, float]:
             diameter = max(diameter, LABELED_FIXED_NODE_MIN_SIZE)
         return diameter, diameter
 
-    width = float(explicit_width if explicit_width is not None else default_width)
+    if kind == "decision" and explicit_width is None:
+        label_units = sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in str(node.get("label", ""))
+            if character != "\n"
+        )
+        width = min(168.0, max(float(default_width), 8.0 + label_units * 4.0))
+    else:
+        width = float(explicit_width if explicit_width is not None else default_width)
     if explicit_height is not None:
         height = float(explicit_height)
     elif kind == "process":
         height = recommended_process_height(str(node.get("label", "")), width)
+    elif kind == "decision":
+        lines = estimated_text_lines(str(node.get("label", "")), width, diamond=True)
+        height = max(float(default_height), 16.0 + 16.0 * lines)
     else:
         height = float(default_height)
     return width, height
+
+
+def adaptive_canvas_values(spec: dict) -> dict:
+    """Increase automatic rank spacing when nodes and edge labels need more room."""
+    values = canvas_values(spec)
+    if "row_gap" in spec.get("canvas", {}):
+        return values
+
+    rank_heights: dict[int, float] = {}
+    for node in spec["nodes"]:
+        _, height = node_size(node)
+        rank = int(node["rank"])
+        rank_heights[rank] = max(rank_heights.get(rank, 0.0), height)
+
+    required = float(values["row_gap"])
+    labeled_pairs = {
+        (int(next(node for node in spec["nodes"] if node["id"] == edge["from"])["rank"]),
+         int(next(node for node in spec["nodes"] if node["id"] == edge["to"])["rank"]))
+        for edge in spec["edges"]
+        if str(edge.get("label", "")).strip()
+    }
+    for rank in sorted(rank_heights):
+        next_rank = rank + 1
+        if next_rank not in rank_heights:
+            continue
+        # A label on an adjacent-rank connector is normally placed beside a
+        # vertical segment or above a horizontal carrier.  Reserving a full
+        # extra 12 px around the label made every decision-heavy diagram grow
+        # by one 8 px grid unit per rank, even when the default 96 px gap was
+        # already sufficient.  Keep a small safety allowance and let the
+        # label-aware router increase spacing only when it cannot find a clear
+        # carrier.
+        label_space = EDGE_LABEL_HEIGHT + 4.0 if (rank, next_rank) in labeled_pairs else 16.0
+        needed = rank_heights[rank] / 2 + rank_heights[next_rank] / 2 + label_space
+        required = max(required, needed)
+    values["row_gap"] = math.ceil(required / 8.0) * 8.0
+    return values
 
 
 def lane_height(max_rank: int, values: dict) -> float:
@@ -821,6 +890,70 @@ def create_phase_cell(
     )
     geometry(cell, **phase_geometry_values(phase, values, pool_width))
     return cell
+
+
+def set_style_option(cell: ET.Element, key: str, value: str) -> None:
+    """Set one mxGraph style option without disturbing unrelated options."""
+    parts = [part for part in cell.attrib.get("style", "").split(";") if part]
+    replacement = f"{key}={value}"
+    updated: list[str] = []
+    replaced = False
+    for part in parts:
+        if part.split("=", 1)[0] == key:
+            if not replaced:
+                updated.append(replacement)
+                replaced = True
+            continue
+        updated.append(part)
+    if not replaced:
+        updated.append(replacement)
+    cell.attrib["style"] = ";".join(updated) + ";"
+
+
+def normalize_phase_layering(
+    root: ET.Element,
+    pool: ET.Element,
+    *,
+    restore_lane_fill_without_phases: bool = False,
+) -> None:
+    """Keep phase bands behind editable content and visible through lane bodies."""
+    phases = [
+        cell
+        for cell in list(root)
+        if cell.attrib.get("data-kind") == "phase"
+        and cell.attrib.get("parent") == pool.attrib["id"]
+    ]
+    lanes = [
+        cell
+        for cell in list(root)
+        if cell.attrib.get("data-kind") == "lane"
+        and cell.attrib.get("parent") == pool.attrib["id"]
+    ]
+    if phases or restore_lane_fill_without_phases:
+        for lane in lanes:
+            set_style_option(
+                lane,
+                "swimlaneFillColor",
+                "none" if phases else "#ffffff",
+            )
+    if not phases:
+        return
+
+    # Stable-sort only semantic drawing cells in their existing slots. This
+    # preserves unrelated user cells while enforcing background -> lanes ->
+    # nodes -> connectors for every build and patch operation.
+    layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
+    children = list(root)
+    semantic_positions = [
+        index
+        for index, cell in enumerate(children)
+        if cell.attrib.get("data-kind") in layer_order
+    ]
+    semantic_cells = [children[index] for index in semantic_positions]
+    semantic_cells.sort(key=lambda cell: layer_order[cell.attrib["data-kind"]])
+    for index, cell in zip(semantic_positions, semantic_cells):
+        children[index] = cell
+    root[:] = children
 
 
 def parse_geometry(cell: ET.Element) -> dict[str, float]:
@@ -982,6 +1115,178 @@ class PortAllocator:
                 )
         raise DiagramError(f"No free {side} port remains on node {node_id}")
 
+    def available(
+        self,
+        node_id: str,
+        side: str,
+        offset: float,
+        *,
+        allow_reuse: bool = False,
+        minimum_offset_gap: float = 0.0,
+    ) -> bool:
+        if allow_reuse:
+            return True
+        if self.key(node_id, side, offset) in self.occupied:
+            return False
+        return all(
+            occupied_node != node_id
+            or occupied_side != side
+            or abs(occupied_offset - float(offset)) >= minimum_offset_gap
+            for occupied_node, occupied_side, occupied_offset in self.occupied
+        )
+
+
+def candidate_port_offsets(
+    bounds: dict[str, float],
+    side: str,
+    other_bounds: dict[str, float],
+    other_side: str,
+) -> list[float]:
+    candidates = list(PORT_OFFSETS)
+    if side in {"left", "right"} and other_side in {"left", "right"}:
+        other_center_y = other_bounds["top"] + other_bounds["height"] / 2
+        candidates.append((other_center_y - bounds["top"]) / bounds["height"])
+    elif side in {"top", "bottom"} and other_side in {"top", "bottom"}:
+        other_center_x = other_bounds["left"] + other_bounds["width"] / 2
+        candidates.append((other_center_x - bounds["left"]) / bounds["width"])
+    return sorted(
+        {
+            round(value, 6)
+            for value in candidates
+            if 0.05 <= value <= 0.95
+        },
+        key=lambda value: (abs(value - 0.5), value),
+    )
+
+
+def allocate_port_pair(
+    allocator: PortAllocator,
+    edge: dict,
+    source_bounds: dict[str, float],
+    target_bounds: dict[str, float],
+    exit_side: str,
+    entry_side: str,
+    offset_limits: dict[str, dict[str, float]] | None = None,
+    *,
+    prefer_center_ports: bool = False,
+) -> tuple[float, float]:
+    """Allocate source and target ports together so simple routes stay aligned."""
+    allow_reuse = bool(edge.get("allow_port_reuse", False))
+    requested_exit = edge.get("exit_offset")
+    requested_entry = edge.get("entry_offset")
+    limits = offset_limits or {}
+
+    def allowed(endpoint: str, offset: float) -> bool:
+        endpoint_limits = limits.get(endpoint, {})
+        return (
+            offset >= endpoint_limits.get("min", 0.0) - GEOMETRY_TOLERANCE / 100
+            and offset <= endpoint_limits.get("max", 1.0) + GEOMETRY_TOLERANCE / 100
+        )
+
+    if requested_exit is not None and requested_entry is not None:
+        return (
+            allocator.reserve(
+                edge["from"], exit_side, requested_exit, edge["id"], allow_reuse=allow_reuse
+            ),
+            allocator.reserve(
+                edge["to"], entry_side, requested_entry, edge["id"], allow_reuse=allow_reuse
+            ),
+        )
+
+    exit_candidates = (
+        [validate_offset(requested_exit, "exit_offset")]
+        if requested_exit is not None
+        else candidate_port_offsets(source_bounds, exit_side, target_bounds, entry_side)
+    )
+    entry_candidates = (
+        [validate_offset(requested_entry, "entry_offset")]
+        if requested_entry is not None
+        else candidate_port_offsets(target_bounds, entry_side, source_bounds, exit_side)
+    )
+
+    pairs: list[tuple[float, float, float]] = []
+    for exit_offset in exit_candidates:
+        if not allowed("exit", exit_offset):
+            continue
+        exit_gap = (
+            0.0
+            if requested_exit is not None
+            else NEAR_PARALLEL_CLEARANCE
+            / max(
+                source_bounds["height"]
+                if exit_side in {"left", "right"}
+                else source_bounds["width"],
+                1.0,
+            )
+        )
+        if not allocator.available(
+            edge["from"],
+            exit_side,
+            exit_offset,
+            allow_reuse=allow_reuse,
+            minimum_offset_gap=exit_gap,
+        ):
+            continue
+        source_point = port_point(source_bounds, exit_side, exit_offset)
+        matched_entry = None
+        if requested_entry is None:
+            if exit_side in {"left", "right"} and entry_side in {"left", "right"}:
+                matched_entry = (source_point[1] - target_bounds["top"]) / target_bounds["height"]
+            elif exit_side in {"top", "bottom"} and entry_side in {"top", "bottom"}:
+                matched_entry = (source_point[0] - target_bounds["left"]) / target_bounds["width"]
+        dynamic_entries = list(entry_candidates)
+        if matched_entry is not None and 0.05 <= matched_entry <= 0.95:
+            dynamic_entries.append(round(matched_entry, 6))
+        for entry_offset in sorted(set(dynamic_entries)):
+            if not allowed("entry", entry_offset):
+                continue
+            entry_gap = (
+                0.0
+                if requested_entry is not None
+                else NEAR_PARALLEL_CLEARANCE
+                / max(
+                    target_bounds["height"]
+                    if entry_side in {"left", "right"}
+                    else target_bounds["width"],
+                    1.0,
+                )
+            )
+            if not allocator.available(
+                edge["to"],
+                entry_side,
+                entry_offset,
+                allow_reuse=allow_reuse,
+                minimum_offset_gap=entry_gap,
+            ):
+                continue
+            target_point = port_point(target_bounds, entry_side, entry_offset)
+            if exit_side in {"left", "right"} and entry_side in {"left", "right"}:
+                alignment = abs(source_point[1] - target_point[1])
+            elif exit_side in {"top", "bottom"} and entry_side in {"top", "bottom"}:
+                alignment = abs(source_point[0] - target_point[0])
+            else:
+                alignment = 0.0
+            center_cost = abs(exit_offset - 0.5) + abs(entry_offset - 0.5)
+            if prefer_center_ports:
+                # For adjacent-rank cross-lane flow, chasing endpoint alignment
+                # commonly pushes ports to 0.1/0.9 and creates a visually
+                # unbalanced staircase.  Human-edited product swimlanes prefer
+                # centered ports and accept one clear orthogonal carrier.
+                pair_cost = center_cost * 10000.0 + alignment
+            else:
+                pair_cost = alignment * 100.0 + center_cost
+            pairs.append((pair_cost, exit_offset, entry_offset))
+    if not pairs:
+        raise DiagramError(f"No compatible free port pair remains for edge {edge['id']}")
+    _, exit_offset, entry_offset = min(pairs)
+    allocator.reserve(
+        edge["from"], exit_side, exit_offset, edge["id"], allow_reuse=allow_reuse
+    )
+    allocator.reserve(
+        edge["to"], entry_side, entry_offset, edge["id"], allow_reuse=allow_reuse
+    )
+    return exit_offset, entry_offset
+
 
 def edge_style(
     edge_type: str,
@@ -1016,20 +1321,42 @@ def infer_route_class(edge: dict, source: dict, target: dict) -> str:
     return "side"
 
 
-def preferred_sides(edge: dict, route_class: str, source: dict, target: dict, lanes: dict[str, dict]) -> tuple[str, str]:
+def preferred_sides(
+    edge: dict,
+    route_class: str,
+    source: dict,
+    target: dict,
+    lanes: dict[str, dict],
+    *,
+    main_path_pairs: set[tuple[str, str]] | None = None,
+    outgoing_counts: dict[str, int] | None = None,
+) -> tuple[str, str]:
     branch = edge.get("branch")
     if branch is not None and branch not in BRANCH_CLASSES:
         raise DiagramError(f"Unsupported branch class: {branch}")
     source_type = source["cell"].attrib.get("data-node-type", "process")
+    source_rank = int(source["cell"].attrib.get("data-rank", "0"))
+    target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+    is_main_path = (edge["from"], edge["to"]) in (main_path_pairs or set())
+    same_lane_down = source["lane"] == target["lane"] and target_rank > source_rank
+    actual_split = (outgoing_counts or {}).get(edge["from"], 0) > 1
 
     if route_class == "back":
         default_exit = "left"
         default_entry = "left"
     elif route_class == "forward":
-        if source_type == "decision" and branch == "positive":
+        if is_main_path and same_lane_down:
+            default_exit = "bottom"
+        elif source_type == "decision" and branch == "positive" and source["lane"] != target["lane"]:
+            source_index = list(lanes).index(source["lane"])
+            target_index = list(lanes).index(target["lane"])
+            default_exit = "right" if target_index > source_index else "left"
+        elif source_type == "decision" and branch == "positive" and actual_split:
             default_exit = "right"
         elif source_type == "decision" and branch == "negative":
-            default_exit = "left"
+            source_index = list(lanes).index(source["lane"])
+            target_index = list(lanes).index(target["lane"])
+            default_exit = "right" if target_index > source_index else "left"
         else:
             default_exit = "bottom"
         default_entry = "top"
@@ -1225,9 +1552,9 @@ def automatic_polyline_is_safe(
     obstacle_bounds = {
         node_id: node_bounds_in_pool(record, lanes[record["lane"]])
         for node_id, record in nodes.items()
-        if node_id not in {source_id, target_id}
     }
-    for segment in zip(points, points[1:]):
+    segments = list(zip(points, points[1:]))
+    for index, segment in enumerate(segments):
         axis = segment_axis(segment)
         if axis == "diagonal":
             return False
@@ -1238,8 +1565,13 @@ def automatic_polyline_is_safe(
                 for boundary in lane_boundaries
             ):
                 return False
-        if any(segment_crosses_bounds(segment, bounds) for bounds in obstacle_bounds.values()):
-            return False
+        for node_id, bounds in obstacle_bounds.items():
+            if node_id == source_id and index == 0:
+                continue
+            if node_id == target_id and index == len(segments) - 1:
+                continue
+            if segment_crosses_bounds(segment, bounds):
+                return False
     return True
 
 
@@ -1308,12 +1640,428 @@ def simplify_automatic_waypoints(
     return full_path[1:-1]
 
 
+def segment_length(segment: tuple[tuple[float, float], tuple[float, float]]) -> float:
+    return abs(segment[1][0] - segment[0][0]) + abs(segment[1][1] - segment[0][1])
+
+
+def polyline_length(points: list[tuple[float, float]]) -> float:
+    return sum(segment_length(segment) for segment in zip(points, points[1:]))
+
+
+def bend_count(points: list[tuple[float, float]]) -> int:
+    axes = [segment_axis(segment) for segment in zip(points, points[1:])]
+    axes = [axis for axis in axes if axis != "point"]
+    return sum(first != second for first, second in zip(axes, axes[1:]))
+
+
+def endpoint_direction_is_valid(
+    points: list[tuple[float, float]],
+    exit_side: str,
+    entry_side: str,
+) -> bool:
+    if len(points) < 2:
+        return False
+    (sx, sy), (nx, ny) = points[0], points[1]
+    (px, py), (tx, ty) = points[-2], points[-1]
+    first_axis = segment_axis((points[0], points[1]))
+    last_axis = segment_axis((points[-2], points[-1]))
+    if first_axis != ("vertical" if exit_side in {"top", "bottom"} else "horizontal"):
+        return False
+    if last_axis != ("vertical" if entry_side in {"top", "bottom"} else "horizontal"):
+        return False
+    source_ok = {
+        "top": ny <= sy + GEOMETRY_TOLERANCE,
+        "bottom": ny >= sy - GEOMETRY_TOLERANCE,
+        "left": nx <= sx + GEOMETRY_TOLERANCE,
+        "right": nx >= sx - GEOMETRY_TOLERANCE,
+    }[exit_side]
+    target_ok = {
+        "top": py <= ty + GEOMETRY_TOLERANCE,
+        "bottom": py >= ty - GEOMETRY_TOLERANCE,
+        "left": px <= tx + GEOMETRY_TOLERANCE,
+        "right": px >= tx - GEOMETRY_TOLERANCE,
+    }[entry_side]
+    return source_ok and target_ok
+
+
+def offset_point(point: tuple[float, float], side: str, distance: float) -> tuple[float, float]:
+    x, y = point
+    return {
+        "top": (x, y - distance),
+        "bottom": (x, y + distance),
+        "left": (x - distance, y),
+        "right": (x + distance, y),
+    }[side]
+
+
+def bounds_overlap(first: dict[str, float], second: dict[str, float], *, gap: float = 0.0) -> bool:
+    return not (
+        first["right"] + gap <= second["left"]
+        or second["right"] + gap <= first["left"]
+        or first["bottom"] + gap <= second["top"]
+        or second["bottom"] + gap <= first["top"]
+    )
+
+
+def segment_intersects_box(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+    box: dict[str, float],
+    *,
+    gap: float = 0.0,
+) -> bool:
+    expanded = {
+        "left": box["left"] - gap,
+        "right": box["right"] + gap,
+        "top": box["top"] - gap,
+        "bottom": box["bottom"] + gap,
+    }
+    (x1, y1), (x2, y2) = segment
+    axis = segment_axis(segment)
+    if axis == "horizontal":
+        return expanded["top"] <= y1 <= expanded["bottom"] and max(
+            min(x1, x2), expanded["left"]
+        ) <= min(max(x1, x2), expanded["right"])
+    if axis == "vertical":
+        return expanded["left"] <= x1 <= expanded["right"] and max(
+            min(y1, y2), expanded["top"]
+        ) <= min(max(y1, y2), expanded["bottom"])
+    return False
+
+
+def edge_label_size(label: str) -> tuple[float, float]:
+    logical_lines = label.splitlines() or [""]
+    widest_units = max(
+        sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in line
+        )
+        for line in logical_lines
+    )
+    width = min(190.0, max(28.0, widest_units * (EDGE_LABEL_FONT_SIZE * 0.54) + 12.0))
+    height = max(EDGE_LABEL_HEIGHT, len(logical_lines) * 14.0 + 4.0)
+    return width, height
+
+
+def label_box_candidates(
+    points: list[tuple[float, float]],
+    label: str,
+) -> list[tuple[int, dict[str, float], float]]:
+    if not label.strip():
+        return []
+    width, height = edge_label_size(label)
+    candidates: list[tuple[int, dict[str, float], float]] = []
+    for index, segment in enumerate(zip(points, points[1:])):
+        length = segment_length(segment)
+        axis = segment_axis(segment)
+        (x1, y1), (x2, y2) = segment
+        if axis == "horizontal" and length >= width + EDGE_LABEL_PADDING:
+            low_x, high_x = sorted((x1, x2))
+            center_positions = (
+                (low_x + high_x) / 2,
+                low_x + width / 2 + EDGE_LABEL_GAP,
+                high_x - width / 2 - EDGE_LABEL_GAP,
+            )
+            for center_x in dict.fromkeys(round(value, 4) for value in center_positions):
+                for top in (y1 - height - EDGE_LABEL_GAP, y1 + EDGE_LABEL_GAP):
+                    box = {
+                        "left": center_x - width / 2,
+                        "right": center_x + width / 2,
+                        "top": top,
+                        "bottom": top + height,
+                        "width": width,
+                        "height": height,
+                    }
+                    candidates.append((index, box, length + 1000.0))
+        elif axis == "vertical" and length >= height + EDGE_LABEL_VERTICAL_PADDING:
+            low_y, high_y = sorted((y1, y2))
+            center_positions = (
+                (low_y + high_y) / 2,
+                low_y + height / 2 + EDGE_LABEL_GAP,
+                high_y - height / 2 - EDGE_LABEL_GAP,
+            )
+            for center_y in dict.fromkeys(round(value, 4) for value in center_positions):
+                for left in (x1 + EDGE_LABEL_GAP, x1 - width - EDGE_LABEL_GAP):
+                    box = {
+                        "left": left,
+                        "right": left + width,
+                        "top": center_y - height / 2,
+                        "bottom": center_y + height / 2,
+                        "width": width,
+                        "height": height,
+                    }
+                    candidates.append((index, box, length))
+    return sorted(candidates, key=lambda item: -item[2])
+
+
+def choose_label_box(
+    points: list[tuple[float, float]],
+    label: str,
+    node_boxes: list[dict[str, float]],
+    other_segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    other_labels: list[dict[str, float]],
+    preferred_side: str | None = None,
+    container_bounds: dict[str, float] | None = None,
+) -> tuple[int, dict[str, float]] | None:
+    candidates = label_box_candidates(points, label)
+    if preferred_side in {"left", "right"}:
+        def preference(item: tuple[int, dict[str, float], float]) -> int:
+            segment_index, box, _ = item
+            segment = list(zip(points, points[1:]))[segment_index]
+            if segment_axis(segment) != "vertical":
+                return 1
+            box_center = box["left"] + box["width"] / 2
+            is_preferred = (
+                box_center < segment[0][0]
+                if preferred_side == "left"
+                else box_center > segment[0][0]
+            )
+            return 0 if is_preferred else 2
+
+        candidates = sorted(candidates, key=preference)
+    for segment_index, box, _ in candidates:
+        if container_bounds is not None and not (
+            container_bounds["left"] <= box["left"]
+            and box["right"] <= container_bounds["right"]
+            and container_bounds["top"] <= box["top"]
+            and box["bottom"] <= container_bounds["bottom"]
+        ):
+            continue
+        if any(bounds_overlap(box, node_box, gap=2.0) for node_box in node_boxes):
+            continue
+        if any(bounds_overlap(box, other, gap=2.0) for other in other_labels):
+            continue
+        if any(segment_intersects_box(segment, box, gap=2.0) for segment in other_segments):
+            continue
+        own_segments = list(zip(points, points[1:]))
+        if any(
+            index != segment_index and segment_intersects_box(segment, box, gap=2.0)
+            for index, segment in enumerate(own_segments)
+        ):
+            continue
+        return segment_index, box
+    return None
+
+
+def segments_near_parallel(
+    first: tuple[tuple[float, float], tuple[float, float]],
+    second: tuple[tuple[float, float], tuple[float, float]],
+    *,
+    clearance: float = NEAR_PARALLEL_CLEARANCE,
+) -> bool:
+    axis = segment_axis(first)
+    if axis != segment_axis(second) or axis not in {"horizontal", "vertical"}:
+        return False
+    if axis == "horizontal":
+        distance = abs(first[0][1] - second[0][1])
+        overlap = min(max(first[0][0], first[1][0]), max(second[0][0], second[1][0])) - max(
+            min(first[0][0], first[1][0]), min(second[0][0], second[1][0])
+        )
+    else:
+        distance = abs(first[0][0] - second[0][0])
+        overlap = min(max(first[0][1], first[1][1]), max(second[0][1], second[1][1])) - max(
+            min(first[0][1], first[1][1]), min(second[0][1], second[1][1])
+        )
+    return GEOMETRY_TOLERANCE < distance < clearance and overlap >= MIN_INTERNAL_SEGMENT
+
+
+def path_has_hairpin(points: list[tuple[float, float]]) -> bool:
+    segments = list(zip(points, points[1:]))
+    for first, second in zip(segments, segments[1:]):
+        axis = segment_axis(first)
+        if axis != segment_axis(second) or axis not in {"horizontal", "vertical"}:
+            continue
+        first_delta = (
+            first[1][0] - first[0][0]
+            if axis == "horizontal"
+            else first[1][1] - first[0][1]
+        )
+        second_delta = (
+            second[1][0] - second[0][0]
+            if axis == "horizontal"
+            else second[1][1] - second[0][1]
+        )
+        if first_delta * second_delta < 0:
+            return True
+    for first, middle, last in zip(segments, segments[1:], segments[2:]):
+        first_axis = segment_axis(first)
+        if first_axis != segment_axis(last) or first_axis == segment_axis(middle):
+            continue
+        first_delta = (
+            first[1][0] - first[0][0]
+            if first_axis == "horizontal"
+            else first[1][1] - first[0][1]
+        )
+        last_delta = (
+            last[1][0] - last[0][0]
+            if first_axis == "horizontal"
+            else last[1][1] - last[0][1]
+        )
+        if first_delta * last_delta < 0 and segment_length(middle) < MIN_INTERNAL_SEGMENT:
+            return True
+    return False
+
+
+def route_candidates(
+    route_class: str,
+    source_point: tuple[float, float],
+    target_point: tuple[float, float],
+    exit_side: str,
+    entry_side: str,
+    source_bounds: dict[str, float],
+    target_bounds: dict[str, float],
+    target_lane: dict[str, float],
+    pool_width: float,
+    lane_boundaries: list[float],
+    base_waypoints: list[tuple[float, float]],
+    minimum_carrier_span: float = MIN_INTERNAL_SEGMENT,
+) -> list[list[tuple[float, float]]]:
+    sx, sy = source_point
+    tx, ty = target_point
+    candidates: list[list[tuple[float, float]]] = []
+
+    def add(full_path: list[tuple[float, float]]) -> None:
+        simplified = remove_collinear_points(full_path)
+        if simplified not in candidates and endpoint_direction_is_valid(
+            simplified, exit_side, entry_side
+        ):
+            candidates.append(simplified)
+
+    add([source_point, *base_waypoints, target_point])
+    if abs(sx - tx) < GEOMETRY_TOLERANCE or abs(sy - ty) < GEOMETRY_TOLERANCE:
+        add([source_point, target_point])
+    add([source_point, (tx, sy), target_point])
+    add([source_point, (sx, ty), target_point])
+
+    source_escape = offset_point(source_point, exit_side, ROUTE_CLEARANCE)
+    target_escape = offset_point(target_point, entry_side, ROUTE_CLEARANCE)
+    if exit_side == "top" and entry_side == "bottom" and sy > ty:
+        jetty = max(
+            4.0,
+            min(ROUTE_CLEARANCE, (sy - ty - minimum_carrier_span) / 2),
+        )
+        source_escape = offset_point(source_point, exit_side, jetty)
+        target_escape = offset_point(target_point, entry_side, jetty)
+    elif exit_side == "bottom" and entry_side == "top" and sy < ty:
+        jetty = max(
+            4.0,
+            min(ROUTE_CLEARANCE, (ty - sy - minimum_carrier_span) / 2),
+        )
+        source_escape = offset_point(source_point, exit_side, jetty)
+        target_escape = offset_point(target_point, entry_side, jetty)
+    safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+    target_columns = [
+        target_lane["x"] + safe_gap,
+        target_lane["x"] + target_lane["width"] - safe_gap,
+        source_escape[0],
+        target_escape[0],
+        POOL_EDGE_MARGIN,
+        pool_width - POOL_EDGE_MARGIN,
+    ]
+    for raw_x in target_columns:
+        direction = "right" if raw_x >= (sx + tx) / 2 else "left"
+        corridor_x = safe_vertical_corridor(raw_x, lane_boundaries, direction, pool_width)
+        add(
+            [
+                source_point,
+                source_escape,
+                (corridor_x, source_escape[1]),
+                (corridor_x, target_escape[1]),
+                target_escape,
+                target_point,
+            ]
+        )
+
+    for corridor_y in ((sy + ty) / 2, sy + ROUTE_CLEARANCE, ty - ROUTE_CLEARANCE):
+        add(
+            [
+                source_point,
+                source_escape,
+                (source_escape[0], corridor_y),
+                (target_escape[0], corridor_y),
+                target_escape,
+                target_point,
+            ]
+        )
+    return candidates
+
+
+def candidate_score(
+    points: list[tuple[float, float]],
+    *,
+    route_class: str,
+    is_main_path: bool,
+    same_lane_down: bool,
+    target_lane: dict[str, float],
+    target_bounds: dict[str, float],
+    entry_side: str,
+    existing_segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    reciprocal_segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    label_choice: tuple[int, dict[str, float]] | None,
+    has_label: bool,
+) -> float:
+    segments = list(zip(points, points[1:]))
+    bends = bend_count(points)
+    score = polyline_length(points) + bends * ROUTE_BEND_PENALTY
+    internal = segments[1:-1]
+    score += sum(
+        5000.0 for segment in internal if segment_length(segment) < MIN_INTERNAL_SEGMENT
+    )
+    if path_has_hairpin(points):
+        score += 8000.0
+    if is_main_path and same_lane_down and bends:
+        score += 12000.0 * bends
+    if route_class == "forward" and bends > 2:
+        score += 5000.0 * (bends - 2)
+    for segment in segments:
+        for other in existing_segments:
+            if segments_conflict(segment, other):
+                score += ROUTE_CONFLICT_PENALTY
+            elif segments_near_parallel(segment, other):
+                score += ROUTE_CONFLICT_PENALTY / 2
+        for other in reciprocal_segments:
+            if segments_conflict(segment, other) or segments_near_parallel(segment, other):
+                score += ROUTE_CONFLICT_PENALTY * 2
+    if route_class == "back":
+        vertical_x = [
+            segment[0][0]
+            for segment in segments[1:-1]
+            if segment_axis(segment) == "vertical"
+        ]
+        lane_left = target_lane["x"] + LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+        lane_right = (
+            target_lane["x"]
+            + target_lane["width"]
+            - LANE_BOUNDARY_CLEARANCE
+            - GEOMETRY_TOLERANCE
+        )
+        left_slots = [
+            value
+            for value in vertical_x
+            if lane_left <= value < target_bounds["left"] - GEOMETRY_TOLERANCE
+        ]
+        right_slots = [
+            value
+            for value in vertical_x
+            if target_bounds["right"] + GEOMETRY_TOLERANCE < value <= lane_right
+        ]
+        has_target_lane_slot = bool(left_slots if entry_side == "left" else right_slots)
+        if entry_side in {"top", "bottom"}:
+            has_target_lane_slot = bool(left_slots or right_slots)
+        if not has_target_lane_slot:
+            score += 6000.0
+    if has_label and label_choice is None:
+        score += ROUTE_LABEL_CONFLICT_PENALTY
+    return score
+
+
 def route_edge(
     edge: dict,
     lanes: dict[str, dict],
     nodes: dict[str, dict],
     allocator: PortAllocator,
+    routing_context: dict | None = None,
 ) -> dict:
+    context = routing_context or {}
     if edge["from"] not in nodes or edge["to"] not in nodes:
         raise DiagramError(f"Edge {edge.get('id')} references a missing node")
     source = nodes[edge["from"]]
@@ -1321,24 +2069,82 @@ def route_edge(
     source_lane = lanes[source["lane"]]
     target_lane = lanes[target["lane"]]
     route_class = infer_route_class(edge, source, target)
-    exit_side, entry_side = preferred_sides(edge, route_class, source, target, lanes)
-    allow_reuse = bool(edge.get("allow_port_reuse", False))
-    exit_offset = allocator.choose(
-        edge["from"], exit_side, edge["id"], edge.get("exit_offset"), allow_reuse=allow_reuse
-    )
-    entry_offset = allocator.choose(
-        edge["to"], entry_side, edge["id"], edge.get("entry_offset"), allow_reuse=allow_reuse
+    main_path_pairs = context.get("main_path_pairs", set())
+    outgoing_counts = context.get("outgoing_counts", {})
+    exit_side, entry_side = preferred_sides(
+        edge,
+        route_class,
+        source,
+        target,
+        lanes,
+        main_path_pairs=main_path_pairs,
+        outgoing_counts=outgoing_counts,
     )
     source_bounds = node_bounds_in_pool(source, source_lane)
     target_bounds = node_bounds_in_pool(target, target_lane)
+    exit_offset, entry_offset = allocate_port_pair(
+        allocator,
+        edge,
+        source_bounds,
+        target_bounds,
+        exit_side,
+        entry_side,
+        context.get("port_limits", {}).get(edge["id"]),
+        prefer_center_ports=(
+            route_class == "forward"
+            and source["lane"] != target["lane"]
+            and exit_side in {"top", "bottom"}
+            and entry_side in {"top", "bottom"}
+        ),
+    )
     source_point = port_point(source_bounds, exit_side, exit_offset)
     target_point = port_point(target_bounds, entry_side, entry_offset)
     pool_width = max(record["geometry"]["x"] + record["geometry"]["width"] for record in lanes.values())
+    pool_height = max(
+        record["geometry"]["y"] + record["geometry"]["height"]
+        for record in lanes.values()
+    )
+    label_container = {
+        "left": 0.0,
+        "right": pool_width,
+        "top": 0.0,
+        "bottom": pool_height,
+    }
     lane_boundaries = internal_lane_boundaries(lanes)
+    node_boxes = [
+        node_bounds_in_pool(record, lanes[record["lane"]])
+        for record in nodes.values()
+    ]
+    existing_paths = context.get("paths", {})
+    existing_segments = [
+        segment
+        for path in existing_paths.values()
+        for segment in zip(path, path[1:])
+    ]
+    reciprocal_segments = [
+        segment
+        for edge_id, path in existing_paths.items()
+        if context.get("endpoints", {}).get(edge_id) == (edge["to"], edge["from"])
+        for segment in zip(path, path[1:])
+    ]
+    existing_labels = list(context.get("labels", {}).values())
+    preferred_label_side = context.get("label_sides", {}).get(edge["id"])
+    label = str(edge.get("label", ""))
+    label_choice: tuple[int, dict[str, float]] | None = None
     if "waypoints" in edge:
         points = normalize_waypoints(edge["waypoints"])
+        full_path = compact_points([source_point, *points, target_point])
+        label_choice = choose_label_box(
+            full_path,
+            label,
+            node_boxes,
+            existing_segments,
+            existing_labels,
+            preferred_label_side,
+            label_container,
+        )
     else:
-        points = automatic_waypoints(
+        base_points = automatic_waypoints(
             route_class,
             source_bounds,
             target_bounds,
@@ -1349,18 +2155,84 @@ def route_edge(
             pool_width,
             lane_boundaries,
         )
-        points = simplify_automatic_waypoints(
+        base_points = simplify_automatic_waypoints(
             route_class,
             source_point,
             target_point,
             exit_side,
             entry_side,
-            points,
+            base_points,
             lanes,
             nodes,
             edge["from"],
             edge["to"],
         )
+        candidates = route_candidates(
+            route_class,
+            source_point,
+            target_point,
+            exit_side,
+            entry_side,
+            source_bounds,
+            target_bounds,
+            target_lane["geometry"],
+            pool_width,
+            lane_boundaries,
+            base_points,
+            max(
+                MIN_INTERNAL_SEGMENT,
+                edge_label_size(label)[1] + EDGE_LABEL_PADDING,
+            )
+            if label.strip()
+            else MIN_INTERNAL_SEGMENT,
+        )
+        safe_candidates = [
+            candidate
+            for candidate in candidates
+            if automatic_polyline_is_safe(
+                candidate, lanes, nodes, edge["from"], edge["to"]
+            )
+        ]
+        if not safe_candidates:
+            safe_candidates = [compact_points([source_point, *base_points, target_point])]
+        is_main_path = (edge["from"], edge["to"]) in main_path_pairs
+        source_rank = int(source["cell"].attrib.get("data-rank", "0"))
+        target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+        same_lane_down = source["lane"] == target["lane"] and target_rank > source_rank
+        ranked: list[tuple[float, list[tuple[float, float]], tuple[int, dict[str, float]] | None]] = []
+        for candidate in safe_candidates:
+            candidate_label = choose_label_box(
+                candidate,
+                label,
+                node_boxes,
+                existing_segments,
+                existing_labels,
+                preferred_label_side,
+                label_container,
+            )
+            score = candidate_score(
+                candidate,
+                route_class=route_class,
+                is_main_path=is_main_path,
+                same_lane_down=same_lane_down,
+                target_lane=target_lane["geometry"],
+                target_bounds=target_bounds,
+                entry_side=entry_side,
+                existing_segments=existing_segments,
+                reciprocal_segments=reciprocal_segments,
+                label_choice=candidate_label,
+                has_label=bool(label.strip()),
+            )
+            ranked.append((score, candidate, candidate_label))
+        _, full_path, label_choice = min(
+            ranked,
+            key=lambda item: (
+                item[0],
+                len(item[1]),
+                [(round(x, 4), round(y, 4)) for x, y in item[1]],
+            ),
+        )
+        points = full_path[1:-1]
     return {
         "style": edge_style(
             edge.get("type", "flow"), exit_side, entry_side, exit_offset, entry_offset
@@ -1371,6 +2243,8 @@ def route_edge(
         "entry_side": entry_side,
         "exit_offset": exit_offset,
         "entry_offset": entry_offset,
+        "full_path": compact_points([source_point, *points, target_point]),
+        "label_choice": label_choice,
     }
 
 
@@ -1389,14 +2263,135 @@ def set_edge_points(cell: ET.Element, points: list[tuple[float, float]]) -> None
             ET.SubElement(array, "mxPoint", {"x": number(x), "y": number(y)})
 
 
+def polyline_midpoint(points: list[tuple[float, float]]) -> tuple[float, float]:
+    total = polyline_length(points)
+    if total <= GEOMETRY_TOLERANCE:
+        return points[0] if points else (0.0, 0.0)
+    remaining = total / 2
+    for segment in zip(points, points[1:]):
+        length = segment_length(segment)
+        if remaining <= length:
+            ratio = remaining / length if length else 0.0
+            return (
+                segment[0][0] + (segment[1][0] - segment[0][0]) * ratio,
+                segment[0][1] + (segment[1][1] - segment[0][1]) * ratio,
+            )
+        remaining -= length
+    return points[-1]
+
+
+def set_edge_label_position(
+    cell: ET.Element,
+    full_path: list[tuple[float, float]],
+    label_choice: tuple[int, dict[str, float]] | None,
+) -> None:
+    for key in (
+        "data-label-left",
+        "data-label-top",
+        "data-label-width",
+        "data-label-height",
+        "data-label-segment",
+    ):
+        cell.attrib.pop(key, None)
+    geom = cell.find("mxGeometry")
+    if geom is None:
+        return
+    existing_offset = geom.find("./mxPoint[@as='offset']")
+    if existing_offset is not None:
+        geom.remove(existing_offset)
+    if label_choice is None:
+        return
+    segment_index, box = label_choice
+    cell.attrib.update(
+        {
+            "data-label-left": number(box["left"]),
+            "data-label-top": number(box["top"]),
+            "data-label-width": number(box["width"]),
+            "data-label-height": number(box["height"]),
+            "data-label-segment": str(segment_index),
+        }
+    )
+    midpoint = polyline_midpoint(full_path)
+    desired = (
+        box["left"] + box["width"] / 2,
+        box["top"] + box["height"] / 2,
+    )
+    ET.SubElement(
+        geom,
+        "mxPoint",
+        {
+            "as": "offset",
+            "x": number(desired[0] - midpoint[0]),
+            "y": number(desired[1] - midpoint[1]),
+        },
+    )
+
+
+def reflow_automatic_edge_labels(
+    root: ET.Element,
+    pool: ET.Element,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    preferred_sides: dict[str, str] | None = None,
+) -> None:
+    """Place labels after all routes exist so later edges cannot invalidate them."""
+    records = edge_records(root)
+    paths = {
+        edge_id: edge_polyline(cell, lanes, nodes)
+        for edge_id, cell in records.items()
+    }
+    node_boxes = [
+        node_bounds_in_pool(record, lanes[record["lane"]])
+        for record in nodes.values()
+    ]
+    pool_geometry = parse_geometry(pool)
+    container = {
+        "left": 0.0,
+        "right": pool_geometry["width"],
+        "top": 0.0,
+        "bottom": pool_geometry["height"],
+    }
+    main_pairs = set(zip(read_main_path(pool), read_main_path(pool)[1:]))
+
+    def order(item: tuple[str, ET.Element]) -> tuple[int, str]:
+        edge_id, cell = item
+        pair = (cell.attrib.get("data-from"), cell.attrib.get("data-to"))
+        route = cell.attrib.get("data-route", "auto")
+        return (0 if pair in main_pairs else 2 if route == "back" else 1, edge_id)
+
+    assigned_labels: list[dict[str, float]] = []
+    for edge_id, cell in sorted(records.items(), key=order):
+        path = paths.get(edge_id, [])
+        label = cell.attrib.get("value", "")
+        other_segments = [
+            segment
+            for other_id, other_path in paths.items()
+            if other_id != edge_id
+            for segment in zip(other_path, other_path[1:])
+        ]
+        choice = choose_label_box(
+            path,
+            label,
+            node_boxes,
+            other_segments,
+            assigned_labels,
+            (preferred_sides or {}).get(edge_id),
+            container,
+        )
+        set_edge_label_position(cell, path, choice)
+        if choice is not None:
+            assigned_labels.append(choice[1])
+
+
 def apply_edge_route(
     cell: ET.Element,
     edge: dict,
     lanes: dict[str, dict],
     nodes: dict[str, dict],
     allocator: PortAllocator,
+    routing_context: dict | None = None,
 ) -> ET.Element:
-    routed = route_edge(edge, lanes, nodes, allocator)
+    routed = route_edge(edge, lanes, nodes, allocator, routing_context)
     cell.attrib.update(
         {
             "source": nodes[edge["from"]]["cell"].attrib["id"],
@@ -1413,6 +2408,10 @@ def apply_edge_route(
             "data-entry-offset": number(routed["entry_offset"]),
             "data-allow-port-reuse": "1" if edge.get("allow_port_reuse") else "0",
             "data-waypoints-origin": "explicit" if "waypoints" in edge else "automatic",
+            "data-exit-side-explicit": "1" if "exit_side" in edge else "0",
+            "data-entry-side-explicit": "1" if "entry_side" in edge else "0",
+            "data-exit-offset-explicit": "1" if "exit_offset" in edge else "0",
+            "data-entry-offset-explicit": "1" if "entry_offset" in edge else "0",
         }
     )
     if edge.get("branch"):
@@ -1420,6 +2419,12 @@ def apply_edge_route(
     else:
         cell.attrib.pop("data-branch", None)
     set_edge_points(cell, routed["points"])
+    set_edge_label_position(cell, routed["full_path"], routed["label_choice"])
+    if routing_context is not None:
+        routing_context.setdefault("paths", {})[edge["id"]] = routed["full_path"]
+        routing_context.setdefault("endpoints", {})[edge["id"]] = (edge["from"], edge["to"])
+        if routed["label_choice"] is not None:
+            routing_context.setdefault("labels", {})[edge["id"]] = routed["label_choice"][1]
     return cell
 
 
@@ -1430,6 +2435,7 @@ def create_edge_cell(
     lanes: dict[str, dict],
     nodes: dict[str, dict],
     allocator: PortAllocator,
+    routing_context: dict | None = None,
 ) -> ET.Element:
     cell = ET.SubElement(
         root,
@@ -1443,13 +2449,153 @@ def create_edge_cell(
         },
     )
     geometry(cell, relative=1)
-    return apply_edge_route(cell, edge, lanes, nodes, allocator)
+    return apply_edge_route(cell, edge, lanes, nodes, allocator, routing_context)
+
+
+def new_routing_context(main_path: list[str], edges: list[dict]) -> dict:
+    return {
+        "main_path_pairs": set(zip(main_path, main_path[1:])),
+        "outgoing_counts": {
+            source_id: sum(edge["from"] == source_id for edge in edges)
+            for source_id in {edge["from"] for edge in edges}
+        },
+        "paths": {},
+        "endpoints": {},
+        "labels": {},
+        "port_limits": {},
+        "label_sides": {},
+    }
+
+
+def derive_port_limits(
+    context: dict,
+    edges: list[dict],
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+) -> None:
+    """Keep automatic branch ports on the non-crossing side of explicit returns."""
+
+    def merge(edge_id: str, endpoint: str, bound: str, value: float) -> None:
+        limits = context.setdefault("port_limits", {}).setdefault(edge_id, {}).setdefault(
+            endpoint, {}
+        )
+        if bound == "min":
+            limits[bound] = max(limits.get(bound, 0.05), min(0.95, value))
+        else:
+            limits[bound] = min(limits.get(bound, 0.95), max(0.05, value))
+
+    for back_edge in edges:
+        source_id = back_edge.get("from")
+        target_id = back_edge.get("to")
+        if source_id not in nodes or target_id not in nodes:
+            continue
+        source = nodes[source_id]
+        target = nodes[target_id]
+        if infer_route_class(back_edge, source, target) != "back":
+            continue
+        if "exit_side" not in back_edge or "exit_offset" not in back_edge:
+            continue
+        back_side = validate_side(back_edge["exit_side"], "exit_side")
+        back_offset = validate_offset(back_edge["exit_offset"], "exit_offset")
+        source_bounds = node_bounds_in_pool(source, lanes[source["lane"]])
+        target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
+        span = source_bounds["height"] if back_side in {"left", "right"} else source_bounds["width"]
+        normalized_clearance = NEAR_PARALLEL_CLEARANCE / max(span, 1.0)
+
+        for other in edges:
+            if other.get("id") == back_edge.get("id"):
+                continue
+            other_source = nodes.get(other.get("from"))
+            other_target = nodes.get(other.get("to"))
+            if other_source is None or other_target is None:
+                continue
+            route_class = infer_route_class(other, other_source, other_target)
+            exit_side, entry_side = preferred_sides(
+                other,
+                route_class,
+                other_source,
+                other_target,
+                lanes,
+                main_path_pairs=context.get("main_path_pairs", set()),
+                outgoing_counts=context.get("outgoing_counts", {}),
+            )
+            if other.get("to") == source_id and entry_side == back_side and back_side in {"left", "right"}:
+                target_is_above = target_bounds["top"] < source_bounds["top"]
+                merge(
+                    other["id"],
+                    "entry",
+                    "min" if target_is_above else "max",
+                    back_offset + normalized_clearance
+                    if target_is_above
+                    else back_offset - normalized_clearance,
+                )
+            if other.get("from") == source_id and exit_side == back_side and back_side in {"top", "bottom"}:
+                target_is_right = (
+                    target_bounds["left"] + target_bounds["right"]
+                    > source_bounds["left"] + source_bounds["right"]
+                )
+                merge(
+                    other["id"],
+                    "exit",
+                    "max" if target_is_right else "min",
+                    back_offset - normalized_clearance
+                    if target_is_right
+                    else back_offset + normalized_clearance,
+                )
+                context.setdefault("label_sides", {})[other["id"]] = (
+                    "left" if target_is_right else "right"
+                )
+
+
+def seed_routing_context(
+    context: dict,
+    edges: dict[str, ET.Element],
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    *,
+    exclude: set[str] | None = None,
+) -> None:
+    excluded = exclude or set()
+    for edge_id, cell in edges.items():
+        if edge_id in excluded:
+            continue
+        path = edge_polyline(cell, lanes, nodes)
+        if len(path) < 2:
+            continue
+        context.setdefault("paths", {})[edge_id] = path
+        context.setdefault("endpoints", {})[edge_id] = (
+            cell.attrib.get("data-from"),
+            cell.attrib.get("data-to"),
+        )
+        label_bounds = stored_label_bounds(cell)
+        if label_bounds is not None:
+            context.setdefault("labels", {})[edge_id] = label_bounds
+
+
+def edge_routing_order(edges: list[dict], main_path: list[str], nodes: dict[str, dict]) -> list[dict]:
+    pair_index = {
+        pair: index for index, pair in enumerate(zip(main_path, main_path[1:]))
+    }
+
+    def key(edge: dict) -> tuple[int, int, str]:
+        pair = (edge["from"], edge["to"])
+        if pair in pair_index:
+            return 0, pair_index[pair], edge["id"]
+        route_class = inferred_spec_route_class(edge, nodes)
+        priority = 2 if route_class == "back" else 1
+        source = nodes[edge["from"]]
+        source_rank = source.get("rank")
+        if source_rank is None:
+            source_rank = source["cell"].attrib.get("data-rank", "0")
+        return priority, int(source_rank), edge["id"]
+
+    return sorted(edges, key=key)
 
 
 def build_tree(spec: dict) -> ET.ElementTree:
     schema_version = validate_build_spec(spec)
 
-    values = canvas_values(spec)
+    values = adaptive_canvas_values(spec)
     lane_widths = effective_lane_widths(spec)
     max_rank = max((int(node["rank"]) for node in spec["nodes"]), default=1)
     current_lane_height = lane_height(max_rank, values)
@@ -1514,8 +2660,19 @@ def build_tree(spec: dict) -> ET.ElementTree:
 
     lanes, nodes = lane_node_records(root, pool)
     allocator = PortAllocator()
-    for edge in spec["edges"]:
-        create_edge_cell(root, pool, edge, lanes, nodes, allocator)
+    routing_context = new_routing_context(spec.get("main_path", []), spec["edges"])
+    derive_port_limits(routing_context, spec["edges"], lanes, nodes)
+    spec_nodes = {node["id"]: node for node in spec["nodes"]}
+    for edge in edge_routing_order(spec["edges"], spec.get("main_path", []), spec_nodes):
+        create_edge_cell(root, pool, edge, lanes, nodes, allocator, routing_context)
+    reflow_automatic_edge_labels(
+        root,
+        pool,
+        lanes,
+        nodes,
+        routing_context.get("label_sides", {}),
+    )
+    normalize_phase_layering(root, pool)
     return ET.ElementTree(mxfile)
 
 
@@ -1581,6 +2738,50 @@ def edge_records(root: ET.Element) -> dict[str, ET.Element]:
     }
 
 
+def unmanaged_edge_specs(root: ET.Element, nodes: dict[str, dict]) -> list[dict]:
+    """Describe Draw.io connectors redrawn manually without semantic metadata."""
+    node_by_cell_id = {
+        record["cell"].attrib.get("id"): semantic_id
+        for semantic_id, record in nodes.items()
+    }
+    children_by_parent: dict[str, list[ET.Element]] = {}
+    for child in root.iter("mxCell"):
+        children_by_parent.setdefault(child.attrib.get("parent", ""), []).append(child)
+
+    recovered: list[dict] = []
+    for cell in root.iter("mxCell"):
+        if cell.attrib.get("edge") != "1" or cell.attrib.get("data-kind") == "edge":
+            continue
+        source = node_by_cell_id.get(cell.attrib.get("source"))
+        target = node_by_cell_id.get(cell.attrib.get("target"))
+        if source is None or target is None:
+            continue
+        label = cell.attrib.get("value", "")
+        if not label:
+            label = next(
+                (
+                    child.attrib.get("value", "")
+                    for child in children_by_parent.get(cell.attrib.get("id", ""), [])
+                    if "edgeLabel" in child.attrib.get("style", "")
+                ),
+                "",
+            )
+        recovered.append(
+            {
+                "cell_id": cell.attrib.get("id", ""),
+                "from": source,
+                "to": target,
+                "label": label,
+                "exit_port": port_from_style(cell, "exit"),
+                "entry_port": port_from_style(cell, "entry"),
+                "waypoints": [
+                    {"x": x, "y": y} for x, y in edge_waypoints(cell)
+                ],
+            }
+        )
+    return sorted(recovered, key=lambda item: (item["from"], item["to"], item["cell_id"]))
+
+
 def reserve_existing_ports(
     root: ET.Element,
     allocator: PortAllocator,
@@ -1614,7 +2815,7 @@ def reserve_existing_ports(
             )
 
 
-def existing_edge_spec(cell: ET.Element) -> dict:
+def existing_edge_spec(cell: ET.Element, *, for_reroute: bool = False) -> dict:
     spec = {
         "id": cell.attrib["data-semantic-id"],
         "from": cell.attrib.get("data-from"),
@@ -1626,12 +2827,42 @@ def existing_edge_spec(cell: ET.Element) -> dict:
     }
     if cell.attrib.get("data-branch"):
         spec["branch"] = cell.attrib["data-branch"]
+    explicit_waypoints = cell.attrib.get("data-waypoints-origin") == "explicit"
     exit_port = port_from_style(cell, "exit")
     entry_port = port_from_style(cell, "entry")
-    if exit_port:
-        spec["exit_side"], spec["exit_offset"] = exit_port
-    if entry_port:
-        spec["entry_side"], spec["entry_offset"] = entry_port
+    preserve_exit_side = (
+        not for_reroute
+        or explicit_waypoints
+        or cell.attrib.get("data-exit-side-explicit") == "1"
+    )
+    preserve_entry_side = (
+        not for_reroute
+        or explicit_waypoints
+        or cell.attrib.get("data-entry-side-explicit") == "1"
+    )
+    preserve_exit_offset = (
+        not for_reroute
+        or explicit_waypoints
+        or cell.attrib.get("data-exit-offset-explicit") == "1"
+    )
+    preserve_entry_offset = (
+        not for_reroute
+        or explicit_waypoints
+        or cell.attrib.get("data-entry-offset-explicit") == "1"
+    )
+    if exit_port and preserve_exit_side:
+        spec["exit_side"] = exit_port[0]
+    if exit_port and preserve_exit_offset:
+        spec["exit_offset"] = exit_port[1]
+    if entry_port and preserve_entry_side:
+        spec["entry_side"] = entry_port[0]
+    if entry_port and preserve_entry_offset:
+        spec["entry_offset"] = entry_port[1]
+    if explicit_waypoints:
+        spec["waypoints"] = [
+            {"x": x, "y": y}
+            for x, y in edge_waypoints(cell)
+        ]
     return spec
 
 
@@ -1716,6 +2947,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     lanes, nodes = lane_node_records(root, pool)
     existing_edges = edge_records(root)
     phases = phase_records(root, pool)
+    had_phases_before_patch = bool(phases)
     pool_width = max(
         record["geometry"]["x"] + record["geometry"]["width"]
         for record in lanes.values()
@@ -1828,7 +3060,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     explicit_reroute_ids = {
         update["id"]
         for update in edge_updates
-        if update.get("reroute") or any(
+        if "label" in update or update.get("reroute") or any(
             key in update for key in ROUTING_FIELDS if key != "reroute"
         )
     }
@@ -1845,9 +3077,10 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     allocator = PortAllocator()
     reserve_existing_ports(root, allocator, exclude=reroute_ids)
     update_by_id = {update["id"]: update for update in edge_updates}
-    for semantic_id in sorted(reroute_ids):
-        cell = existing_edges[semantic_id]
-        edge = existing_edge_spec(cell)
+    effective_main_path = list(changes.get("main_path", read_main_path(pool)))
+    updated_specs: dict[str, dict] = {}
+    for semantic_id, cell in existing_edges.items():
+        edge = existing_edge_spec(cell, for_reroute=semantic_id in reroute_ids)
         edge.update(
             {
                 key: value
@@ -1855,13 +3088,50 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 if key != "reroute"
             }
         )
-        apply_edge_route(cell, edge, lanes, nodes, allocator)
+        updated_specs[semantic_id] = edge
 
     new_edges = changes.get("edges", [])
+    routing_context = new_routing_context(
+        effective_main_path,
+        [*updated_specs.values(), *new_edges],
+    )
+    derive_port_limits(
+        routing_context,
+        [*updated_specs.values(), *new_edges],
+        lanes,
+        nodes,
+    )
+    seed_routing_context(
+        routing_context,
+        existing_edges,
+        lanes,
+        nodes,
+        exclude=reroute_ids,
+    )
+    reroute_specs = [updated_specs[edge_id] for edge_id in reroute_ids]
+    for edge in edge_routing_order(reroute_specs, effective_main_path, nodes):
+        apply_edge_route(
+            existing_edges[edge["id"]],
+            edge,
+            lanes,
+            nodes,
+            allocator,
+            routing_context,
+        )
+
     for edge in new_edges:
         if edge["id"] in existing_edges:
             raise DiagramError(f"Edge already exists: {edge['id']}")
-        create_edge_cell(root, pool, edge, lanes, nodes, allocator)
+    for edge in edge_routing_order(new_edges, effective_main_path, nodes):
+        create_edge_cell(
+            root,
+            pool,
+            edge,
+            lanes,
+            nodes,
+            allocator,
+            routing_context,
+        )
 
     phases = phase_records(root, pool)
     for update in changes.get("update_phases", []):
@@ -1903,6 +3173,12 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     phases = phase_records(root, pool)
     for cell in phases.values():
         apply_phase_update(cell, phase_cell_spec(cell), values, pool_width)
+
+    normalize_phase_layering(
+        root,
+        pool,
+        restore_lane_fill_without_phases=had_phases_before_patch,
+    )
 
     return {
         "updated_nodes": sorted(update["id"] for update in changes.get("update_nodes", [])),
@@ -1959,6 +3235,42 @@ def edge_polyline(
             port_point(target_bounds, entry_port[0], entry_port[1]),
         ]
     )
+
+
+def stored_label_bounds(cell: ET.Element) -> dict[str, float] | None:
+    try:
+        left = float(cell.attrib["data-label-left"])
+        top = float(cell.attrib["data-label-top"])
+        width = float(cell.attrib["data-label-width"])
+        height = float(cell.attrib["data-label-height"])
+    except (KeyError, ValueError):
+        return None
+    return {
+        "left": left,
+        "right": left + width,
+        "top": top,
+        "bottom": top + height,
+        "width": width,
+        "height": height,
+    }
+
+
+def effective_label_bounds(
+    cell: ET.Element,
+    points: list[tuple[float, float]],
+) -> tuple[int, dict[str, float]] | None:
+    stored = stored_label_bounds(cell)
+    if stored is not None:
+        try:
+            segment_index = int(cell.attrib.get("data-label-segment", "0"))
+        except ValueError:
+            segment_index = 0
+        return segment_index, stored
+    candidates = label_box_candidates(points, cell.attrib.get("value", ""))
+    if not candidates:
+        return None
+    segment_index, box, _ = candidates[0]
+    return segment_index, box
 
 
 def segment_axis(segment: tuple[tuple[float, float], tuple[float, float]]) -> str:
@@ -2082,6 +3394,92 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     edge_cells = [
         cell for cell in root.iter("mxCell") if cell.attrib.get("data-kind") == "edge"
     ]
+    unmanaged_edges = unmanaged_edge_specs(root, nodes)
+    if unmanaged_edges:
+        add(
+            "interoperability/unmanaged-edges",
+            "warning",
+            f"Draw.io contains {len(unmanaged_edges)} manually redrawn connector(s) without semantic IDs",
+            subject={"kind": "diagram"},
+            evidence={
+                "count": len(unmanaged_edges),
+                "connectors": [
+                    {
+                        "cell_id": edge["cell_id"],
+                        "from": edge["from"],
+                        "to": edge["to"],
+                        "label": edge["label"],
+                    }
+                    for edge in unmanaged_edges
+                ],
+            },
+            supported_fixes=["restore-edge-semantic-metadata", "redraw-with-patch"],
+        )
+
+    phases = phase_records(root, pool)
+    if phases:
+        layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
+        semantic_layers = [
+            {
+                "index": index,
+                "kind": cell.attrib.get("data-kind"),
+                "id": cell.attrib.get("data-semantic-id"),
+            }
+            for index, cell in enumerate(list(root))
+            if cell.attrib.get("data-kind") in layer_order
+        ]
+        ranks = [layer_order[item["kind"]] for item in semantic_layers]
+        pool_index = list(root).index(pool)
+        phase_indices = [
+            item["index"] for item in semantic_layers if item["kind"] == "phase"
+        ]
+        if (
+            ranks != sorted(ranks)
+            or not phase_indices
+            or min(phase_indices) <= pool_index
+        ):
+            add(
+                "layout/phase-z-order",
+                "error",
+                "Phase backgrounds must be behind lanes, nodes, and connectors",
+                subject={"kind": "diagram"},
+                evidence={"layers": semantic_layers},
+                supported_fixes=["normalize-phase-layering"],
+            )
+
+        opaque_lanes = [
+            lane_id
+            for lane_id, record in lanes.items()
+            if style_values(record["cell"].attrib.get("style", "")).get(
+                "swimlaneFillColor"
+            )
+            != "none"
+        ]
+        if opaque_lanes:
+            add(
+                "layout/phase-lane-visibility",
+                "error",
+                "Lane bodies must be transparent when phase backgrounds exist",
+                subject={"kind": "diagram"},
+                evidence={"lanes": sorted(opaque_lanes)},
+                supported_fixes=["make-lane-bodies-transparent"],
+            )
+
+        interactive_phases = [
+            phase_id
+            for phase_id, cell in phases.items()
+            if cell.attrib.get("connectable") != "0"
+            or style_values(cell.attrib.get("style", "")).get("pointerEvents") != "0"
+        ]
+        if interactive_phases:
+            add(
+                "layout/phase-interactive",
+                "error",
+                "Phase backgrounds must not intercept editing interactions",
+                subject={"kind": "phase"},
+                evidence={"phases": sorted(interactive_phases)},
+                supported_fixes=["disable-phase-interaction"],
+            )
     for cell in edge_cells:
         if cell.attrib.get("source") not in cell_ids or cell.attrib.get("target") not in cell_ids:
             edge_id = cell.attrib.get("data-semantic-id")
@@ -2202,12 +3600,136 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         for semantic_id, record in nodes.items()
     }
     edge_segments: dict[str, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+    edge_points: dict[str, list[tuple[float, float]]] = {}
+    edge_label_bounds: dict[str, tuple[int, dict[str, float]]] = {}
+    edge_cells_by_id: dict[str, ET.Element] = {}
     for cell in edge_cells:
         edge_id = cell.attrib.get("data-semantic-id", cell.attrib.get("id", "unknown"))
         points = edge_polyline(cell, lanes, nodes)
+        edge_points[edge_id] = points
+        edge_cells_by_id[edge_id] = cell
         segments = list(zip(points, points[1:]))
         edge_segments[edge_id] = segments
-        for segment in segments:
+        short_segments = [
+            (index, segment_length(segment))
+            for index, segment in enumerate(segments[1:-1], start=1)
+            if segment_length(segment) < MIN_INTERNAL_SEGMENT - GEOMETRY_TOLERANCE
+        ]
+        if short_segments:
+            waypoint_origin = cell.attrib.get("data-waypoints-origin", "unknown")
+            add(
+                "routing/short-segment",
+                "warning",
+                f"Connector contains an internal segment shorter than {number(MIN_INTERNAL_SEGMENT)} px: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={
+                    "segments": [
+                        {"index": index, "length": length}
+                        for index, length in short_segments
+                    ],
+                    "minimum": MIN_INTERNAL_SEGMENT,
+                    "waypoints_origin": waypoint_origin,
+                },
+                supported_fixes=(
+                    ["edit-explicit-waypoints"]
+                    if waypoint_origin == "explicit"
+                    else ["reroute-edge", "increase-rank-spacing"]
+                ),
+            )
+        bends = bend_count(points)
+        simpler_forward_route = False
+        if (
+            cell.attrib.get("data-route") == "forward"
+            and bends > 2
+        ):
+            source_id = cell.attrib.get("data-from")
+            target_id = cell.attrib.get("data-to")
+            exit_port = port_from_style(cell, "exit")
+            entry_port = port_from_style(cell, "entry")
+            if source_id in nodes and target_id in nodes and exit_port and entry_port:
+                source_bounds = node_bounds[source_id]
+                target_bounds = node_bounds[target_id]
+                pool_width = max(
+                    record["geometry"]["x"] + record["geometry"]["width"]
+                    for record in lanes.values()
+                )
+                simple_candidates = route_candidates(
+                    "forward",
+                    points[0],
+                    points[-1],
+                    exit_port[0],
+                    entry_port[0],
+                    source_bounds,
+                    target_bounds,
+                    lanes[nodes[target_id]["lane"]]["geometry"],
+                    pool_width,
+                    internal_boundaries,
+                    [],
+                )
+                simpler_forward_route = any(
+                    bend_count(candidate) <= 2
+                    and not path_has_hairpin(candidate)
+                    and all(
+                        segment_length(segment)
+                        >= MIN_INTERNAL_SEGMENT - GEOMETRY_TOLERANCE
+                        for segment in list(zip(candidate, candidate[1:]))[1:-1]
+                    )
+                    and automatic_polyline_is_safe(
+                        candidate,
+                        lanes,
+                        nodes,
+                        source_id,
+                        target_id,
+                    )
+                    for candidate in simple_candidates
+                )
+        if simpler_forward_route:
+            add(
+                "routing/excessive-bends",
+                "warning",
+                f"Forward connector has unnecessary bends: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={"bends": bends, "maximum": 2},
+                supported_fixes=["reroute-edge", "align-ports"],
+            )
+        if path_has_hairpin(points):
+            add(
+                "routing/hairpin",
+                "warning",
+                f"Connector contains a short-distance hairpin: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                supported_fixes=["reroute-edge", "align-ports"],
+            )
+
+        label = cell.attrib.get("value", "")
+        label_choice = effective_label_bounds(cell, points)
+        if label.strip() and label_choice is None:
+            add(
+                "text/edge-label-no-clear-span",
+                "warning",
+                f"Edge label has no clear carrier segment: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={"label": label},
+                supported_fixes=["reroute-edge", "increase-rank-spacing", "increase-lane-width"],
+            )
+        elif label_choice is not None:
+            edge_label_bounds[edge_id] = label_choice
+            _, label_box = label_choice
+            overlapping_nodes = sorted(
+                node_id
+                for node_id, bounds in node_bounds.items()
+                if bounds_overlap(label_box, bounds, gap=1.0)
+            )
+            if overlapping_nodes:
+                add(
+                    "text/edge-label-node-overlap",
+                    "warning",
+                    f"Edge label overlaps a node: {edge_id}",
+                    subject={"kind": "edge", "id": edge_id},
+                    evidence={"nodes": overlapping_nodes},
+                    supported_fixes=["move-edge-label", "reroute-edge", "increase-rank-spacing"],
+                )
+        for segment_index, segment in enumerate(segments):
             axis = segment_axis(segment)
             if axis == "diagonal":
                 add(
@@ -2244,7 +3766,15 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                         supported_fixes=["reroute-edge", "change-routing-zone"],
                     )
             for node_id, bounds in node_bounds.items():
-                if node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}:
+                if (
+                    node_id == cell.attrib.get("data-from")
+                    and segment_index == 0
+                ):
+                    continue
+                if (
+                    node_id == cell.attrib.get("data-to")
+                    and segment_index == len(segments) - 1
+                ):
                     continue
                 if segment_crosses_bounds(segment, bounds):
                     add(
@@ -2313,6 +3843,74 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     evidence={"other_edge": second_id},
                     supported_fixes=["reroute-edge"],
                 )
+            first_cell = edge_cells_by_id[first_id]
+            second_cell = edge_cells_by_id[second_id]
+            near_parallel = any(
+                segments_near_parallel(first_segment, second_segment)
+                for first_segment in edge_segments[first_id]
+                for second_segment in edge_segments[second_id]
+            )
+            if near_parallel:
+                add(
+                    "routing/near-parallel-conflict",
+                    "warning",
+                    f"Connector segments run too close in parallel: {first_id} / {second_id}",
+                    subject={"kind": "edge", "id": first_id},
+                    evidence={"other_edge": second_id, "minimum": NEAR_PARALLEL_CLEARANCE},
+                    supported_fixes=["separate-routing-corridors", "reroute-edge"],
+                )
+            reciprocal = (
+                first_cell.attrib.get("data-from") == second_cell.attrib.get("data-to")
+                and first_cell.attrib.get("data-to") == second_cell.attrib.get("data-from")
+            )
+            if reciprocal and (
+                near_parallel
+                or any(
+                    segments_conflict(first_segment, second_segment)
+                    for first_segment in edge_segments[first_id]
+                    for second_segment in edge_segments[second_id]
+                )
+            ):
+                add(
+                    "routing/reciprocal-ambiguity",
+                    "warning",
+                    f"Forward and return connectors share or crowd the same corridor: {first_id} / {second_id}",
+                    subject={"kind": "edge", "id": first_id},
+                    evidence={"other_edge": second_id},
+                    supported_fixes=["separate-forward-and-return-corridors"],
+                )
+
+    for edge_id, (carrier_index, label_box) in edge_label_bounds.items():
+        overlaps = []
+        for other_id, segments in edge_segments.items():
+            for index, segment in enumerate(segments):
+                if other_id == edge_id and index == carrier_index:
+                    continue
+                if segment_intersects_box(segment, label_box, gap=1.0):
+                    overlaps.append(other_id)
+                    break
+        if overlaps:
+            add(
+                "text/edge-label-edge-overlap",
+                "warning",
+                f"Edge label overlaps a connector: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={"edges": sorted(set(overlaps))},
+                supported_fixes=["move-edge-label", "reroute-edge"],
+            )
+
+    label_ids = sorted(edge_label_bounds)
+    for index, first_id in enumerate(label_ids):
+        for second_id in label_ids[index + 1:]:
+            if bounds_overlap(edge_label_bounds[first_id][1], edge_label_bounds[second_id][1], gap=2.0):
+                add(
+                    "text/edge-label-edge-overlap",
+                    "warning",
+                    f"Edge labels overlap: {first_id} / {second_id}",
+                    subject={"kind": "edge", "id": first_id},
+                    evidence={"other_label": second_id},
+                    supported_fixes=["move-edge-label", "reroute-edge", "increase-rank-spacing"],
+                )
 
     if schema_version == SCHEMA_VERSION:
         node_ranks = {
@@ -2358,6 +3956,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             (cell.attrib.get("data-from"), cell.attrib.get("data-to")): cell
             for cell in edge_cells
         }
+        unmanaged_pairs = {(edge["from"], edge["to"]) for edge in unmanaged_edges}
         for source_id, target_id in zip(main_path, main_path[1:]):
             if source_id not in nodes or target_id not in nodes:
                 add(
@@ -2370,7 +3969,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 )
                 continue
             edge = edge_pairs.get((source_id, target_id))
-            if edge is None:
+            if edge is None and (source_id, target_id) not in unmanaged_pairs:
                 add(
                     "semantic/main-path-edge",
                     "error",
@@ -2379,7 +3978,10 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     evidence={"from": source_id, "to": target_id},
                     supported_fixes=["add-main-path-edge", "correct-main-path"],
                 )
-            elif edge.attrib.get("data-route") == "back" or node_ranks[target_id] < node_ranks[source_id]:
+            elif edge is not None and (
+                edge.attrib.get("data-route") == "back"
+                or node_ranks[target_id] < node_ranks[source_id]
+            ):
                 add(
                     "semantic/main-path-rank",
                     "error",
@@ -2388,6 +3990,22 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     evidence={"from": source_id, "to": target_id},
                     supported_fixes=["correct-rank", "remove-return-from-main-path"],
                 )
+            elif (
+                nodes[source_id]["lane"] == nodes[target_id]["lane"]
+                and node_ranks[target_id] > node_ranks[source_id]
+                and edge is not None
+            ):
+                edge_id = edge.attrib.get("data-semantic-id", "unknown")
+                bends = bend_count(edge_points.get(edge_id, []))
+                if bends:
+                    add(
+                        "layout/main-path-zigzag",
+                        "warning",
+                        f"Same-lane main path should continue vertically without a zigzag: {edge_id}",
+                        subject={"kind": "edge", "id": edge_id},
+                        evidence={"bends": bends, "from": source_id, "to": target_id},
+                        supported_fixes=["use-bottom-to-top-main-path", "align-ports"],
+                    )
 
         outgoing: dict[str, list[ET.Element]] = {}
         for cell in edge_cells:
@@ -2405,11 +4023,16 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                         supported_fixes=["correct-rank", "change-edge-type"],
                     )
 
+        unmanaged_outgoing: dict[str, int] = {}
+        for edge in unmanaged_edges:
+            unmanaged_outgoing[edge["from"]] = unmanaged_outgoing.get(edge["from"], 0) + 1
+
         for node_id, record in nodes.items():
             if record["cell"].attrib.get("data-node-type") != "decision":
                 continue
             decision_edges = outgoing.get(node_id, [])
-            if len(decision_edges) < 2:
+            total_decision_edges = len(decision_edges) + unmanaged_outgoing.get(node_id, 0)
+            if total_decision_edges < 2:
                 add(
                     "semantic/decision-branches",
                     "warning",
@@ -2417,6 +4040,8 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     subject={"kind": "node", "id": node_id},
                     supported_fixes=["add-decision-branch"],
                 )
+                continue
+            if unmanaged_outgoing.get(node_id, 0):
                 continue
             branches = [edge.attrib.get("data-branch") for edge in decision_edges]
             if any(branch not in BRANCH_CLASSES for branch in branches) or len(set(branches)) != len(branches):
@@ -2447,6 +4072,8 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             adjacency: dict[str, list[str]] = {}
             for cell in edge_cells:
                 adjacency.setdefault(cell.attrib.get("data-from", ""), []).append(cell.attrib.get("data-to", ""))
+            for edge in unmanaged_edges:
+                adjacency.setdefault(edge["from"], []).append(edge["to"])
             while frontier:
                 current = frontier.pop()
                 for target in adjacency.get(current, []):
@@ -2498,6 +4125,14 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     errors = [item["message"] for item in diagnostics if item["severity"] == "error"]
     warnings = [item["message"] for item in diagnostics if item["severity"] == "warning"]
 
+    diagnostic_codes = [item["code"] for item in diagnostics]
+    main_path_bends = 0
+    if schema_version == SCHEMA_VERSION:
+        main_pairs = set(zip(read_main_path(pool), read_main_path(pool)[1:]))
+        for edge_id, cell in edge_cells_by_id.items():
+            if (cell.attrib.get("data-from"), cell.attrib.get("data-to")) in main_pairs:
+                main_path_bends += bend_count(edge_points.get(edge_id, []))
+
     return {
         "valid": not errors,
         "errors": errors,
@@ -2507,6 +4142,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         "lanes": len(lanes),
         "nodes": len(nodes),
         "edges": len(edge_cells),
+        "unmanaged_edges": len(unmanaged_edges),
+        "main_path_bends": main_path_bends,
+        "short_segments": diagnostic_codes.count("routing/short-segment"),
+        "label_conflicts": sum(code.startswith("text/edge-label-") for code in diagnostic_codes),
+        "reciprocal_ambiguities": diagnostic_codes.count("routing/reciprocal-ambiguity"),
+        "manual_waypoints_preserved": True,
+        "visual_review": "not_available",
     }
 
 
@@ -2669,6 +4311,7 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         "phases": phase_specs,
         "nodes": node_specs,
         "edges": edge_specs,
+        "unmanaged_edges": unmanaged_edge_specs(root, nodes),
         "validation": validation,
     }
 

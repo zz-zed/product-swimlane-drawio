@@ -65,6 +65,8 @@ A phase is an optional horizontal band across every vertical lane:
 - `from_rank`, `to_rank`: inclusive rank range; `to_rank` must not exceed the maximum node rank.
 - `fill_color`: optional `#RRGGBB` value.
 
+When at least one phase exists, the generator and patcher enforce semantic Z-order as phase backgrounds, lanes, nodes, then connectors. Lane bodies use a transparent `swimlaneFillColor` so the bands remain visible, while phase cells use `connectable=0` and `pointerEvents=0` so they cannot intercept node selection. Without phases, lane bodies retain their opaque white fill. Strict validation reports `layout/phase-z-order`, `layout/phase-lane-visibility`, or `layout/phase-interactive` when a saved Draw.io file violates these editability rules.
+
 ## Nodes and edges
 
 Node fields:
@@ -92,7 +94,11 @@ Edge fields:
 - `allow_port_reuse`: optional boolean; default `false`.
 - `waypoints`: optional pool-local `{ "x": number, "y": number }` objects or two-number arrays.
 
-Use automatic routing first. It removes duplicate and collinear points, prefers a safe single elbow for a forward side-exit/top-entry connection, and keeps a back route inside the target lane gutter. A new build widens an automatic target lane when needed. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified automatically.
+Use automatic routing first. It routes `main_path` edges before ordinary branches and returns, allocates endpoint ports jointly, removes duplicate and collinear points, and scores orthogonal candidates by bends, length, short segments, unrelated-lane intrusion, obstacle clearance, reciprocal separation, main-path continuity, and label capacity. A same-lane downward main-path edge prefers a bottom-to-top direct connection. Adjacent-rank cross-lane flow keeps centered endpoints unless an explicit override or a hard collision requires otherwise; it does not trade balanced `0.5 -> 0.5` ports for marginally shorter `0.1/0.9` alignment. A real split or cross-lane branch exits toward its target lane; the conventional right-side positive exit is used only when it does not create a backwards hook.
+
+Returns and retries use a separate target-lane side slot when possible. A new build widens an automatic target lane when the slot does not fit, then recomputes later lanes and automatic routes. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified or silently rewritten; strict validation still reports their routing defects.
+
+Automatic edge labels prefer the longest clear independent horizontal segment, with a clear vertical segment as a fallback. The route planner accounts for node and connector bounds, then performs a global label reflow after all routes exist. Automatic rank spacing and decision width grow only when the default compact grid cannot provide a clear carrier or contain multilingual content, unless the specification explicitly fixes the corresponding geometry.
 
 ## Patch specification
 
@@ -118,7 +124,7 @@ A patch may contain:
 Patch rules:
 
 - Include only requested changes.
-- Updating only an edge label preserves its existing route and waypoints.
+- Updating an edge label recomputes automatic label placement and may choose another automatic route. Explicit waypoints remain byte-for-byte equivalent in geometry.
 - `reroute: true` or any routing field recomputes that edge.
 - Existing node geometry requires `--allow-geometry-updates`.
 - Moving or resizing a node automatically reroutes only incident edges whose routes become invalid.
@@ -135,7 +141,7 @@ Inspect a compatible file before patching:
 python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
 ```
 
-The result includes schema version, main path, phases, lane order, node geometry, edge ports, waypoints, and current validation.
+The result includes schema version, main path, phases, lane order, node geometry, edge ports, waypoints, and current validation. Connectors manually redrawn in Draw.io without Skill metadata appear under `unmanaged_edges` with their recoverable source, target, label, ports, and waypoints. Validation reports `interoperability/unmanaged-edges`; source/target topology is still considered when checking reachability and main-path continuity, but the missing stable edge ID is not silently recreated.
 
 Validation keeps the legacy `errors` and `warnings` arrays and also returns structured diagnostics:
 
@@ -150,7 +156,9 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 }
 ```
 
-Strict validation fails when warnings remain. Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Patch output includes the IDs added, updated, deleted, and automatically rerouted.
+Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
+
+Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Patch output includes the IDs added, updated, deleted, and automatically rerouted. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review`. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
 
 ## Compatibility
 

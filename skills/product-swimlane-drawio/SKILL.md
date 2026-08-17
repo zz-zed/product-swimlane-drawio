@@ -53,14 +53,18 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 
 ## Routing semantics
 
-- Keep the main path top-to-bottom: enter from the top and continue from the bottom.
-- Reserve a decision's top for incoming flow. Send its forward branch from the right and its backward branch from the left unless the layout requires an explicit override.
-- Route retries and returns to earlier ranks outside the node stack and enter the historical target from a side.
+- Route the confirmed `main_path` before ordinary branches and returns so its channels remain visually dominant.
+- Keep a same-lane main-path continuation top-to-bottom: leave from the bottom and enter from the top. Do not send a same-lane decision continuation through a right-side hook.
+- Reserve a decision's top for incoming flow. A same-lane normal continuation stays bottom-to-top. For a real split or cross-lane continuation, point the branch toward its target lane; use the conventional right-side positive exit only when that direction does not create a backwards hook.
+- Allocate source and target ports as a pair. Keep simple cross-lane adjacent-rank flow centered at `0.5 -> 0.5`; do not chase exact x-alignment by pushing endpoints toward `0.1/0.9`. Prefer equal-height or equal-x ports only when that also preserves balanced endpoints.
+- Route retries and returns after forward paths. Keep their trunks in an independent side slot inside the historical target lane and at least 16 pixels from the matching forward channel.
 - Allow new-diagram layout to widen an automatic target lane when its side gutter cannot safely contain a return or retry trunk. Recompute downstream lane positions and automatic routes from the expanded geometry.
 - Give each connection a distinct port by default. Set `allow_port_reuse` only for an intentional convergence.
 - Keep cross-lane vertical segments at least 16 pixels away from lane boundaries.
-- Put labels on clear, independent segments and keep the primary path visually dominant.
+- Score automatic candidates by bends, length, short segments, lane intrusion, node and connector clearance, reciprocal separation, main-path continuity, and label capacity.
+- Put labels on the longest clear independent segment available. After all automatic routes exist, reflow labels globally so later return paths cannot invalidate earlier label placement. Re-route or increase automatic spacing before accepting a label collision.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
+- Never simplify or silently rewrite explicit waypoints. Diagnose their quality issues and require an intentional edit instead.
 
 ## Visual quality gate
 
@@ -75,6 +79,10 @@ Require strict validation to have no warnings. It checks:
 - Connectors collinear with lane boundaries.
 - Connectors crossing nodes.
 - Connector segments crossing, overlapping, or becoming non-orthogonal.
+- Internal segments shorter than 16 pixels, unnecessary bends, hairpins, near-parallel crowding, and ambiguous reciprocal channels.
+- Same-lane main-path zigzags.
+- Edge labels without a clear carrier or overlapping nodes, connectors, or other labels.
+- Phase backgrounds above editable content, opaque lane bodies hiding phase bands, or interactive phase cells.
 
 Treat automated validation and visual review as separate evidence:
 
@@ -83,6 +91,7 @@ Treat automated validation and visual review as separate evidence:
 - If the current agent can analyze images, inspect the rendered preview for clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions.
 - If the current agent cannot analyze images, export a preview when possible and request user review. Never claim that visual review passed.
 - Report `strict validation`, `preview export`, and `model visual review` as separate statuses.
+- Treat `visual_review: "not_available"` as an explicit incomplete visual-review status, never as a strict-validation success alias.
 
 ## Update an existing diagram
 
@@ -94,6 +103,7 @@ Treat automated validation and visual review as separate evidence:
    ```
 
 3. Confirm that the result is compatible. Otherwise explain that migration or rebuilding is required for safe patching.
+   If a user redraws a connector directly in Draw.io, report it under `unmanaged_edges` and the `interoperability/unmanaged-edges` diagnostic. Recover its source/target relationship for review, but do not pretend its stable semantic ID was preserved.
 4. Put only requested updates, additions, deletions, phase changes, or a replacement `main_path` in a task-local patch file. Explicitly list incident edges when deleting a node.
 5. Write to a new output file, validate, and compare against the declared patch:
 
@@ -113,10 +123,12 @@ Treat automated validation and visual review as separate evidence:
 - Give each participating system or role one full-height vertical lane.
 - Use global `rank` values for top-to-bottom order; assign the same rank to parallel steps.
 - Keep nodes structurally parented to their owning lanes.
+- When phases exist, keep semantic Z-order as phase backgrounds, lanes, nodes, then connectors. Make lane bodies transparent and phase cells non-interactive so the bands remain visible without blocking node selection.
 - Prefer three to five lanes per page; split dense exception detail when necessary.
 - Preserve stable IDs across revisions.
 - Report added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
+- Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.
 
 ## Package neutrality
