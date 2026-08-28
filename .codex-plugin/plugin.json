@@ -1,0 +1,36 @@
+{
+  "name": "product-swimlane-drawio",
+  "version": "0.3.0",
+  "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
+  "author": {
+    "name": "zz-zed",
+    "url": "https://github.com/zz-zed"
+  },
+  "homepage": "https://github.com/zz-zed/product-swimlane-drawio#readme",
+  "repository": "https://github.com/zz-zed/product-swimlane-drawio",
+  "license": "MIT",
+  "keywords": [
+    "drawio",
+    "swimlane",
+    "process-diagram",
+    "agent-skill"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Product Swimlane Draw.io",
+    "shortDescription": "Create editable vertical swimlane diagrams.",
+    "longDescription": "Create, inspect, validate, and safely update native Draw.io vertical swimlane process diagrams while preserving compatible manual layout changes.",
+    "developerName": "zz-zed",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/zz-zed/product-swimlane-drawio",
+    "defaultPrompt": [
+      "Create an editable vertical swimlane diagram from this process.",
+      "Update this Draw.io swimlane diagram while preserving manual layout."
+    ],
+    "brandColor": "#5B5BD6"
+  }
+}

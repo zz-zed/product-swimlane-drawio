@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-28
+
+### Added
+
+- Add repository-local Claude Code and Codex plugin manifests and marketplace catalogs for native marketplace installation.
+- Keep Claude Code, Codex, and `npx skills` installations on the same canonical `skills/product-swimlane-drawio` implementation.
+
+### Documentation
+
+- Document native Claude Code and Codex Plugin Marketplace installation alongside the existing Agent Skills installation path.
+
+### Tests
+
+- Add manifest consistency coverage and verify that both plugin ecosystems resolve the repository's single canonical Skill source.
+
 ## [0.2.2] - 2026-08-17
 
 ### Added
@@ -105,7 +120,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.1.1...v0.2.0

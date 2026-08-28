@@ -1,0 +1,20 @@
+{
+  "name": "product-swimlane-drawio",
+  "interface": {
+    "displayName": "Product Swimlane Draw.io"
+  },
+  "plugins": [
+    {
+      "name": "product-swimlane-drawio",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

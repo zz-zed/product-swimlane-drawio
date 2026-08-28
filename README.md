@@ -5,6 +5,8 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![Agent Skill](https://img.shields.io/badge/Agent%20Skill-compatible-5B5BD6.svg)](https://agentskills.io/)
+[![Claude Plugin](https://img.shields.io/badge/Claude-Plugin%20Marketplace-D97757.svg)](https://code.claude.com/docs/en/plugin-marketplaces)
+[![Codex Plugin](https://img.shields.io/badge/Codex-Plugin%20Marketplace-111827.svg)](https://developers.openai.com/codex/)
 
 ![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)
 
@@ -51,13 +53,13 @@ Edit locally, inspect the saved file, or apply a semantic patch
 
 ## Supported agents
 
-The package follows the Agent Skills directory format and targets:
+The package follows the Agent Skills directory format and includes native plugin manifests for:
 
 - OpenAI Codex
 - Claude Code
 - Other Agent Skills-compatible tools on a best-effort basis
 
-Agent-specific metadata is isolated under `agents/`; the workflow and Python tool do not depend on a single agent runtime.
+Claude Code, Codex, and `npx skills` all load the same canonical Skill under `skills/product-swimlane-drawio`; the plugin wrappers do not duplicate the implementation. Agent-specific metadata is isolated under `agents/`, and the workflow and Python tool do not depend on a single agent runtime.
 
 ## Requirements
 
@@ -69,9 +71,11 @@ The bundled Python tool uses only the standard library. Draw.io MCP is not requi
 
 ## Install
 
-Installing with [`npx skills`](https://github.com/vercel-labs/skills) requires Node.js and npm. The Skill itself runs locally with Python and does not require Node.js after installation.
+Choose one installation method. All three methods install the same Skill implementation. The Skill itself runs locally with Python; Draw.io MCP is not required.
 
-### Quick install (recommended)
+### Agent Skills quick install
+
+Installing with [`npx skills`](https://github.com/vercel-labs/skills) requires Node.js and npm. Node.js is not required after installation.
 
 Run this command in your terminal:
 
@@ -87,13 +91,33 @@ For a shared user-level installation, add `-g`:
 npx skills add zz-zed/product-swimlane-drawio -g
 ```
 
+### Claude Code Plugin Marketplace
+
+Run these commands inside Claude Code:
+
+```text
+/plugin marketplace add zz-zed/product-swimlane-drawio
+/plugin install product-swimlane-drawio@product-swimlane-drawio
+```
+
+The installed Skill is invoked under Claude Code's plugin namespace as `/product-swimlane-drawio:product-swimlane-drawio` and can also be selected automatically from its description.
+
+### Codex Plugin Marketplace
+
+Run these terminal commands with a Codex version that provides `codex plugin`:
+
+```bash
+codex plugin marketplace add zz-zed/product-swimlane-drawio
+codex plugin add product-swimlane-drawio@product-swimlane-drawio
+```
+
 ### Ask an agent
 
-Tell Codex, Claude Code, or another Agent Skills-compatible coding agent:
+Tell Codex, Claude Code, or another Agent Skills-compatible coding agent which installation method you prefer:
 
-> Please install the `product-swimlane-drawio` Skill from `github.com/zz-zed/product-swimlane-drawio`.
+> Please install `product-swimlane-drawio` from `github.com/zz-zed/product-swimlane-drawio`. Prefer the native plugin marketplace for this agent; otherwise use `npx skills`.
 
-The agent may ask which installation scope and supported agents to use, and may request permission before running `npx`.
+The agent may ask which installation scope and runtime to use, and may request permission before running installation commands.
 
 ### Verify installation
 
@@ -108,6 +132,8 @@ For a global installation, add `-g`:
 ```bash
 npx skills list -g
 ```
+
+Marketplace installations can be checked with `claude plugin list` or `codex plugin list`.
 
 ## Use with an agent
 
@@ -216,6 +242,17 @@ Verify local Skill discovery:
 ```bash
 npx skills add . --list
 ```
+
+Validate both plugin packages:
+
+```bash
+claude plugin validate . --strict
+codex plugin marketplace add .
+codex plugin list --available --marketplace product-swimlane-drawio
+codex plugin marketplace remove product-swimlane-drawio
+```
+
+The Codex commands perform a reversible local discovery check. They do not install the plugin; the final command removes the temporary marketplace registration.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
 

@@ -5,6 +5,8 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![Agent Skill](https://img.shields.io/badge/Agent%20Skill-compatible-5B5BD6.svg)](https://agentskills.io/)
+[![Claude Plugin](https://img.shields.io/badge/Claude-Plugin%20Marketplace-D97757.svg)](https://code.claude.com/docs/en/plugin-marketplaces)
+[![Codex Plugin](https://img.shields.io/badge/Codex-Plugin%20Marketplace-111827.svg)](https://developers.openai.com/codex/)
 
 ![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-zh.png)
 
@@ -51,13 +53,13 @@
 
 ## 支持的 Agent
 
-该包遵循 Agent Skills 目录格式，主要面向：
+该包遵循 Agent Skills 目录格式，并为以下 Agent 提供原生插件清单：
 
 - OpenAI Codex
 - Claude Code
 - 其他兼容 Agent Skills 的工具，按最佳兼容方式支持
 
-Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python 工具不依赖单一 Agent 运行时。
+Claude Code、Codex 和 `npx skills` 共用 `skills/product-swimlane-drawio` 下的同一份 Skill 实现，插件包装不会复制核心文件。Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python 工具不依赖单一 Agent 运行时。
 
 ## 环境要求
 
@@ -69,9 +71,11 @@ Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python �
 
 ## 安装
 
-通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装需要 Node.js 和 npm。安装完成后，该 Skill 只依赖本地 Python，不需要继续使用 Node.js。
+以下三种方式任选其一，安装的都是同一份 Skill。Skill 运行时只依赖本地 Python，不需要 Draw.io MCP。
 
-### 快速安装（推荐）
+### Agent Skills 快速安装
+
+通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装需要 Node.js 和 npm；安装完成后不再依赖 Node.js。
 
 在终端中运行：
 
@@ -87,13 +91,33 @@ npx skills add zz-zed/product-swimlane-drawio
 npx skills add zz-zed/product-swimlane-drawio -g
 ```
 
+### Claude Code Plugin Marketplace
+
+在 Claude Code 中执行：
+
+```text
+/plugin marketplace add zz-zed/product-swimlane-drawio
+/plugin install product-swimlane-drawio@product-swimlane-drawio
+```
+
+安装后可通过 Claude Code 的插件命名空间 `/product-swimlane-drawio:product-swimlane-drawio` 显式调用，也可以由 Claude 根据描述自动选择。
+
+### Codex Plugin Marketplace
+
+使用支持 `codex plugin` 的 Codex 版本，在终端执行：
+
+```bash
+codex plugin marketplace add zz-zed/product-swimlane-drawio
+codex plugin add product-swimlane-drawio@product-swimlane-drawio
+```
+
 ### 告诉 Agent 安装
 
-直接告诉 Codex、Claude Code 或其他兼容 Agent Skills 的编程 Agent：
+直接告诉 Codex、Claude Code 或其他兼容 Agent Skills 的编程 Agent，并说明优先采用的安装方式：
 
-> 请帮我安装 `github.com/zz-zed/product-swimlane-drawio` 中的 `product-swimlane-drawio` Skill。
+> 请从 `github.com/zz-zed/product-swimlane-drawio` 安装 `product-swimlane-drawio`。优先使用当前 Agent 的原生 Plugin Marketplace，不支持时再使用 `npx skills`。
 
-Agent 可能会询问安装范围和目标 Agent，并在运行 `npx` 前请求你的授权。
+Agent 可能会询问安装范围和目标运行环境，并在执行安装命令前请求你的授权。
 
 ### 验证安装结果
 
@@ -108,6 +132,8 @@ npx skills list
 ```bash
 npx skills list -g
 ```
+
+Marketplace 安装结果可通过 `claude plugin list` 或 `codex plugin list` 检查。
 
 ## 通过 Agent 使用
 
@@ -216,6 +242,17 @@ python3 -m unittest discover -s tests -v
 ```bash
 npx skills add . --list
 ```
+
+校验两套插件包：
+
+```bash
+claude plugin validate . --strict
+codex plugin marketplace add .
+codex plugin list --available --marketplace product-swimlane-drawio
+codex plugin marketplace remove product-swimlane-drawio
+```
+
+Codex 命令只执行一次可逆的本地发现检查，不会安装插件；最后一条命令会移除临时 Marketplace 注册。
 
 贡献要求参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

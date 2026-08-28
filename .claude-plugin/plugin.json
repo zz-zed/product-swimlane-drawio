@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "product-swimlane-drawio",
+  "displayName": "Product Swimlane Draw.io",
+  "version": "0.3.0",
+  "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
+  "author": {
+    "name": "zz-zed",
+    "url": "https://github.com/zz-zed"
+  },
+  "homepage": "https://github.com/zz-zed/product-swimlane-drawio#readme",
+  "repository": "https://github.com/zz-zed/product-swimlane-drawio",
+  "license": "MIT",
+  "keywords": [
+    "drawio",
+    "swimlane",
+    "process-diagram",
+    "agent-skill"
+  ]
+}

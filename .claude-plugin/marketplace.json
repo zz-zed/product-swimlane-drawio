@@ -1,0 +1,18 @@
+{
+  "name": "product-swimlane-drawio",
+  "description": "Native marketplace distribution for the editable Draw.io product swimlane Skill.",
+  "owner": {
+    "name": "zz-zed"
+  },
+  "plugins": [
+    {
+      "name": "product-swimlane-drawio",
+      "source": ".",
+      "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
+      "version": "0.3.0",
+      "author": {
+        "name": "zz-zed"
+      }
+    }
+  ]
+}

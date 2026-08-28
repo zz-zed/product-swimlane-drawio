@@ -206,16 +206,24 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn(install_command, chinese)
         self.assertNotIn("--skill product-swimlane-drawio", english)
         self.assertNotIn("--skill product-swimlane-drawio", chinese)
-        self.assertIn("### Quick install (recommended)", english)
+        self.assertIn("### Agent Skills quick install", english)
+        self.assertIn("### Claude Code Plugin Marketplace", english)
+        self.assertIn("### Codex Plugin Marketplace", english)
         self.assertIn("### Ask an agent", english)
         self.assertIn("### Verify installation", english)
-        self.assertIn("### 快速安装（推荐）", chinese)
+        self.assertIn("### Agent Skills 快速安装", chinese)
+        self.assertIn("### Claude Code Plugin Marketplace", chinese)
+        self.assertIn("### Codex Plugin Marketplace", chinese)
         self.assertIn("### 告诉 Agent 安装", chinese)
         self.assertIn("### 验证安装结果", chinese)
         self.assertIn("github.com/zz-zed/product-swimlane-drawio", english)
         self.assertIn("github.com/zz-zed/product-swimlane-drawio", chinese)
         self.assertIn("npx skills list -g", english)
         self.assertIn("npx skills list -g", chinese)
+        self.assertIn("codex plugin marketplace add zz-zed/product-swimlane-drawio", english)
+        self.assertIn("codex plugin marketplace add zz-zed/product-swimlane-drawio", chinese)
+        self.assertIn("/plugin marketplace add zz-zed/product-swimlane-drawio", english)
+        self.assertIn("/plugin marketplace add zz-zed/product-swimlane-drawio", chinese)
         self.assertIn(
             "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)",
             english,
@@ -233,6 +241,37 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertIn(image_reference, chinese)
         self.assertEqual(english.count("\n## "), chinese.count("\n## "))
         self.assertEqual(english.count("```"), chinese.count("```"))
+
+    def test_plugin_marketplace_manifests_share_one_skill_source(self) -> None:
+        claude_plugin = json.loads(
+            (ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        claude_marketplace = json.loads(
+            (ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+        )
+        codex_plugin = json.loads(
+            (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        codex_marketplace = json.loads(
+            (ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
+        )
+
+        plugin_name = "product-swimlane-drawio"
+        self.assertEqual(claude_plugin["name"], plugin_name)
+        self.assertEqual(codex_plugin["name"], plugin_name)
+        self.assertEqual(claude_plugin["version"], codex_plugin["version"])
+        self.assertEqual(claude_marketplace["plugins"][0]["name"], plugin_name)
+        self.assertEqual(claude_marketplace["plugins"][0]["source"], ".")
+        self.assertEqual(
+            claude_marketplace["plugins"][0]["version"], claude_plugin["version"]
+        )
+        self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
+        self.assertEqual(
+            codex_marketplace["plugins"][0]["source"],
+            {"source": "local", "path": "."},
+        )
+        self.assertEqual(codex_plugin["skills"], "./skills/")
+        self.assertTrue((SKILL / "SKILL.md").is_file())
 
     def test_readme_infographic_is_valid_landscape_png(self) -> None:
         image_dir = ROOT / "docs" / "illustrations" / "product-swimlane-readme"
