@@ -9,7 +9,7 @@
       "name": "product-swimlane-drawio",
       "source": ".",
       "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "zz-zed"
       }

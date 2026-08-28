@@ -2,7 +2,6 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "product-swimlane-drawio",
   "displayName": "Product Swimlane Draw.io",
-  "version": "0.3.0",
   "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
   "author": {
     "name": "zz-zed",

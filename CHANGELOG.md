@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-28
+
+### Changed
+
+- Let the Claude marketplace own the Claude plugin version by omitting `version` from `.claude-plugin/plugin.json`; retain explicit `0.3.1` versions in the Claude marketplace entry and Codex plugin manifest.
+
+### Tests
+
+- Update manifest consistency coverage for marketplace-managed Claude versions.
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
@@ -120,7 +130,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.0...v0.2.1

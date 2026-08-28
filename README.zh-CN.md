@@ -246,13 +246,13 @@ npx skills add . --list
 校验两套插件包：
 
 ```bash
-claude plugin validate . --strict
+claude plugin validate .
 codex plugin marketplace add .
 codex plugin list --available --marketplace product-swimlane-drawio
 codex plugin marketplace remove product-swimlane-drawio
 ```
 
-Codex 命令只执行一次可逆的本地发现检查，不会安装插件；最后一条命令会移除临时 Marketplace 注册。
+Claude manifest 按目标内部市场的版本托管规则有意省略 `version`，因此 Claude 校验器可能给出不阻塞安装的版本建议；该市场专用包不使用 `--strict`。Codex 命令只执行一次可逆的本地发现检查，不会安装插件；最后一条命令会移除临时 Marketplace 注册。
 
 贡献要求参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

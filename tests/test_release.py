@@ -259,12 +259,13 @@ class ReleasePackageTests(unittest.TestCase):
         plugin_name = "product-swimlane-drawio"
         self.assertEqual(claude_plugin["name"], plugin_name)
         self.assertEqual(codex_plugin["name"], plugin_name)
-        self.assertEqual(claude_plugin["version"], codex_plugin["version"])
+        self.assertNotIn("version", claude_plugin)
         self.assertEqual(claude_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(claude_marketplace["plugins"][0]["source"], ".")
         self.assertEqual(
-            claude_marketplace["plugins"][0]["version"], claude_plugin["version"]
+            claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
+        self.assertEqual(codex_plugin["version"], "0.3.1")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],

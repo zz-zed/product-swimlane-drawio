@@ -246,13 +246,13 @@ npx skills add . --list
 Validate both plugin packages:
 
 ```bash
-claude plugin validate . --strict
+claude plugin validate .
 codex plugin marketplace add .
 codex plugin list --available --marketplace product-swimlane-drawio
 codex plugin marketplace remove product-swimlane-drawio
 ```
 
-The Codex commands perform a reversible local discovery check. They do not install the plugin; the final command removes the temporary marketplace registration.
+The Claude manifest intentionally omits `version` because the target marketplace owns it. Claude's validator may therefore emit a non-blocking version recommendation; do not use `--strict` for this marketplace-specific package. The Codex commands perform a reversible local discovery check. They do not install the plugin; the final command removes the temporary marketplace registration.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
 
