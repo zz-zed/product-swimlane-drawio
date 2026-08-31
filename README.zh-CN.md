@@ -18,7 +18,7 @@
 
 生成过程不依赖 Draw.io MCP，也不要求安装 Draw.io 应用。只有需要可视化编辑或导出时，才需要 Draw.io Desktop 或 diagrams.net。
 
-**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围) · [开发](#开发)
+**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围)
 
 ## 为什么需要这个 Skill
 
@@ -206,16 +206,6 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 ```
 
 详见[语义 Schema 与补丁约定](skills/product-swimlane-drawio/references/schema.md)。
-
-## 开发
-
-```bash
-python3 -m unittest discover -s tests -v
-npx skills add . --list
-claude plugin validate .
-```
-
-Claude manifest 按目标市场的版本托管规则有意省略 `version`，因此 Claude 校验器可能给出不阻塞的建议。贡献要求参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 安全与隐私
 

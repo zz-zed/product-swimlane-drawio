@@ -18,7 +18,7 @@
 
 Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development)
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope)
 
 ## Why this exists
 
@@ -206,16 +206,6 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 ```
 
 See the [semantic schema and patch contract](skills/product-swimlane-drawio/references/schema.md).
-
-## Development
-
-```bash
-python3 -m unittest discover -s tests -v
-npx skills add . --list
-claude plugin validate .
-```
-
-The Claude manifest intentionally omits `version` because the target marketplace owns it; Claude's validator may emit a non-blocking recommendation. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
 
 ## Security and privacy
 
