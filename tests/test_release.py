@@ -19,9 +19,25 @@ TOOL = SKILL / "scripts" / "drawio_swimlane.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-def run_tool(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_tool(
+    *args: str,
+    check: bool = True,
+    bind_patch_baseline: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    command_args = list(args)
+    if (
+        bind_patch_baseline
+        and command_args
+        and command_args[0] == "patch"
+        and "--expected-input-sha256" not in command_args
+    ):
+        input_index = command_args.index("--input") + 1
+        input_path = Path(command_args[input_index])
+        command_args.extend(
+            ["--expected-input-sha256", hashlib.sha256(input_path.read_bytes()).hexdigest()]
+        )
     result = subprocess.run(
-        [sys.executable, str(TOOL), *args],
+        [sys.executable, str(TOOL), *command_args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -342,11 +358,11 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("build --spec process.json --output process.drawio --strict", english)
         self.assertIn("build --spec process.json --output process.drawio --strict", chinese)
         self.assertIn(
-            "patch --input process.drawio --changes changes.json --output process-updated.drawio --strict",
+            'patch --input process.drawio --expected-input-sha256 "<sha256-from-inspect>" --changes changes.json --output process-updated.drawio --strict',
             english,
         )
         self.assertIn(
-            "patch --input process.drawio --changes changes.json --output process-updated.drawio --strict",
+            'patch --input process.drawio --expected-input-sha256 "<inspect返回的sha256>" --changes changes.json --output process-updated.drawio --strict',
             chinese,
         )
         self.assertEqual(english.count("\n## "), chinese.count("\n## "))
@@ -481,12 +497,27 @@ class ReleasePackageTests(unittest.TestCase):
         )
         self.assertIn("Versioned semantic JSON", architecture)
         self.assertIn("Inspect latest file → semantic patch → compare", architecture)
+        self.assertIn("Managed artifact identity", architecture)
+        self.assertIn("A patch is bound to the exact inspected input bytes", architecture)
         self.assertIn("Strict validation and visual review are independent", architecture)
         self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
         self.assertIn("currently live in one standard-library Python file", architecture)
         self.assertIn("single-page process view", architecture)
         self.assertIn("Stay narrow", principles)
         self.assertIn("does not attempt to become a general-purpose generator", principles)
+
+    def test_integrity_workflow_is_documented(self) -> None:
+        schema = (SKILL / "references" / "schema.md").read_text(encoding="utf-8")
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        round_trip = (ROOT / "docs" / "ROUND_TRIP_CONTRACT.md").read_text(
+            encoding="utf-8"
+        )
+        for document in (schema, skill, round_trip):
+            self.assertIn("managed", document)
+            self.assertIn("recoverable", document)
+            self.assertIn("unsafe", document)
+            self.assertIn("--expected-input-sha256", document)
+            self.assertIn("--accept-model-drift", document)
 
     def test_readme_discloses_multimodal_review_reliability(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -641,6 +672,10 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["valid"])
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
+        self.assertEqual(report["managed_state"], "managed")
+        self.assertEqual(report["tool_version"], "0.5.0")
+        self.assertEqual(report["model_hash_version"], "1")
+        self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
         self.assertEqual(report["manual_waypoints_checked"], 0)
         self.assertTrue(output.is_file())
@@ -654,6 +689,807 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertTrue(report["valid"])
             self.assertEqual(report["errors"], [])
             self.assertEqual(report["warnings"], [])
+
+    def test_managed_hash_ignores_manual_geometry_style_and_waypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            diagram = self.build_diagram(directory)
+            before = json.loads(run_tool("inspect", "--input", str(diagram)).stdout)
+            tree = ET.parse(diagram)
+            root = tree.getroot().find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(root)
+            node = next(
+                cell
+                for cell in root.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "step-a"
+            )
+            geometry = node.find("mxGeometry")
+            self.assertIsNotNone(geometry)
+            geometry.attrib["x"] = str(float(geometry.attrib["x"]) + 6)
+            node.attrib["style"] += "fontStyle=1;"
+            edge = next(
+                cell
+                for cell in root.iter("mxCell")
+                if cell.attrib.get("data-kind") == "edge"
+            )
+            edge_geometry = edge.find("mxGeometry")
+            self.assertIsNotNone(edge_geometry)
+            points = edge_geometry.find("./Array[@as='points']")
+            if points is None:
+                points = ET.SubElement(edge_geometry, "Array", {"as": "points"})
+            ET.SubElement(points, "mxPoint", {"x": "100", "y": "120"})
+            tree.write(diagram, encoding="utf-8", xml_declaration=False)
+
+            after = json.loads(run_tool("inspect", "--input", str(diagram)).stdout)
+            self.assertEqual(before["stored_model_hash"], after["stored_model_hash"])
+            self.assertEqual(after["stored_model_hash"], after["computed_model_hash"])
+            self.assertTrue(after["model_hash_matches"])
+            self.assertEqual(after["managed_state"], "managed")
+
+    def test_semantic_drift_requires_reviewed_rebaseline_and_records_input_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            tree = ET.parse(before)
+            node = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "step-a"
+            )
+            node.attrib["value"] = "Reviewed step"
+            tree.write(before, encoding="utf-8", xml_declaration=False)
+
+            inspected = json.loads(run_tool("inspect", "--input", str(before)).stdout)
+            self.assertFalse(inspected["compatible"])
+            self.assertEqual(inspected["managed_state"], "unsafe")
+            self.assertFalse(inspected["model_hash_matches"])
+            self.assertIn(
+                "integrity/model-hash-mismatch",
+                {item["code"] for item in inspected["validation"]["diagnostics"]},
+            )
+
+            changes = directory / "changes.json"
+            changes.write_text(
+                json.dumps({"update_nodes": [{"id": "step-a", "label": "Reviewed step"}]}),
+                encoding="utf-8",
+            )
+            rejected = directory / "rejected.drawio"
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(rejected),
+                "--strict",
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(rejected.exists())
+            self.assertEqual(
+                json.loads(result.stdout)["diagnostics"][0]["code"],
+                "integrity/model-hash-mismatch",
+            )
+
+            input_sha256 = hashlib.sha256(before.read_bytes()).hexdigest()
+            self.assertEqual(inspected["input"]["sha256"], input_sha256)
+            accepted = directory / "accepted.drawio"
+            report = json.loads(
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(changes),
+                    "--output",
+                    str(accepted),
+                    "--strict",
+                    "--accept-model-drift",
+                    "--expected-input-sha256",
+                    input_sha256,
+                ).stdout
+            )
+            self.assertEqual(report["patch_receipt"]["input_sha256"], input_sha256)
+            self.assertEqual(report["patch_receipt"]["input_managed_state"], "unsafe")
+            self.assertTrue(report["patch_receipt"]["accepted_model_drift"])
+            self.assertTrue(report["model_hash_matches"])
+            self.assertEqual(report["managed_state"], "managed")
+
+    def test_patch_rejects_changed_input_sha256_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = directory / "changes.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            output = directory / "mismatch.drawio"
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(output),
+                "--expected-input-sha256",
+                "0" * 64,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+            self.assertEqual(
+                json.loads(result.stdout)["diagnostics"][0]["code"],
+                "delivery/input-sha256-mismatch",
+            )
+
+    def test_patch_requires_inspected_input_sha256_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = directory / "changes.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            output = directory / "unbound.drawio"
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(output),
+                check=False,
+                bind_patch_baseline=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+            self.assertEqual(
+                json.loads(result.stdout)["diagnostics"][0]["code"],
+                "delivery/input-sha256-required",
+            )
+
+    def test_legacy_managed_metadata_is_recoverable_and_patch_upgrades_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            tree = ET.parse(before)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            for attribute in (
+                "data-tool-version",
+                "data-model-hash-version",
+                "data-model-hash",
+                "data-lane-order",
+            ):
+                pool.attrib.pop(attribute, None)
+            tree.write(before, encoding="utf-8", xml_declaration=False)
+
+            inspected = json.loads(run_tool("inspect", "--input", str(before)).stdout)
+            self.assertTrue(inspected["compatible"])
+            self.assertEqual(inspected["managed_state"], "recoverable")
+            self.assertIsNone(inspected["stored_model_hash"])
+
+            changes = directory / "changes.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            after = directory / "upgraded.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+                "--strict",
+            )
+            upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            self.assertEqual(upgraded["managed_state"], "managed")
+            self.assertEqual(upgraded["tool_version"], "0.5.0")
+            self.assertTrue(upgraded["model_hash_matches"])
+
+    def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "v3.json"
+            spec.write_text(
+                (ROOT / "examples" / "request-review" / "process.json").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            diagram = directory / "v3.drawio"
+            run_tool("build", "--spec", str(spec), "--output", str(diagram), "--strict")
+
+            broken_schema = directory / "broken-schema.drawio"
+            tree = ET.parse(diagram)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib.pop("data-behavior-pattern")
+            tree.write(broken_schema, encoding="utf-8", xml_declaration=False)
+            schema_report = json.loads(
+                run_tool("validate", "--input", str(broken_schema), check=False).stdout
+            )
+            self.assertFalse(schema_report["valid"])
+            self.assertEqual(schema_report["managed_state"], "unsafe")
+            self.assertIn(
+                "integrity/schema-composition-mismatch",
+                {item["code"] for item in schema_report["diagnostics"]},
+            )
+            blocked_output = directory / "blocked.drawio"
+            changes = directory / "no-op.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            blocked = run_tool(
+                "patch",
+                "--input",
+                str(broken_schema),
+                "--changes",
+                str(changes),
+                "--output",
+                str(blocked_output),
+                "--accept-model-drift",
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertFalse(blocked_output.exists())
+            self.assertEqual(
+                json.loads(blocked.stdout)["diagnostics"][0]["code"],
+                "delivery/input-integrity-failed",
+            )
+
+            unmanaged = directory / "unmanaged.drawio"
+            tree = ET.parse(diagram)
+            graph_root = tree.getroot().find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(graph_root)
+            pool = next(
+                cell
+                for cell in graph_root.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            extra = ET.SubElement(
+                graph_root,
+                "mxCell",
+                {
+                    "id": "unmanaged-shape",
+                    "parent": pool.attrib["id"],
+                    "vertex": "1",
+                    "value": "Unmanaged",
+                },
+            )
+            ET.SubElement(
+                extra,
+                "mxGeometry",
+                {"x": "12", "y": "80", "width": "60", "height": "30", "as": "geometry"},
+            )
+            tree.write(unmanaged, encoding="utf-8", xml_declaration=False)
+            unmanaged_report = json.loads(
+                run_tool("validate", "--input", str(unmanaged), check=False).stdout
+            )
+            self.assertEqual(unmanaged_report["managed_state"], "recoverable")
+            self.assertIn(
+                "structure/unmanaged-vertex",
+                {item["code"] for item in unmanaged_report["diagnostics"]},
+            )
+            strict = run_tool(
+                "validate", "--input", str(unmanaged), "--strict", check=False
+            )
+            self.assertNotEqual(strict.returncode, 0)
+
+    def test_malformed_nested_managed_metadata_returns_integrity_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            diagram = self.build_diagram(directory)
+            malformed_lane_order = directory / "malformed-lane-order.drawio"
+            tree = ET.parse(diagram)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["data-lane-order"] = "[{}]"
+            tree.write(malformed_lane_order, encoding="utf-8", xml_declaration=False)
+            lane_report = json.loads(
+                run_tool(
+                    "validate",
+                    "--input",
+                    str(malformed_lane_order),
+                    check=False,
+                ).stdout
+            )
+            self.assertIn(
+                "integrity/schema-composition-mismatch",
+                {item["code"] for item in lane_report["diagnostics"]},
+            )
+            self.assertNotIn(
+                "internal/unexpected",
+                {item["code"] for item in lane_report["diagnostics"]},
+            )
+
+            v3_diagram = directory / "v3.drawio"
+            run_tool(
+                "build",
+                "--spec",
+                str(ROOT / "examples" / "request-review" / "process.json"),
+                "--output",
+                str(v3_diagram),
+                "--strict",
+            )
+            malformed_groups = directory / "malformed-groups.drawio"
+            tree = ET.parse(v3_diagram)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["data-groups"] = "[1]"
+            tree.write(malformed_groups, encoding="utf-8", xml_declaration=False)
+            group_report = json.loads(
+                run_tool(
+                    "validate",
+                    "--input",
+                    str(malformed_groups),
+                    check=False,
+                ).stdout
+            )
+            self.assertIn(
+                "integrity/schema-composition-mismatch",
+                {item["code"] for item in group_report["diagnostics"]},
+            )
+            self.assertNotIn(
+                "internal/unexpected",
+                {item["code"] for item in group_report["diagnostics"]},
+            )
+
+    def test_node_group_mirror_must_match_managed_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = json.loads(
+                (ROOT / "examples" / "request-review" / "process.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            spec["groups"] = [
+                {
+                    "id": "preparation",
+                    "lane": "requester",
+                    "kind": "support",
+                    "nodes": ["prepare"],
+                }
+            ]
+            spec_path = directory / "group-spec.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            diagram = directory / "group.drawio"
+            run_tool("build", "--spec", str(spec_path), "--output", str(diagram))
+            tree = ET.parse(diagram)
+            node = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-semantic-id") == "prepare"
+            )
+            node.attrib["data-group-id"] = "wrong-group"
+            tree.write(diagram, encoding="utf-8", xml_declaration=False)
+
+            report = json.loads(run_tool("inspect", "--input", str(diagram)).stdout)
+            self.assertEqual(report["managed_state"], "unsafe")
+            self.assertFalse(report["model_hash_matches"])
+            self.assertIn(
+                "integrity/schema-composition-mismatch",
+                {item["code"] for item in report["validation"]["diagnostics"]},
+            )
+
+    def test_compare_rejects_undeclared_pool_semantic_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            after = directory / "title-changed.drawio"
+            tree = ET.parse(before)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["value"] = "Undeclared title"
+            tree.write(after, encoding="utf-8", xml_declaration=False)
+            changes = directory / "no-op.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(after),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["preserved"])
+            self.assertIn("pool:main", report["unexpected_attributes"])
+
+            wrong_path = directory / "main-path-wrong-value.drawio"
+            tree = ET.parse(after)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["data-main-path"] = "[]"
+            tree.write(wrong_path, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(wrong_path),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["preserved"])
+
+    def test_compare_rejects_tampered_managed_pool_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = directory / "no-op.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            after = directory / "after.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+
+            for attribute in (
+                "data-tool-version",
+                "data-model-hash-version",
+                "data-model-hash",
+            ):
+                with self.subTest(attribute=attribute):
+                    tampered = directory / f"tampered-{attribute}.drawio"
+                    tree = ET.parse(after)
+                    pool = next(
+                        cell
+                        for cell in tree.iter("mxCell")
+                        if cell.attrib.get("data-kind") == "pool"
+                    )
+                    pool.attrib[attribute] = "evil"
+                    tree.write(tampered, encoding="utf-8", xml_declaration=False)
+                    result = run_tool(
+                        "compare",
+                        "--before",
+                        str(before),
+                        "--after",
+                        str(tampered),
+                        "--changes",
+                        str(changes),
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    report = json.loads(result.stdout)
+                    self.assertFalse(report["preserved"])
+                    self.assertIn("pool:main", report["unexpected_attributes"])
+
+    def test_main_path_allowance_does_not_mask_pool_title_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = directory / "main-path.json"
+            changes.write_text(
+                json.dumps(
+                    {"main_path": ["start", "step-a", "condition", "step-b", "end"]}
+                ),
+                encoding="utf-8",
+            )
+            after = directory / "main-path.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+            legal = json.loads(
+                run_tool(
+                    "compare",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--changes",
+                    str(changes),
+                ).stdout
+            )
+            self.assertTrue(legal["preserved"])
+
+            tampered = directory / "main-path-title-tampered.drawio"
+            tree = ET.parse(after)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["value"] = "Undeclared title"
+            tree.write(tampered, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(tampered),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["preserved"])
+            self.assertIn("pool:main", report["unexpected_attributes"])
+
+    def test_rank_extension_allowance_does_not_mask_pool_title_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = FIXTURES / "neutral-patch.json"
+            after = directory / "rank-expanded.drawio"
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(after),
+            )
+            legal = json.loads(
+                run_tool(
+                    "compare",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--changes",
+                    str(changes),
+                ).stdout
+            )
+            self.assertTrue(legal["preserved"])
+
+            tampered = directory / "rank-expanded-title-tampered.drawio"
+            tree = ET.parse(after)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["value"] = "Undeclared title"
+            tree.write(tampered, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(tampered),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["preserved"])
+            self.assertIn("pool:main", report["unexpected_attributes"])
+
+            wrong_rank = directory / "rank-expanded-wrong-rank.drawio"
+            tree = ET.parse(after)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool.attrib["data-max-rank"] = "99"
+            tree.write(wrong_rank, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(wrong_rank),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["preserved"])
+
+            wrong_pool_width = directory / "rank-expanded-wrong-pool-width.drawio"
+            tree = ET.parse(after)
+            pool = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "pool"
+            )
+            pool_geometry = pool.find("mxGeometry")
+            self.assertIsNotNone(pool_geometry)
+            pool_geometry.attrib["width"] = str(float(pool_geometry.attrib["width"]) + 10)
+            tree.write(wrong_pool_width, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(wrong_pool_width),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["preserved"])
+
+            wrong_lane_x = directory / "rank-expanded-wrong-lane-x.drawio"
+            tree = ET.parse(after)
+            lane = next(
+                cell
+                for cell in tree.iter("mxCell")
+                if cell.attrib.get("data-kind") == "lane"
+            )
+            lane_geometry = lane.find("mxGeometry")
+            self.assertIsNotNone(lane_geometry)
+            lane_geometry.attrib["x"] = str(float(lane_geometry.attrib["x"]) + 10)
+            tree.write(wrong_lane_x, encoding="utf-8", xml_declaration=False)
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(wrong_lane_x),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(result.stdout)["preserved"])
+
+    def test_compare_rejects_undeclared_node_edge_phase_and_added_cell_changes(self) -> None:
+        cases = (
+            ("node", {"update_nodes": [{"id": "step", "label": "Updated"}]}),
+            ("edge", {"update_edges": [{"id": "edge-a", "label": "Updated"}]}),
+            ("phase", {"update_phases": [{"id": "phase-a", "label": "Updated"}]}),
+        )
+        for name, change in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                spec = directory / "linear.json"
+                write_linear_v2_spec(spec)
+                before = directory / "before.drawio"
+                after = directory / "after.drawio"
+                changes = directory / "changes.json"
+                run_tool("build", "--spec", str(spec), "--output", str(before))
+                changes.write_text(json.dumps(change), encoding="utf-8")
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(changes),
+                    "--output",
+                    str(after),
+                )
+                self.assertTrue(
+                    json.loads(
+                        run_tool(
+                            "compare",
+                            "--before",
+                            str(before),
+                            "--after",
+                            str(after),
+                            "--changes",
+                            str(changes),
+                        ).stdout
+                    )["preserved"]
+                )
+                tree = ET.parse(after)
+                if name == "node":
+                    cell = next(
+                        cell
+                        for cell in tree.iter("mxCell")
+                        if cell.attrib.get("data-semantic-id") == "step"
+                    )
+                    geometry = cell.find("mxGeometry")
+                    self.assertIsNotNone(geometry)
+                    geometry.attrib["x"] = "999"
+                    incident_edge = next(
+                        edge
+                        for edge in tree.iter("mxCell")
+                        if edge.attrib.get("data-semantic-id") == "edge-a"
+                    )
+                    incident_edge.attrib["data-to"] = "end"
+                elif name == "edge":
+                    cell = next(
+                        cell
+                        for cell in tree.iter("mxCell")
+                        if cell.attrib.get("data-semantic-id") == "edge-a"
+                    )
+                    cell.attrib["data-to"] = "end"
+                else:
+                    cell = next(
+                        cell
+                        for cell in tree.iter("mxCell")
+                        if cell.attrib.get("data-semantic-id") == "phase-a"
+                    )
+                    geometry = cell.find("mxGeometry")
+                    self.assertIsNotNone(geometry)
+                    geometry.attrib["y"] = "999"
+                tampered = directory / "tampered.drawio"
+                tree.write(tampered, encoding="utf-8", xml_declaration=False)
+                result = run_tool(
+                    "compare",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(tampered),
+                    "--changes",
+                    str(changes),
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                report = json.loads(result.stdout)
+                self.assertFalse(report["preserved"])
+                self.assertTrue(
+                    report["unexpected_geometry"] or report["unexpected_attributes"]
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            tampered = directory / "undeclared-added-cell.drawio"
+            tree = ET.parse(before)
+            root = tree.find("./diagram/mxGraphModel/root")
+            self.assertIsNotNone(root)
+            added = ET.SubElement(
+                root,
+                "mxCell",
+                {
+                    "id": "undeclared-cell",
+                    "value": "Undeclared",
+                    "vertex": "1",
+                    "data-kind": "node",
+                    "data-semantic-id": "undeclared",
+                },
+            )
+            ET.SubElement(
+                added,
+                "mxGeometry",
+                {"x": "0", "y": "0", "width": "20", "height": "20", "as": "geometry"},
+            )
+            tree.write(tampered, encoding="utf-8", xml_declaration=False)
+            changes = directory / "no-op.json"
+            changes.write_text(json.dumps({"update_nodes": []}), encoding="utf-8")
+            result = run_tool(
+                "compare",
+                "--before",
+                str(before),
+                "--after",
+                str(tampered),
+                "--changes",
+                str(changes),
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["preserved"])
+            self.assertEqual(report["unexpected_added"], ["node:undeclared"])
 
     def test_strict_build_rejects_warnings_without_writing_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

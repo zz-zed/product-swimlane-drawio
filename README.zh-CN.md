@@ -18,7 +18,7 @@
 
 生成过程不依赖 Draw.io MCP，也不要求安装 Draw.io 应用。只有需要可视化编辑或导出时，才需要 Draw.io Desktop 或 diagrams.net。
 
-**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围) · [开发](#开发)
+**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围) · [开发](#开发) · [内部发布流程](docs/INTERNAL_RELEASE.md)
 
 ## 为什么需要这个 Skill
 
@@ -149,9 +149,9 @@ Agent 可能会询问安装范围，并在运行命令前请求授权。
 1. 使用 Draw.io Desktop 或 diagrams.net 打开生成的 `.drawio`。
 2. 调整文案、节点位置、泳道尺寸或连线并保存。
 3. 将最近保存的文件重新交给 Agent。
-4. Agent 运行 `inspect`，准备最小语义补丁，保留无关几何，再校验并对比结果。
+4. Agent 运行 `inspect`，检查产物状态，将补丁绑定到返回的输入 SHA-256，准备最小语义补丁，保留无关几何，再校验并对比结果。
 
-安全补丁依赖该 Skill 创建的语义元数据和稳定 ID。手工创建或不兼容的 `.drawio` 可能需要迁移或受控重建。明确设置的人工 waypoint 不会被静默简化。
+安全补丁依赖该 Skill 创建的语义元数据、匹配的语义模型哈希、稳定 ID 和经过检查的准确输入文件。经确认的直接语义编辑可以显式建立新基线；结构异常或手工创建的 `.drawio` 可能需要迁移或受控重建。明确设置的人工 waypoint 不会被静默简化。
 
 ## 校验与输出可靠度
 
@@ -199,7 +199,7 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  patch --input process.drawio --changes changes.json --output process-updated.drawio --strict
+  patch --input process.drawio --expected-input-sha256 "<inspect返回的sha256>" --changes changes.json --output process-updated.drawio --strict
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json

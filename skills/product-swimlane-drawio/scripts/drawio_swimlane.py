@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -75,6 +76,8 @@ GEOMETRY_TOLERANCE = 0.75
 SCHEMA_VERSION = "2"
 V3_SCHEMA_VERSION = "3"
 STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
+TOOL_VERSION = "0.5.0"
+MODEL_HASH_VERSION = "1"
 
 SLOT_CLASSES = {"left", "main", "right"}
 SLOT_ORDER = {"left": 0, "main": 1, "right": 2}
@@ -3341,6 +3344,13 @@ def build_tree(spec: dict) -> ET.ElementTree:
             "data-top-padding": number(values["top_padding"]), "data-bottom-padding": number(values["bottom_padding"]),
             "data-max-rank": str(max_rank),
             "data-schema-version": schema_version,
+            "data-tool-version": TOOL_VERSION,
+            "data-model-hash-version": MODEL_HASH_VERSION,
+            "data-lane-order": json.dumps(
+                [lane["id"] for lane in spec["lanes"]],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ),
             "data-main-path": json.dumps(spec.get("main_path", []), ensure_ascii=True, separators=(",", ":")),
         },
     )
@@ -3414,7 +3424,9 @@ def build_tree(spec: dict) -> ET.ElementTree:
         routing_context.get("label_sides", {}),
     )
     normalize_phase_layering(root, pool)
-    return ET.ElementTree(mxfile)
+    tree = ET.ElementTree(mxfile)
+    refresh_managed_metadata(tree)
+    return tree
 
 
 def graph_root(tree: ET.ElementTree) -> ET.Element:
@@ -3619,6 +3631,307 @@ def phase_cell_spec(cell: ET.Element) -> dict:
         "to_rank": int(cell.attrib.get("data-to-rank", "1")),
         "fill_color": cell.attrib.get("data-fill-color", "#f5f5f5"),
     }
+
+
+def json_attribute(
+    cell: ET.Element,
+    name: str,
+    expected_type: type,
+    default,
+):
+    raw = cell.attrib.get(name)
+    if raw is None:
+        return default
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DiagramError(
+            f"Invalid managed metadata in {name}",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"attribute": name},
+            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+        ) from exc
+    if not isinstance(value, expected_type):
+        raise DiagramError(
+            f"Managed metadata in {name} has the wrong type",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"attribute": name, "expected_type": expected_type.__name__},
+            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+        )
+    return value
+
+
+def managed_metadata_error(
+    message: str,
+    *,
+    attribute: str,
+    evidence: dict | None = None,
+) -> DiagramError:
+    return DiagramError(
+        message,
+        code="integrity/schema-composition-mismatch",
+        subject={"kind": "pool", "id": "main"},
+        evidence={"attribute": attribute, **(evidence or {})},
+        supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+    )
+
+
+def managed_id_list_attribute(
+    cell: ET.Element,
+    name: str,
+    default,
+) -> list[str] | None:
+    value = json_attribute(cell, name, list, default)
+    if value is None:
+        return value
+    try:
+        return validate_id_list(value, f"managed metadata {name}")
+    except DiagramError as exc:
+        raise managed_metadata_error(
+            f"Managed metadata in {name} must contain semantic IDs",
+            attribute=name,
+            evidence={"cause": exc.code},
+        ) from exc
+
+
+def managed_groups_attribute(
+    pool: ET.Element,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+) -> list[dict]:
+    groups = json_attribute(pool, "data-groups", list, [])
+    group_ids: set[str] = set()
+    member_to_group: dict[str, str] = {}
+    for index, group in enumerate(groups):
+        try:
+            validate_group_object(group, f"managed group[{index}]")
+        except DiagramError as exc:
+            raise managed_metadata_error(
+                "Managed group metadata is invalid",
+                attribute="data-groups",
+                evidence={"index": index, "cause": exc.code},
+            ) from exc
+        group_id = group["id"]
+        if group_id in group_ids:
+            raise managed_metadata_error(
+                "Managed group IDs must be unique",
+                attribute="data-groups",
+                evidence={"group_id": group_id},
+            )
+        group_ids.add(group_id)
+        if group["lane"] not in lanes:
+            raise managed_metadata_error(
+                "Managed group references a missing lane",
+                attribute="data-groups",
+                evidence={"group_id": group_id, "lane": group["lane"]},
+            )
+        for node_id in group["nodes"]:
+            if node_id not in nodes:
+                raise managed_metadata_error(
+                    "Managed group references a missing node",
+                    attribute="data-groups",
+                    evidence={"group_id": group_id, "node": node_id},
+                )
+            if nodes[node_id]["lane"] != group["lane"]:
+                raise managed_metadata_error(
+                    "Managed group contains a node from another lane",
+                    attribute="data-groups",
+                    evidence={"group_id": group_id, "node": node_id},
+                )
+            if node_id in member_to_group:
+                raise managed_metadata_error(
+                    "Managed node belongs to more than one group",
+                    attribute="data-groups",
+                    evidence={
+                        "node": node_id,
+                        "groups": [member_to_group[node_id], group_id],
+                    },
+                )
+            member_to_group[node_id] = group_id
+
+    for node_id, record in nodes.items():
+        mirrored_group = record["cell"].attrib.get("data-group-id")
+        expected_group = member_to_group.get(node_id)
+        if mirrored_group != expected_group:
+            raise managed_metadata_error(
+                "Node group metadata does not match the managed group model",
+                attribute="data-group-id",
+                evidence={
+                    "node": node_id,
+                    "expected_group": expected_group,
+                    "actual_group": mirrored_group,
+                },
+            )
+    return groups
+
+
+def semantic_model_document(tree: ET.ElementTree) -> dict:
+    pool = find_pool(tree)
+    root = graph_root(tree)
+    lanes, nodes = lane_node_records(root, pool)
+    edges = edge_records(root)
+    phases = phase_records(root, pool)
+    schema_version = pool.attrib.get("data-schema-version", "1")
+
+    lane_order = managed_id_list_attribute(pool, "data-lane-order", None)
+    if lane_order is None:
+        lane_order = [
+            cell.attrib["data-semantic-id"]
+            for cell in list(root)
+            if cell.attrib.get("data-kind") == "lane"
+            and cell.attrib.get("data-semantic-id")
+        ]
+    if len(lane_order) != len(set(lane_order)) or set(lane_order) != set(lanes):
+        raise DiagramError(
+            "Managed lane order does not match the diagram lanes",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"lane_order": lane_order, "lane_ids": sorted(lanes)},
+            supported_fixes=["restore-lane-order", "controlled-rebuild"],
+        )
+
+    lane_model = [
+        {
+            "id": lane_id,
+            "label": lanes[lane_id]["cell"].attrib.get("value", ""),
+        }
+        for lane_id in lane_order
+    ]
+    node_model = []
+    for node_id, record in sorted(nodes.items()):
+        cell = record["cell"]
+        try:
+            rank = int(cell.attrib.get("data-rank", "0"))
+        except ValueError as exc:
+            raise DiagramError(
+                f"Node {node_id} has invalid rank metadata",
+                code="integrity/schema-composition-mismatch",
+                subject={"kind": "node", "id": node_id},
+                evidence={"rank": cell.attrib.get("data-rank")},
+                supported_fixes=["restore-node-metadata", "controlled-rebuild"],
+            ) from exc
+        item = {
+            "id": node_id,
+            "lane": record["lane"],
+            "rank": rank,
+            "type": cell.attrib.get("data-node-type", "process"),
+            "label": cell.attrib.get("value", ""),
+        }
+        if cell.attrib.get("data-slot"):
+            item["slot"] = cell.attrib["data-slot"]
+        if cell.attrib.get("data-anchor"):
+            item["anchor"] = json_attribute(cell, "data-anchor", dict, {})
+        node_model.append(item)
+
+    edge_model = []
+    for edge_id, cell in sorted(edges.items()):
+        item = {
+            "id": edge_id,
+            "from": cell.attrib.get("data-from", ""),
+            "to": cell.attrib.get("data-to", ""),
+            "type": cell.attrib.get("data-edge-type", "flow"),
+            "label": cell.attrib.get("value", ""),
+            "route": cell.attrib.get("data-route", "auto"),
+        }
+        for attribute, field in (
+            ("data-branch", "branch"),
+            ("data-flow-role", "flow_role"),
+            ("data-outcome", "outcome"),
+        ):
+            if cell.attrib.get(attribute):
+                item[field] = cell.attrib[attribute]
+        edge_model.append(item)
+
+    try:
+        phase_model = [
+            {
+                "id": phase_id,
+                "label": cell.attrib.get("value", ""),
+                "from_rank": int(cell.attrib.get("data-from-rank", "0")),
+                "to_rank": int(cell.attrib.get("data-to-rank", "0")),
+            }
+            for phase_id, cell in sorted(phases.items())
+        ]
+    except ValueError as exc:
+        raise DiagramError(
+            "Phase rank metadata is invalid",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "phase"},
+            supported_fixes=["restore-phase-metadata", "controlled-rebuild"],
+        ) from exc
+    model = {
+        "model_hash_version": MODEL_HASH_VERSION,
+        "schema_version": schema_version,
+        "title": pool.attrib.get("value", ""),
+        "lanes": lane_model,
+        "nodes": node_model,
+        "edges": edge_model,
+        "main_path": managed_id_list_attribute(pool, "data-main-path", []),
+        "phases": phase_model,
+    }
+    if schema_version == V3_SCHEMA_VERSION:
+        model["behavior_pattern"] = pool.attrib.get("data-behavior-pattern", "")
+        model["layout"] = {
+            "profile": pool.attrib.get("data-layout-profile", "review"),
+            "phase_presentation": pool.attrib.get("data-phase-presentation", "bands"),
+        }
+        groups = managed_groups_attribute(pool, lanes, nodes)
+        model["groups"] = sorted(
+            (
+                {
+                    **{key: value for key, value in group.items() if key != "nodes"},
+                    "nodes": sorted(group.get("nodes", [])),
+                }
+                for group in groups
+            ),
+            key=lambda group: group.get("id", ""),
+        )
+    return model
+
+
+def semantic_model_hash(tree: ET.ElementTree) -> str:
+    payload = json.dumps(
+        semantic_model_document(tree),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def managed_artifact_summary(tree: ET.ElementTree) -> dict:
+    pool = find_pool(tree)
+    stored_hash = pool.attrib.get("data-model-hash")
+    computed_hash = semantic_model_hash(tree)
+    matches = stored_hash == computed_hash if stored_hash else None
+    return {
+        "tool_version": pool.attrib.get("data-tool-version"),
+        "model_hash_version": pool.attrib.get("data-model-hash-version"),
+        "stored_model_hash": stored_hash,
+        "computed_model_hash": computed_hash,
+        "model_hash_matches": matches,
+    }
+
+
+def refresh_managed_metadata(tree: ET.ElementTree) -> None:
+    pool = find_pool(tree)
+    root = graph_root(tree)
+    if "data-lane-order" not in pool.attrib:
+        pool.attrib["data-lane-order"] = json.dumps(
+            [
+                cell.attrib["data-semantic-id"]
+                for cell in list(root)
+                if cell.attrib.get("data-kind") == "lane"
+                and cell.attrib.get("data-semantic-id")
+            ],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+    pool.attrib["data-tool-version"] = TOOL_VERSION
+    pool.attrib["data-model-hash-version"] = MODEL_HASH_VERSION
+    pool.attrib["data-model-hash"] = semantic_model_hash(tree)
 
 
 def apply_phase_update(
@@ -3952,6 +4265,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         pool,
         restore_lane_fill_without_phases=had_phases_before_patch,
     )
+    refresh_managed_metadata(tree)
 
     remaining_explicit_waypoints = {
         edge_id: points
@@ -4165,6 +4479,176 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         }
 
     schema_version = pool.attrib.get("data-schema-version", "1")
+
+    if schema_version not in {"1", *STRUCTURED_SCHEMA_VERSIONS}:
+        add(
+            "integrity/schema-composition-mismatch",
+            "error",
+            f"Diagram declares an unsupported schema version: {schema_version}",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"schema_version": schema_version},
+            supported_fixes=["controlled-rebuild"],
+        )
+    if schema_version == V3_SCHEMA_VERSION:
+        missing_v3_metadata = [
+            attribute
+            for attribute in (
+                "data-behavior-pattern",
+                "data-layout-profile",
+                "data-phase-presentation",
+                "data-groups",
+            )
+            if attribute not in pool.attrib
+        ]
+        if missing_v3_metadata:
+            add(
+                "integrity/schema-composition-mismatch",
+                "error",
+                "Schema v3 diagram is missing required semantic metadata",
+                subject={"kind": "pool", "id": "main"},
+                evidence={"missing_attributes": missing_v3_metadata},
+                supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+            )
+    elif schema_version == SCHEMA_VERSION:
+        unexpected_v3_metadata = [
+            attribute
+            for attribute in (
+                "data-behavior-pattern",
+                "data-layout-profile",
+                "data-phase-presentation",
+                "data-groups",
+            )
+            if attribute in pool.attrib
+        ]
+        unexpected_v3_cells = [
+            cell.attrib.get("data-semantic-id", cell.attrib.get("id", ""))
+            for cell in root.iter("mxCell")
+            if any(
+                attribute in cell.attrib
+                for attribute in (
+                    "data-slot",
+                    "data-anchor",
+                    "data-flow-role",
+                    "data-outcome",
+                )
+            )
+        ]
+        if unexpected_v3_metadata or unexpected_v3_cells:
+            add(
+                "integrity/schema-composition-mismatch",
+                "error",
+                "Schema v2 diagram contains v3-only metadata",
+                subject={"kind": "pool", "id": "main"},
+                evidence={
+                    "pool_attributes": unexpected_v3_metadata,
+                    "cells": unexpected_v3_cells,
+                },
+                supported_fixes=["correct-schema-version", "controlled-rebuild"],
+            )
+
+    known_vertex_kinds = {"pool", "lane", "node", "phase"}
+    edge_cell_ids = {
+        cell.attrib.get("id")
+        for cell in root.iter("mxCell")
+        if cell.attrib.get("edge") == "1"
+    }
+    unmanaged_vertices = []
+    for cell in root.iter("mxCell"):
+        if cell.attrib.get("vertex") != "1":
+            continue
+        if cell.attrib.get("data-kind") in known_vertex_kinds:
+            continue
+        if (
+            "edgeLabel" in cell.attrib.get("style", "")
+            and cell.attrib.get("parent") in edge_cell_ids
+        ):
+            continue
+        unmanaged_vertices.append(cell.attrib.get("id", ""))
+    if unmanaged_vertices:
+        add(
+            "structure/unmanaged-vertex",
+            "warning",
+            f"Draw.io contains {len(unmanaged_vertices)} unmanaged vertex cell(s)",
+            subject={"kind": "diagram"},
+            evidence={"cell_ids": sorted(unmanaged_vertices)},
+            supported_fixes=["restore-vertex-semantic-metadata", "controlled-rebuild"],
+        )
+
+    lane_cell_ids = {
+        lane_id: record["cell"].attrib.get("id")
+        for lane_id, record in lanes.items()
+    }
+    for node_id, record in nodes.items():
+        if record["cell"].attrib.get("parent") != lane_cell_ids.get(record["lane"]):
+            add(
+                "integrity/schema-composition-mismatch",
+                "error",
+                f"Node parent does not match its semantic lane: {node_id}",
+                subject={"kind": "node", "id": node_id},
+                evidence={"lane": record["lane"]},
+                supported_fixes=["restore-node-parent", "controlled-rebuild"],
+            )
+
+    node_cell_ids = {
+        node_id: record["cell"].attrib.get("id")
+        for node_id, record in nodes.items()
+    }
+    for edge_id, cell in edge_records(root).items():
+        source_id = cell.attrib.get("data-from")
+        target_id = cell.attrib.get("data-to")
+        if (
+            cell.attrib.get("source") != node_cell_ids.get(source_id)
+            or cell.attrib.get("target") != node_cell_ids.get(target_id)
+        ):
+            add(
+                "integrity/schema-composition-mismatch",
+                "error",
+                f"Edge endpoints do not match semantic metadata: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={"from": source_id, "to": target_id},
+                supported_fixes=["restore-edge-semantic-metadata", "controlled-rebuild"],
+            )
+
+    try:
+        integrity = managed_artifact_summary(tree)
+    except DiagramError as exc:
+        diagnostics.append(exc.diagnostic())
+        integrity = {
+            "tool_version": pool.attrib.get("data-tool-version"),
+            "model_hash_version": pool.attrib.get("data-model-hash-version"),
+            "stored_model_hash": pool.attrib.get("data-model-hash"),
+            "computed_model_hash": None,
+            "model_hash_matches": False,
+        }
+    if integrity["model_hash_version"] not in {None, MODEL_HASH_VERSION}:
+        add(
+            "integrity/schema-composition-mismatch",
+            "error",
+            "Diagram uses an unsupported model hash version",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"model_hash_version": integrity["model_hash_version"]},
+            supported_fixes=["controlled-rebuild"],
+        )
+    if integrity["stored_model_hash"] is None:
+        add(
+            "integrity/model-hash-missing",
+            "warning",
+            "Diagram predates managed semantic hashing",
+            subject={"kind": "pool", "id": "main"},
+            supported_fixes=["patch-to-upgrade-metadata", "controlled-rebuild"],
+        )
+    elif integrity["model_hash_matches"] is False:
+        add(
+            "integrity/model-hash-mismatch",
+            "warning",
+            "Stored semantic model hash does not match the current diagram metadata",
+            subject={"kind": "pool", "id": "main"},
+            evidence={
+                "stored": integrity["stored_model_hash"],
+                "computed": integrity["computed_model_hash"],
+            },
+            supported_fixes=["review-semantic-drift", "accept-reviewed-model-drift"],
+        )
 
     semantic_ids: set[str] = set()
     for cell in root.iter("mxCell"):
@@ -4960,6 +5444,22 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     warnings = [item["message"] for item in diagnostics if item["severity"] == "warning"]
 
     diagnostic_codes = [item["code"] for item in diagnostics]
+    if (
+        "integrity/model-hash-mismatch" in diagnostic_codes
+        or "integrity/schema-composition-mismatch" in diagnostic_codes
+    ):
+        managed_state = "unsafe"
+    elif any(
+        code in {
+            "integrity/model-hash-missing",
+            "structure/unmanaged-vertex",
+            "interoperability/unmanaged-edges",
+        }
+        for code in diagnostic_codes
+    ):
+        managed_state = "recoverable"
+    else:
+        managed_state = "managed"
     main_path_bends = 0
     if schema_version in STRUCTURED_SCHEMA_VERSIONS:
         main_pairs = set(zip(read_main_path(pool), read_main_path(pool)[1:]))
@@ -4970,6 +5470,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     return {
         "valid": not errors,
         "quality_gate_passed": not errors and not warnings,
+        "managed_state": managed_state,
+        "has_semantic_metadata": True,
+        "tool_version": integrity["tool_version"],
+        "model_hash_version": integrity["model_hash_version"],
+        "stored_model_hash": integrity["stored_model_hash"],
+        "computed_model_hash": integrity["computed_model_hash"],
+        "model_hash_matches": integrity["model_hash_matches"],
         "errors": errors,
         "warnings": warnings,
         "diagnostics": diagnostics,
@@ -5009,38 +5516,8 @@ def element_signature(element: ET.Element | None):
     )
 
 
-def allowed_changes_from_patch(changes: dict | None, before: ET.ElementTree, after: ET.ElementTree) -> set[str]:
-    if not changes:
-        return set()
-    allowed = {
-        f"node:{item['id']}" for item in changes.get("update_nodes", []) if item.get("id")
-    }
-    allowed.update(
-        f"edge:{item['id']}" for item in changes.get("update_edges", []) if item.get("id")
-    )
-    allowed.update(
-        f"phase:{item['id']}" for item in changes.get("update_phases", []) if item.get("id")
-    )
-    geometry_nodes = {
-        item["id"]
-        for item in changes.get("update_nodes", [])
-        if item.get("id") and any(field in item for field in ("x", "y", "width", "height"))
-    }
-    if geometry_nodes:
-        for edge_id, cell in edge_records(graph_root(before)).items():
-            if cell.attrib.get("data-from") in geometry_nodes or cell.attrib.get("data-to") in geometry_nodes:
-                allowed.add(f"edge:{edge_id}")
-    if "main_path" in changes:
-        allowed.add("pool:main")
-    if changes.get("nodes"):
-        before_pool = find_pool(before)
-        after_pool = find_pool(after)
-        if before_pool.attrib.get("data-max-rank") != after_pool.attrib.get("data-max-rank"):
-            allowed.add("pool:main")
-            after_root = graph_root(after)
-            after_lanes, _ = lane_node_records(after_root, after_pool)
-            allowed.update(f"lane:{lane_id}" for lane_id in after_lanes)
-    return allowed
+def comparison_attributes(cell: ET.Element) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(cell.attrib.items()))
 
 
 def allowed_missing_from_patch(changes: dict | None) -> set[str]:
@@ -5053,6 +5530,13 @@ def allowed_missing_from_patch(changes: dict | None) -> set[str]:
 
 
 def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict | None = None) -> dict:
+    """Compare an actual result with the exact result of the declared patch.
+
+    A patch declaration is executable, not an allowlist. Replaying it on a
+    copy of ``before`` makes every permitted attribute, geometry change,
+    reroute, addition, and deletion explicit. This prevents an unrelated edit
+    from being hidden behind a broadly authorized semantic cell.
+    """
     before_cells = semantic_cells(before)
     after_cells = semantic_cells(after)
     missing = sorted(set(before_cells) - set(after_cells))
@@ -5065,17 +5549,67 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         after_cell = after_cells[key]
         if element_signature(before_cell.find("mxGeometry")) != element_signature(after_cell.find("mxGeometry")):
             changed_geometry.append(key)
-        before_attributes = tuple(sorted(before_cell.attrib.items()))
-        after_attributes = tuple(sorted(after_cell.attrib.items()))
+        before_attributes = comparison_attributes(before_cell)
+        after_attributes = comparison_attributes(after_cell)
         if before_attributes != after_attributes:
             changed_attributes.append(key)
 
-    allowed = allowed_changes_from_patch(changes, before, after)
-    allowed_missing = allowed_missing_from_patch(changes)
-    unexpected_missing = sorted(set(missing) - allowed_missing)
-    unexpected_geometry = sorted(set(changed_geometry) - allowed)
-    unexpected_attributes = sorted(set(changed_attributes) - allowed)
-    preserved = not unexpected_missing and not unexpected_geometry and not unexpected_attributes
+    if changes is None:
+        expected_cells = before_cells
+        expected_added: set[str] = set()
+        expected_missing: set[str] = set()
+    else:
+        expected_tree = copy.deepcopy(before)
+        patch_tree(expected_tree, changes, allow_geometry_updates=True)
+        expected_cells = semantic_cells(expected_tree)
+        expected_added = set(expected_cells) - set(before_cells)
+        expected_missing = set(before_cells) - set(expected_cells)
+
+    expected_geometry: list[str] = []
+    expected_attributes: list[str] = []
+    unexpected_geometry: list[str] = []
+    unexpected_attributes: list[str] = []
+    common_expected_actual = set(expected_cells) & set(after_cells)
+    for key in sorted(common_expected_actual):
+        expected_cell = expected_cells[key]
+        actual_cell = after_cells[key]
+        if element_signature(expected_cell.find("mxGeometry")) != element_signature(
+            actual_cell.find("mxGeometry")
+        ):
+            unexpected_geometry.append(key)
+        expected_cell_attributes = comparison_attributes(expected_cell)
+        actual_attributes = comparison_attributes(actual_cell)
+        if expected_cell_attributes != actual_attributes:
+            unexpected_attributes.append(key)
+        if key in before_cells:
+            before_cell = before_cells[key]
+            if element_signature(before_cell.find("mxGeometry")) != element_signature(
+                expected_cell.find("mxGeometry")
+            ):
+                expected_geometry.append(key)
+            if comparison_attributes(before_cell) != expected_cell_attributes:
+                expected_attributes.append(key)
+
+    actual_keys = set(after_cells)
+    expected_keys = set(expected_cells)
+    unexpected_added = sorted(actual_keys - expected_keys)
+    unexpected_expected_missing = sorted(expected_keys - actual_keys)
+    unexpected_missing = sorted(
+        (set(missing) - expected_missing) | set(unexpected_expected_missing)
+    )
+    allowed_missing = sorted(expected_missing)
+    allowed = sorted(
+        set(expected_geometry)
+        | set(expected_attributes)
+        | expected_added
+        | expected_missing
+    )
+    preserved = (
+        not unexpected_missing
+        and not unexpected_geometry
+        and not unexpected_attributes
+        and not unexpected_added
+    )
     return {
         "preserved": preserved,
         "existing_cells_checked": len(set(before_cells) & set(after_cells)),
@@ -5083,11 +5617,12 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         "missing_cells": missing,
         "changed_geometry": changed_geometry,
         "changed_attributes": changed_attributes,
-        "allowed_changes": sorted(allowed),
-        "allowed_missing": sorted(allowed_missing),
+        "allowed_changes": allowed,
+        "allowed_missing": allowed_missing,
         "unexpected_missing": unexpected_missing,
         "unexpected_geometry": unexpected_geometry,
         "unexpected_attributes": unexpected_attributes,
+        "unexpected_added": unexpected_added,
     }
 
 
@@ -5144,7 +5679,14 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
     phase_specs = [phase_cell_spec(cell) for _, cell in sorted(phases.items())]
     validation = validate_tree(tree)
     result = {
-        "compatible": True,
+        "compatible": validation.get("managed_state") != "unsafe",
+        "has_semantic_metadata": validation.get("has_semantic_metadata", True),
+        "managed_state": validation.get("managed_state", "recoverable"),
+        "tool_version": validation.get("tool_version"),
+        "model_hash_version": validation.get("model_hash_version"),
+        "stored_model_hash": validation.get("stored_model_hash"),
+        "computed_model_hash": validation.get("computed_model_hash"),
+        "model_hash_matches": validation.get("model_hash_matches"),
         "schema_version": pool.attrib.get("data-schema-version", "1"),
         "title": pool.attrib.get("value", ""),
         "main_path": read_main_path(pool),
@@ -5244,8 +5786,67 @@ def command_build(args: argparse.Namespace) -> None:
 def command_patch(args: argparse.Namespace) -> None:
     ensure_different(args.input, args.output)
     ensure_output_available(args.output, args.force)
+    input_receipt = file_receipt(args.input)
+    if not args.expected_input_sha256:
+        raise DiagramError(
+            "Patch requires the SHA-256 digest returned by inspect",
+            code="delivery/input-sha256-required",
+            supported_fixes=["inspect-latest-input", "supply-expected-input-sha256"],
+        )
+    if (
+        input_receipt["sha256"] != args.expected_input_sha256
+    ):
+        raise DiagramError(
+            "Patch input does not match the reviewed SHA-256 baseline",
+            code="delivery/input-sha256-mismatch",
+            evidence={
+                "expected": args.expected_input_sha256,
+                "actual": input_receipt["sha256"],
+            },
+            supported_fixes=["inspect-latest-input", "update-expected-input-sha256"],
+        )
     tree = ET.parse(args.input)
+    input_validation = validate_tree(tree)
+    integrity_errors = [
+        diagnostic
+        for diagnostic in input_validation["diagnostics"]
+        if diagnostic["severity"] == "error"
+        and diagnostic["code"].startswith("integrity/")
+    ]
+    if integrity_errors:
+        raise DiagramError(
+            "Patch input has unsafe managed metadata",
+            code="delivery/input-integrity-failed",
+            evidence={"diagnostics": integrity_errors},
+            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+        )
+    if (
+        input_validation.get("model_hash_matches") is False
+        and not args.accept_model_drift
+    ):
+        raise DiagramError(
+            "Patch input semantic metadata changed after its managed hash was written",
+            code="integrity/model-hash-mismatch",
+            evidence={
+                "stored": input_validation.get("stored_model_hash"),
+                "computed": input_validation.get("computed_model_hash"),
+            },
+            supported_fixes=["review-semantic-drift", "use-accept-model-drift"],
+        )
     patch_receipt = patch_tree(tree, load_json(args.changes), args.allow_geometry_updates)
+    patch_receipt.update(
+        {
+            "input_sha256": input_receipt["sha256"],
+            "input_bytes": input_receipt["bytes"],
+            "input_tool_version": input_validation.get("tool_version"),
+            "input_managed_state": input_validation.get("managed_state"),
+            "input_model_hash_matches": input_validation.get("model_hash_matches"),
+            "accepted_model_drift": bool(
+                args.accept_model_drift
+                and input_validation.get("model_hash_matches") is False
+            ),
+        }
+    )
     result = validate_tree(tree)
     strict_failed = bool(args.strict and result["warnings"])
     if not result["valid"] or strict_failed:
@@ -5288,7 +5889,9 @@ def command_compare(args: argparse.Namespace) -> None:
 
 
 def command_inspect(args: argparse.Namespace) -> None:
-    print(json.dumps(inspect_tree(ET.parse(args.input)), ensure_ascii=False, indent=2))
+    result = inspect_tree(ET.parse(args.input))
+    result["input"] = file_receipt(args.input)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5316,6 +5919,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not write output when quality warnings are present",
     )
     patch.add_argument("--allow-geometry-updates", action="store_true")
+    patch.add_argument(
+        "--expected-input-sha256",
+        help="Fail unless the input matches this reviewed SHA-256 digest",
+    )
+    patch.add_argument(
+        "--accept-model-drift",
+        action="store_true",
+        help="Rebaseline reviewed semantic edits when the stored model hash differs",
+    )
     patch.add_argument("--force", action="store_true", help="Replace an existing output file")
     patch.set_defaults(func=command_patch)
 

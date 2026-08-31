@@ -9,6 +9,7 @@ Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visibl
 - [Nodes and edges](#nodes-and-edges)
 - [Patch specification](#patch-specification)
 - [Inspection and diagnostics](#inspection-and-diagnostics)
+- [Artifact integrity](#artifact-integrity)
 - [Compatibility](#compatibility)
 
 ## Build specification
@@ -161,7 +162,7 @@ Inspect a compatible file before patching:
 python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
 ```
 
-The result includes schema version, main path, phases, lane order, node geometry, edge ports, waypoints, and current validation. Connectors manually redrawn in Draw.io without Skill metadata appear under `unmanaged_edges` with their recoverable source, target, label, ports, and waypoints. Validation reports `interoperability/unmanaged-edges`; source/target topology is still considered when checking reachability and main-path continuity, but the missing stable edge ID is not silently recreated.
+The result includes the input path, byte count, SHA-256 digest, schema version, main path, phases, lane order, node geometry, edge ports, waypoints, artifact-integrity state, and current validation. Connectors manually redrawn in Draw.io without Skill metadata appear under `unmanaged_edges` with their recoverable source, target, label, ports, and waypoints. Validation reports `interoperability/unmanaged-edges`; source/target topology is still considered when checking reachability and main-path continuity, but the missing stable edge ID is not silently recreated.
 
 Validation keeps the legacy `errors` and `warnings` arrays and also returns structured diagnostics:
 
@@ -178,13 +179,43 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 
 Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
 
-Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes the IDs added, updated, deleted, and automatically rerouted. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
+Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes the IDs added, updated, deleted, and automatically rerouted, together with the inspected input digest and integrity state. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
+
+## Artifact integrity
+
+Generated files carry a versioned semantic-model hash. The hash covers the stable process meaning required for safe patching:
+
+- Schema version, title, lane order, lane IDs, and lane labels.
+- Node IDs, owning lanes, ranks, types, labels, slots, and semantic anchors.
+- Edge IDs, endpoints, types, labels, route classes, branches, flow roles, and outcomes.
+- Confirmed main path, phase IDs/labels/rank ranges, v3 behavior pattern, layout profile, phase presentation, and semantic groups.
+
+The hash intentionally excludes visual state that Draw.io users may edit locally: coordinates, dimensions, styles, lane widths, phase colors, ports, port offsets, and manual waypoints. These remain protected by geometry-aware patching and `compare`, not by the semantic hash.
+
+`inspect` reports `has_semantic_metadata`, `managed_state`, `tool_version`, `model_hash_version`, `stored_model_hash`, `computed_model_hash`, and `model_hash_matches`. Use `managed_state` instead of the coarse legacy `compatible` alias:
+
+- `managed`: semantic metadata is structurally valid and the stored model hash matches the current semantic content.
+- `recoverable`: semantic metadata can be read, but the file predates model hashing or contains unmanaged Draw.io content that requires review. A missing hash can be upgraded by a reviewed patch; unmanaged content must not be silently discarded.
+- `unsafe`: semantic content differs from the stored hash, or the embedded schema composition is invalid. Do not patch until the discrepancy has been reviewed.
+
+Use the exact `input.sha256` returned by `inspect` as the patch baseline:
+
+```bash
+python3 "<skill-root>/scripts/drawio_swimlane.py" patch \
+  --input "<current.drawio>" \
+  --expected-input-sha256 "<sha256-from-inspect>" \
+  --changes "<changes.json>" \
+  --output "<updated.drawio>" \
+  --strict
+```
+
+If a user intentionally changed semantic labels or relationships directly in Draw.io, review those changes and represent them in the patch, then add `--accept-model-drift` to re-establish the managed baseline. This override does not bypass malformed schema composition, changed input bytes, or other integrity errors. Never use it merely to make a failing patch proceed.
 
 ## Compatibility
 
 - Specifications without `schema_version` are treated as legacy v1 inputs and remain buildable.
 - Version 2 specifications and generated files remain buildable, inspectable, patchable, and subject to the same structured quality checks as before.
 - Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles.
-- Compatible v0.1.x `.drawio` files remain inspectable and patchable.
+- Compatible v0.1.x `.drawio` files remain inspectable and can be upgraded to current integrity metadata by a reviewed patch.
 - Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`.
 - Manually created Draw.io files without compatible semantic metadata require migration or a controlled rebuild.

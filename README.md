@@ -18,7 +18,7 @@
 
 Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development)
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development) · [Internal release publishing](docs/INTERNAL_RELEASE.md)
 
 ## Why this exists
 
@@ -149,9 +149,9 @@ Local editing is part of the design, not an escape hatch.
 1. Open the generated `.drawio` in Draw.io Desktop or diagrams.net.
 2. Adjust wording, node positions, lane sizes, or connectors and save the file.
 3. Give the latest saved file back to the agent.
-4. The agent runs `inspect`, prepares the smallest semantic patch, preserves unrelated geometry, validates, and compares the result.
+4. The agent runs `inspect`, checks the artifact state, binds the patch to the reported input SHA-256, prepares the smallest semantic patch, preserves unrelated geometry, validates, and compares the result.
 
-Safe patching depends on semantic metadata and stable IDs created by this Skill. A manually created or incompatible `.drawio` may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
+Safe patching depends on semantic metadata, a matching semantic-model hash, stable IDs, and the exact inspected input file. Reviewed direct semantic edits can establish a new baseline explicitly; malformed or manually created `.drawio` files may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
 
 ## Validation and reliability
 
@@ -199,7 +199,7 @@ Patch and compare:
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  patch --input process.drawio --changes changes.json --output process-updated.drawio --strict
+  patch --input process.drawio --expected-input-sha256 "<sha256-from-inspect>" --changes changes.json --output process-updated.drawio --strict
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json

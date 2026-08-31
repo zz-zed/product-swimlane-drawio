@@ -105,13 +105,16 @@ Treat automated validation and visual review as separate evidence:
    python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
    ```
 
-3. Confirm that the result is compatible. Otherwise explain that migration or rebuilding is required for safe patching.
-   If a user redraws a connector directly in Draw.io, report it under `unmanaged_edges` and the `interoperability/unmanaged-edges` diagnostic. Recover its source/target relationship for review, but do not pretend its stable semantic ID was preserved.
+3. Read `has_semantic_metadata`, `managed_state`, the integrity diagnostics, and `input.sha256` from the inspection result.
+   - For `managed`, proceed from the reported SHA-256 baseline.
+   - For `recoverable`, review every diagnostic. A legacy file with only `integrity/model-hash-missing` may be upgraded by a reviewed patch. Unmanaged vertices or connectors must be reconciled or preserved deliberately.
+   - For `unsafe`, stop. A schema-composition error requires migration or controlled rebuilding. A model-hash mismatch may be accepted only after the user confirms that the direct semantic edits are intentional and the patch represents them.
+   The legacy `compatible` field is only a coarse alias; do not use it as the sole safety decision. If a user redraws a connector directly in Draw.io, report it under `unmanaged_edges` and the `interoperability/unmanaged-edges` diagnostic. Recover its source/target relationship for review, but do not pretend its stable semantic ID was preserved.
 4. Put only requested updates, additions, deletions, phase changes, or a replacement `main_path` in a task-local patch file. Explicitly list incident edges when deleting a node.
 5. Write to a new output file, validate, and compare against the declared patch:
 
    ```bash
-   python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --changes "<changes.json>" --output "<updated.drawio>" --strict
+   python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --expected-input-sha256 "<sha256-from-inspect>" --changes "<changes.json>" --output "<updated.drawio>" --strict
    python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<updated.drawio>" --strict
    python3 "<skill-root>/scripts/drawio_swimlane.py" compare --before "<current.drawio>" --after "<updated.drawio>" --changes "<changes.json>"
    ```
@@ -120,6 +123,7 @@ Treat automated validation and visual review as separate evidence:
 7. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. The tool reroutes only incident edges that become invalid and reports their IDs.
 8. Keep valid manual waypoints and all unrelated geometry unchanged.
 9. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
+10. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
 
 ## Layout and handoff
 
@@ -131,7 +135,7 @@ Treat automated validation and visual review as separate evidence:
 - When phases use `bands`, keep semantic Z-order as phase backgrounds, lanes, nodes, then connectors; make lane bodies transparent. When phases use `rail`, reserve the left label column and keep lane bodies opaque. Phase cells remain non-interactive in both modes.
 - Prefer three to five lanes per page; split dense exception detail when necessary.
 - Preserve stable IDs across revisions.
-- Report added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
+- Report the inspected input SHA-256, input managed state, drift acceptance status, and added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
 - Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.

@@ -6,12 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Add versioned semantic-model hashes and `managed`, `recoverable`, and `unsafe` artifact states for detecting undeclared semantic drift without treating local geometry or style edits as corruption.
+- Add input SHA-256 baselines for inspection and patching, plus an explicit reviewed `--accept-model-drift` path for intentional direct semantic edits.
+- Add integrity diagnostics for semantic-hash mismatches, unsupported schema composition, unmanaged vertices, and unsupported hash versions.
+
+### Changed
+
+- Refresh managed metadata after build and patch, and include input integrity evidence in patch receipts.
+- Require incremental updates to bind to the exact file inspected before the patch.
+
 ### Fixed
 
+- Prevent `compare` from treating every pool-level semantic change as declared merely because a patch file was supplied; only integrity metadata refreshes are ignored automatically.
+- Return structured integrity diagnostics for malformed nested managed metadata instead of generic input or internal errors.
+- Detect disagreement between the managed group model and mirrored node group membership.
 - Prevent the test-only dynamic module loader from writing Python bytecode into the packaged Skill directory during CI.
 
 ### Tests
 
+- Add regressions for geometry-safe hashing, reviewed semantic rebaselining, required and changed-input rejection, legacy metadata upgrades, malformed schema composition, nested metadata, group mirrors, undeclared pool changes, and unmanaged vertices.
 - Add a regression proving that loading the tool module leaves the Skill directory unchanged when the test suite runs without `-B`.
 
 ## [0.4.1] - 2026-08-31

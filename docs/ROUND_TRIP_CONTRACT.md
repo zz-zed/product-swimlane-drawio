@@ -21,9 +21,11 @@ The v3 Draw.io adapter stores enough metadata to recover:
 
 This metadata supplements native Draw.io geometry; it does not prevent manual editing.
 
+Generated artifacts also store the producing tool version, semantic-model hash version, stable lane order, and a semantic-model hash. The hash covers process identity and meaning but excludes locally editable visual state such as geometry, styles, lane widths, phase colors, ports, and manual waypoints.
+
 ## Inspect
 
-Compatible diagrams return both semantic intent and current geometry. Ordinary Draw.io files without Skill metadata require a generic digest or controlled migration; they must not be presented as safely patchable semantic diagrams.
+Inspection returns semantic intent, current geometry, the exact input SHA-256 digest, and one of three managed states: `managed`, `recoverable`, or `unsafe`. A missing hash in an older managed file is recoverable. A semantic-model hash mismatch or malformed schema composition is unsafe. Ordinary Draw.io files without Skill metadata require a generic digest or controlled migration; they must not be presented as safely patchable semantic diagrams.
 
 ## Patch
 
@@ -32,6 +34,8 @@ Compatible diagrams return both semantic intent and current geometry. Ordinary D
 - Manual waypoints remain exact unless the user explicitly reroutes that edge.
 - Moving or resizing an existing node requires geometry authorization.
 - A new v3 layout intent field may affect only its declared group or incident region unless a required lane expansion shifts later lanes.
+- A patch must name the `input.sha256` observed during inspection through `--expected-input-sha256`, preventing a later save from silently changing the baseline.
+- Reviewed direct semantic edits require both an equivalent declared patch and `--accept-model-drift`. Schema-composition errors cannot be overridden.
 
 ## Manual corrections
 
@@ -46,10 +50,11 @@ Ambiguous edits remain manual geometry and receive a reconciliation diagnostic; 
 
 ## Delivery safety
 
-1. Write a candidate to a new path.
-2. Compile and validate the exact candidate.
-3. Export and review an optional preview.
-4. Replace a reviewed target only with explicit replacement intent.
-5. Re-inspect and revalidate after Draw.io saves the file.
+1. Inspect the latest user-saved input and capture its SHA-256 digest and managed state.
+2. Write a candidate to a new path while requiring the captured input digest.
+3. Compile and validate the exact candidate.
+4. Export and review an optional preview.
+5. Replace a reviewed target only with explicit replacement intent.
+6. Re-inspect and revalidate after Draw.io saves the file.
 
 A failed candidate never replaces the last known good artifact.

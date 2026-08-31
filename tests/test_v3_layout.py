@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -11,9 +12,25 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills" / "product-swimlane-drawio" / "scripts" / "drawio_swimlane.py"
 
 
-def run_tool(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_tool(
+    *args: str,
+    check: bool = True,
+    bind_patch_baseline: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    command_args = list(args)
+    if (
+        bind_patch_baseline
+        and command_args
+        and command_args[0] == "patch"
+        and "--expected-input-sha256" not in command_args
+    ):
+        input_index = command_args.index("--input") + 1
+        input_path = Path(command_args[input_index])
+        command_args.extend(
+            ["--expected-input-sha256", hashlib.sha256(input_path.read_bytes()).hexdigest()]
+        )
     result = subprocess.run(
-        [sys.executable, str(TOOL), *args],
+        [sys.executable, str(TOOL), *command_args],
         cwd=ROOT,
         text=True,
         capture_output=True,

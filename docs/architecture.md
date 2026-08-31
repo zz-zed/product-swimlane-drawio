@@ -48,7 +48,11 @@ The output is native, uncompressed `.drawio`, not a flattened image. Draw.io Des
 
 ### Incremental update loop
 
-After local editing, `inspect` reads the latest file rather than relying on an older JSON source. `patch` applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints. `compare` checks the before-and-after files against the declared patch.
+After local editing, `inspect` reads the latest file rather than relying on an older JSON source. It reports the exact input digest and whether embedded semantics are managed, recoverable, or unsafe. `patch` requires the inspected digest as a baseline, applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints, and refreshes the versioned semantic-model hash. `compare` checks the before-and-after files against the declared patch.
+
+### Managed artifact identity
+
+The pool cell stores the producing tool version, model-hash version, stable lane order, and a hash of process meaning. The hash covers semantic IDs, labels, ownership, ordering, topology, main path, phases, and v3 layout intent. It excludes user-editable visual state such as coordinates, sizes, styles, lane widths, phase colors, ports, and manual waypoints. This separation detects undeclared semantic drift without treating ordinary Draw.io layout adjustments as corruption.
 
 ## Trust boundaries
 
@@ -57,6 +61,8 @@ After local editing, `inspect` reads the latest file rather than relying on an o
 - The generator is deterministic, but deterministic output is not automatically visually perfect.
 - Strict validation and visual review are independent evidence.
 - The latest user-saved `.drawio` is canonical after local editing.
+- A patch is bound to the exact inspected input bytes through SHA-256; a later save invalidates that baseline.
+- Reviewed direct semantic edits can establish a new baseline explicitly, but malformed schema composition cannot be overridden.
 - Incompatible or manually created Draw.io files require migration or controlled rebuilding before safe semantic patching.
 
 ## Current implementation and page scope
