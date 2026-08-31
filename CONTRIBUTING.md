@@ -34,4 +34,4 @@ Before submitting a change:
 
 ## Commit scope
 
-Do not commit generated `.drawio` files, previews, local task inputs, virtual environments, caches, or editor metadata.
+Do not commit generated `.drawio` files, task-specific or draft previews, local task inputs, virtual environments, caches, or editor metadata. Curated PNG assets referenced by public documentation or fictional examples are allowed.

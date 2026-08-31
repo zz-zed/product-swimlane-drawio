@@ -1,6 +1,6 @@
 # Semantic schema and patch contract
 
-Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language. The executable v2 contract is [schema.json](schema.json).
+Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language. The executable v2/v3 contract is [schema.json](schema.json).
 
 ## Contents
 
@@ -13,12 +13,13 @@ Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visibl
 
 ## Build specification
 
-New diagrams use `schema_version: "2"`. Unknown fields are rejected at every level.
+New diagrams use `schema_version: "3"`. Version 2 remains supported for compatibility. Unknown fields are rejected at every level.
 
 ```json
 {
-  "schema_version": "2",
+  "schema_version": "3",
   "title": "<diagram-title>",
+  "behavior_pattern": "linear",
   "lanes": [
     {"id": "lane-a", "label": "<lane-label>", "width": 200}
   ],
@@ -36,7 +37,22 @@ New diagrams use `schema_version: "2"`. Unknown fields are rejected at every lev
 }
 ```
 
-Required v2 fields are `schema_version`, `title`, `lanes`, `nodes`, `edges`, and `main_path`. `phases` and `canvas` are optional.
+Required v3 fields are `schema_version`, `title`, `behavior_pattern`, `lanes`, `nodes`, `edges`, and `main_path`. `groups`, `layout`, `phases`, and `canvas` are optional.
+
+`behavior_pattern` records the process topology before geometry is compiled. Supported values are `linear`, `approval-loop`, `request-response`, `fork-join`, `fan-in`, `lifecycle`, and `custom`. Use `custom` only when no more specific pattern fits.
+
+Version 3 adds layout intent without requiring coordinates:
+
+- `slot` places a node in the `left`, `main`, or `right` position for its lane and rank. The compiler expands the lane when the occupied slots do not fit.
+- A `note` may use `anchor: {"node": "<id>", "side": "left|right"}`. The note must share its anchor's lane and rank; its slot is inferred from the anchor side when omitted.
+- `groups` explicitly record `parallel`, `branch`, `merge`, `exception`, or `support` structures. Every group belongs to one lane and a node may belong to at most one group.
+- `layout.profile` may be `compact`, `review`, or `long-form`; the default is `review`. Profiles select progressively larger automatic rank gaps, slot gaps, and lane padding. Explicit `canvas.row_gap` remains authoritative.
+- `layout.phase_presentation` may be `bands` or `rail`. `bands` keeps translucent phase backgrounds across all lanes. `rail` reserves a narrow labeled phase column to the left of the lanes and keeps lane bodies opaque; use it for long lifecycle diagrams where phase names are navigation rather than background emphasis.
+- Edges may add `flow_role` (`main`, `branch`, `fork`, `join`, `return`, `retry`, `exception`, or `response`) and a stable `outcome` ID.
+
+For a binary decision, distinct `positive` and `negative` branches remain sufficient. A v3 decision with three or more outgoing edges must give every edge a non-empty `outcome` and expose at least two distinct outcome IDs. Several edges may intentionally share one outcome when a single result triggers multiple actions; `branch` remains a directional hint and may repeat across non-primary outcomes.
+
+Keep process facts, behavior patterns, and layout intent separate. Use coordinates only for an approved manual composition or a geometry-preserving update.
 
 Lane fields:
 
@@ -94,11 +110,15 @@ Edge fields:
 - `allow_port_reuse`: optional boolean; default `false`.
 - `waypoints`: optional pool-local `{ "x": number, "y": number }` objects or two-number arrays.
 
-Use automatic routing first. It routes `main_path` edges before ordinary branches and returns, allocates endpoint ports jointly, removes duplicate and collinear points, and scores orthogonal candidates by bends, length, short segments, unrelated-lane intrusion, obstacle clearance, reciprocal separation, main-path continuity, and label capacity. A same-lane downward main-path edge prefers a bottom-to-top direct connection. Adjacent-rank cross-lane flow keeps centered endpoints unless an explicit override or a hard collision requires otherwise; it does not trade balanced `0.5 -> 0.5` ports for marginally shorter `0.1/0.9` alignment. A real split or cross-lane branch exits toward its target lane; the conventional right-side positive exit is used only when it does not create a backwards hook.
+Use automatic routing first. It routes `main_path` edges before ordinary branches and returns, allocates endpoint ports jointly, removes duplicate and collinear points, and scores orthogonal candidates by bends, length, short segments, unrelated-lane intrusion, obstacle clearance, reciprocal separation, main-path continuity, and label capacity. A downward main-path edge prefers a bottom-to-top connection even when it crosses into another lane. For every selected side pair, automatic routing prefers centered `0.5 -> 0.5` attachment points and moves to secondary offsets only for a real port conflict; it does not trade balanced endpoints for marginally shorter `0.1/0.9` alignment. A true exception branch exits toward its target lane. A same-lane outcome that terminates directly below a decision exits from the decision bottom instead of creating a side hook.
 
-Returns and retries use a separate target-lane side slot when possible. A new build widens an automatic target lane when the slot does not fit, then recomputes later lanes and automatic routes. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified or silently rewritten; strict validation still reports their routing defects.
+Assign the same rank to a decision and a cross-lane side outcome when the intended reading is a horizontal handoff; v3 aligns their centers. For a directly following same-lane terminal, keep the terminal on the lane's main axis so the automatic route is a straight bottom-to-top connection.
+
+Returns and retries use a separate target-lane outer-side slot when possible. An adjacent-lane retry leaves toward the target but enters through the target's outer side, keeping the normal facing request/response corridor clear. The outer source side and bottom corridor remain available for longer returns that must avoid intervening lanes. A new build widens an automatic target lane when the slot does not fit, then recomputes later lanes and automatic routes. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified or silently rewritten; strict validation still reports their routing defects.
 
 Automatic edge labels prefer the longest clear independent horizontal segment, with a clear vertical segment as a fallback. The route planner accounts for node and connector bounds, then performs a global label reflow after all routes exist. Automatic rank spacing and decision width grow only when the default compact grid cannot provide a clear carrier or contain multilingual content, unless the specification explicitly fixes the corresponding geometry.
+
+For an automatic `back`, `retry`, or `return` route, source proximity takes precedence over raw segment length: the label uses the nearest clear carrier to the source action and avoids distant outer-canvas detours. Collision and container checks still apply. Explicit waypoints remain unchanged.
 
 ## Patch specification
 
@@ -163,6 +183,8 @@ Build and patch outputs also include an atomic-delivery receipt with path, byte 
 ## Compatibility
 
 - Specifications without `schema_version` are treated as legacy v1 inputs and remain buildable.
+- Version 2 specifications and generated files remain buildable, inspectable, patchable, and subject to the same structured quality checks as before.
+- Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles.
 - Compatible v0.1.x `.drawio` files remain inspectable and patchable.
-- v2-only semantic checks apply after a v2 build or after a patch explicitly supplies `main_path`.
+- Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`.
 - Manually created Draw.io files without compatible semantic metadata require migration or a controlled rebuild.

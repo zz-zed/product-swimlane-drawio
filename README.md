@@ -10,152 +10,179 @@
 
 ![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)
 
-Turn a confirmed process into a native `.drawio` file, then keep editing it locally.
+**Editable product swimlanes that survive the next revision.**
 
-This Agent Skill creates and incrementally updates vertical swimlane diagrams in which each participant, role, or system owns a lane. The agent handles process semantics; a deterministic local engine handles layout, routing, validation, and editable Draw.io output. Generation does not require Draw.io MCP.
+`product-swimlane-drawio` turns a confirmed product or business process into a native `.drawio` file. The agent handles semantics; a deterministic local engine handles layout, routing, validation, and safe incremental updates. Your latest locally saved Draw.io file remains the canonical source.
 
-**Quick navigation:** [Why this skill](#why-this-skill) · [Workflow](#workflow) · [Install](#install) · [Use with an agent](#use-with-an-agent) · [Local tool](#use-the-local-tool-directly) · [Incremental editing](#incremental-editing-boundary) · [Validation](#validation) · [Output reliability](#model-capability-and-output-reliability)
+**Semantic → Deterministic → Editable → Incremental → Validated**
 
-## Why this skill
+Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-Directly generated Draw.io XML often produces tangled connectors, unclear return paths, and fragile edits. This skill uses a neutral JSON model and a deterministic local tool to make the result easier to review and continue editing.
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development)
 
-- Native, uncompressed `.drawio` output
-- Full-height vertical swimlanes
-- Global top-to-bottom process ranks
-- Schema v2 with an explicit confirmed main path and optional horizontal phases
-- Decisions, branches, returns, retries, and cross-lane flows
-- Semantic port allocation and orthogonal routing
-- Stable IDs for incremental changes
-- Semantic inspection, explicit deletion, and affected-edge repair for existing diagrams
-- Strict structural and routing-quality checks
-- Structured diagnostics and atomic output receipts with SHA-256
-- No Draw.io application or Draw.io MCP dependency for generation
-- Local editing in Draw.io Desktop or diagrams.net
+## Why this exists
 
-## Workflow
+A language model is good at understanding owners, order, decisions, and returns. It is less reliable when asked to invent every coordinate and connector waypoint directly in Draw.io XML.
 
-```text
-Natural-language process
-        ↓
-Confirm lanes, main path, branches, and assumptions
-        ↓
-Strict v2 JSON specification
-        ↓
-Build native .drawio
-        ↓
-Strict validation and capability-aware visual review
-        ↓
-Edit locally, inspect the saved file, or apply a semantic patch
-```
+| Direct AI-generated XML | `product-swimlane-drawio` |
+|---|---|
+| Semantics and geometry are mixed in one fragile output | The process is first captured as a strict semantic model |
+| Layout and routes vary between generations | A deterministic engine rebuilds the same input consistently |
+| Manual edits are easily discarded | Stable IDs and geometry-aware patches preserve compatible local edits |
+| A file opening successfully is treated as proof | Strict diagnostics and visual review are reported separately |
 
-![Create and update workflows](docs/illustrations/product-swimlane-readme/create-update.png)
+The result is built for the common product workflow: **AI creates the first 80%, a person adjusts it locally, and later revisions preserve the work already done.**
 
-## Supported agents
+## What you get
 
-The package follows the Agent Skills directory format and includes native plugin manifests for:
+- **Editable:** native, uncompressed `.drawio`; full-height vertical lanes; local drag-and-drop editing.
+- **Reliable:** confirmed main path; deterministic layout; orthogonal routing; separate return and retry channels; phase bands.
+- **Maintainable:** stable semantic IDs; `inspect`, `patch`, and `compare`; geometry-preserving defaults; safe deletion rules.
+- **Verifiable:** strict schema; structured diagnostics; routing and label checks; atomic output receipts with SHA-256.
 
-- OpenAI Codex
-- Claude Code
-- Other Agent Skills-compatible tools on a best-effort basis
+## See it in action
 
-Claude Code, Codex, and `npx skills` all load the same canonical Skill under `skills/product-swimlane-drawio`; the plugin wrappers do not duplicate the implementation. Agent-specific metadata is isolated under `agents/`, and the workflow and Python tool do not depend on a single agent runtime.
+![Request review example](examples/request-review/preview.png)
 
-## Requirements
+The fictional [request review example](examples/request-review/) uses the v3 `approval-loop` pattern with four lanes, one decision, a compact rework loop, long-form spacing, and a phase rail. It includes the [prompt](examples/request-review/prompt.md), [semantic specification](examples/request-review/process.json), and exported [preview](examples/request-review/preview.png).
 
-- Python 3.10 or later
-- An Agent Skills-compatible coding agent
-- Optional: Draw.io Desktop or [diagrams.net](https://app.diagrams.net/) for visual editing and export
+The semantic specification deterministically generates a native editable `.drawio` file locally and passes strict validation with zero warnings. Generated `.drawio` files stay outside the repository; the committed PNG is the GitHub-ready preview.
 
-The bundled Python tool uses only the standard library. Draw.io MCP is not required.
+## 30-second quick start
 
-## Install
-
-Choose one installation method. All three methods install the same Skill implementation. The Skill itself runs locally with Python; Draw.io MCP is not required.
-
-### Agent Skills quick install
-
-Installing with [`npx skills`](https://github.com/vercel-labs/skills) requires Node.js and npm. Node.js is not required after installation.
-
-Run this command in your terminal:
+Install the Skill:
 
 ```bash
 npx skills add zz-zed/product-swimlane-drawio
 ```
 
-The installer detects supported agents and guides you through the installation scope. The repository contains only one Skill, so `--skill` is unnecessary.
+Then ask your agent:
 
-For a shared user-level installation, add `-g`:
-
-```bash
-npx skills add zz-zed/product-swimlane-drawio -g
+```text
+Use product-swimlane-drawio to create an editable vertical swimlane diagram.
+First confirm the lane order, main path, branches, returns, and assumptions.
+Do not generate files until I approve the structure.
 ```
 
-### Claude Code Plugin Marketplace
+## Install
 
-Run these commands inside Claude Code:
+All installation paths use the same canonical Skill under `skills/product-swimlane-drawio`. Python 3.10+ is required at runtime; Node.js is needed only when installing with `npx skills`.
+
+### Manual installation
+
+#### Agent Skills
+
+```bash
+npx skills add zz-zed/product-swimlane-drawio
+```
+
+The installer detects compatible agents and asks where to install. Add `-g` for a shared user-level installation. The repository contains one Skill, so no `--skill` argument is needed.
+
+#### Claude Code Plugin Marketplace
+
+Run inside Claude Code:
 
 ```text
 /plugin marketplace add zz-zed/product-swimlane-drawio
 /plugin install product-swimlane-drawio@product-swimlane-drawio
 ```
 
-The installed Skill is invoked under Claude Code's plugin namespace as `/product-swimlane-drawio:product-swimlane-drawio` and can also be selected automatically from its description.
-
-### Codex Plugin Marketplace
-
-Run these terminal commands with a Codex version that provides `codex plugin`:
+#### Codex Plugin Marketplace
 
 ```bash
 codex plugin marketplace add zz-zed/product-swimlane-drawio
 codex plugin add product-swimlane-drawio@product-swimlane-drawio
 ```
 
-### Ask an agent
+### Agent-assisted installation
 
-Tell Codex, Claude Code, or another Agent Skills-compatible coding agent which installation method you prefer:
+Tell Codex, Claude Code, or another Agent Skills-compatible coding agent:
 
-> Please install `product-swimlane-drawio` from `github.com/zz-zed/product-swimlane-drawio`. Prefer the native plugin marketplace for this agent; otherwise use `npx skills`.
+> Please install `product-swimlane-drawio` from `github.com/zz-zed/product-swimlane-drawio`. Prefer this agent's native Plugin Marketplace; otherwise use `npx skills`.
 
-The agent may ask which installation scope and runtime to use, and may request permission before running installation commands.
+The agent may ask for the installation scope and permission before running commands.
 
 ### Verify installation
 
-List project-level Skills:
+Use `npx skills list` for a project installation or `npx skills list -g` for a user-level installation. Marketplace installations can be checked with `claude plugin list` or `codex plugin list`.
 
-```bash
-npx skills list
-```
+## Ask an agent
 
-For a global installation, add `-g`:
-
-```bash
-npx skills list -g
-```
-
-Marketplace installations can be checked with `claude plugin list` or `codex plugin list`.
-
-## Use with an agent
-
-Ask the agent to confirm the structure before generating the file:
+For a new process:
 
 ```text
-Use product-swimlane-drawio to create an editable vertical swimlane diagram.
-First confirm the lane order, main path, branches, returns, and assumptions.
-Do not generate the file until I approve the structure.
+Use product-swimlane-drawio to turn this process into an editable Draw.io swimlane.
+Confirm the participants, normal path, decisions, exception paths, and completion state first.
+After I approve, build, strictly validate, export a preview, and report visual-review status separately.
 ```
 
 For an existing compatible diagram:
 
 ```text
 Use product-swimlane-drawio to update this .drawio file.
-Preserve existing node geometry and manual layout changes.
-Apply only the requested semantic changes, then validate and compare the result.
+Treat the latest saved file as canonical. Preserve unrelated geometry and manual waypoints.
+Apply only the requested semantic changes, then strictly validate and compare the result.
 ```
 
-## Use the local tool directly
+## How it works
 
-Build and validate:
+```text
+Natural-language process
+        ↓ confirm semantics
+Versioned JSON model
+        ↓ deterministic build
+Native editable .drawio
+        ↓ strict validation + preview
+Local human editing
+        ↓ inspect latest file
+Geometry-preserving semantic patch
+```
+
+![Create and update workflows](docs/illustrations/product-swimlane-readme/create-update.png)
+
+The engine supports a confirmed top-to-bottom main path, decisions, cross-lane calls, returns, retries, same-rank interactions, and optional horizontal phases. It routes the main path first and keeps exceptional traffic visually distinct where geometry allows.
+
+## Edit → inspect → patch
+
+Local editing is part of the design, not an escape hatch.
+
+1. Open the generated `.drawio` in Draw.io Desktop or diagrams.net.
+2. Adjust wording, node positions, lane sizes, or connectors and save the file.
+3. Give the latest saved file back to the agent.
+4. The agent runs `inspect`, prepares the smallest semantic patch, preserves unrelated geometry, validates, and compares the result.
+
+Safe patching depends on semantic metadata and stable IDs created by this Skill. A manually created or incompatible `.drawio` may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
+
+## Validation and reliability
+
+Strict validation checks the semantic model, main-path continuity, decisions, retries, phases, fixed-aspect nodes, text fit, ports, lane-boundary clearance, node crossings, short segments, excessive bends, hairpins, reciprocal ambiguity, label placement, connector overlap, and phase Z-order.
+
+![Validation and visual review provide separate evidence](docs/illustrations/product-swimlane-readme/quality-gate.png)
+
+Automated validation and visual review are different evidence:
+
+| Review capability | What it supports | Required disclosure |
+|---|---|---|
+| Text-only agent | Structural and routing confidence from strict validation | Report model visual review as `not_available` |
+| Multimodal agent | Additional inspection for clipping, collisions, hidden arrows, and excessive detours | Report validation, preview export, and visual review separately |
+| Multimodal agent plus human review | Recommended before important publication or operational use | Review the final exported preview and retain the editable source |
+
+This project does **not** claim a measured accuracy percentage for model-produced diagrams. A successful preview export is not proof that a model inspected the image, and multimodal review can still miss defects.
+
+## Supported scope
+
+| Supported | Not a goal |
+|---|---|
+| Editable product and business vertical swimlanes | General-purpose diagram generation |
+| Roles or systems as lanes | Strict BPMN conformance |
+| Main paths, decisions, branches, returns, and retries | UML, C4, ERD, network, or infrastructure topology |
+| New diagrams and safe updates to compatible diagrams | Free-form presentation graphics |
+
+## Architecture and design principles
+
+Read [Architecture](docs/architecture.md) for the component and data-flow model, and [Design principles](docs/design-principles.md) for the decisions that keep semantic generation, deterministic rendering, local editing, and validation separate. Maintainers can continue with [Process IR v3](docs/PROCESS_IR_V3.md), the [Layout contract](docs/LAYOUT_CONTRACT_V3.md), the [Round-trip contract](docs/ROUND_TRIP_CONTRACT.md), and the [Benchmark plan](docs/BENCHMARK_PLAN.md).
+
+## Use the local tool directly
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
@@ -163,6 +190,9 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   validate --input process.drawio --strict
+
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  inspect --input process.drawio
 ```
 
 Patch and compare:
@@ -175,97 +205,24 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json
 ```
 
-Inspect the latest locally edited file before preparing a patch:
-
-```bash
-python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  inspect --input process.drawio
-```
-
-The semantic input format is documented in [`references/schema.md`](skills/product-swimlane-drawio/references/schema.md).
-
-## Incremental editing boundary
-
-Safe patching depends on semantic metadata and stable IDs produced by this skill. A manually created or incompatible `.drawio` file may require migration or a controlled rebuild before semantic patching is reliable.
-
-By default, patching preserves existing node geometry and manual waypoints. Geometry updates require an explicit command-line flag. If movement or resizing invalidates an incident connector, only the affected connector is rerouted and recorded in the patch receipt.
-
-Nodes, edges, and phases can be deleted by stable semantic ID. Node deletion fails unless every incident edge is explicitly included, and deleting a main-path node requires a replacement main path.
-
-## Validation
-
-Strict validation checks structural integrity and routing heuristics, including:
-
-- Main-path continuity, reachability, decision outcomes, retry direction, and phase ranges
-- Missing endpoints and duplicate semantic IDs
-- Nodes outside their lanes
-- Likely multilingual node-label overflow
-- Fixed-aspect start and end node geometry
-- Unlabeled solid end nodes and excessive process-node padding
-- Unintentional port reuse
-- Connectors aligned with or too close to lane boundaries
-- Connectors crossing nodes
-- Overlapping, crossing, or non-orthogonal connector segments
-
-Automated validation does not replace visual review. Always validate the final saved `.drawio` file. If Draw.io opens, edits, moves, or saves the diagram, run strict validation again before handoff.
-
-Validation returns stable diagnostic codes, evidence, affected semantic IDs, and supported fixes. Build and patch commands write atomically and return the output path, byte count, and SHA-256 digest. Existing output files are not replaced unless `--force` is supplied intentionally.
-
-![Validation and visual review provide separate evidence](docs/illustrations/product-swimlane-readme/quality-gate.png)
-
-## Model capability and output reliability
-
-This project does not claim a measured accuracy percentage for model-produced diagrams. Deterministic validation and model visual review provide different kinds of evidence.
-
-| Agent capability | Relative output confidence | Required disclosure |
-|---|---|---|
-| Text-only model | Structural and routing confidence comes only from strict automated validation. Visual defects can remain. | Report that model visual review was not performed. |
-| Multimodal model | Higher confidence for visible clipping, collisions, hidden arrowheads, and excessive detours. The review is non-deterministic and can still miss defects. | Report automated validation, preview export, and model visual review separately. |
-| Multimodal model plus human review | Recommended for important diagrams before publication or operational use. | Keep the editable `.drawio` file and review the final exported preview. |
-
-A successful preview export does not mean that a model inspected the preview. A multimodal model improves visual quality assurance, but it does not replace strict validation or guarantee a perfect diagram.
-
-## Design scope
-
-Use this skill for editable vertical swimlane process diagrams. It is not intended to provide strict BPMN conformance, infrastructure topology, or free-form presentation graphics.
+See the [semantic schema and patch contract](skills/product-swimlane-drawio/references/schema.md).
 
 ## Development
 
-Run the neutral test suite:
-
 ```bash
 python3 -m unittest discover -s tests -v
-```
-
-Verify local Skill discovery:
-
-```bash
 npx skills add . --list
-```
-
-Validate both plugin packages:
-
-```bash
 claude plugin validate .
-codex plugin marketplace add .
-codex plugin list --available --marketplace product-swimlane-drawio
-codex plugin marketplace remove product-swimlane-drawio
 ```
 
-The Claude manifest intentionally omits `version` because the target marketplace owns it. Claude's validator may therefore emit a non-blocking version recommendation; do not use `--strict` for this marketplace-specific package. The Codex commands perform a reversible local discovery check. They do not install the plugin; the final command removes the temporary marketplace registration.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
+The Claude manifest intentionally omits `version` because the target marketplace owns it; Claude's validator may emit a non-blocking recommendation. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution requirements.
 
 ## Security and privacy
 
-The skill runs local scripts with the permissions available to the invoking agent. Review the Skill instructions and scripts before installation.
-
-The published package contains no user data, organization names, proprietary terminology, generated diagrams, or domain-specific sample flows. Keep task inputs and outputs outside the Skill directory.
+The Skill runs local scripts with the invoking agent's permissions. Review the Skill and scripts before installation. The published Skill package contains no user data, organization names, proprietary terminology, generated diagrams, or domain-specific sample flows. Task artifacts belong outside the Skill directory.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## License
 
-Released under the [MIT License](LICENSE).
-
-Draw.io and diagrams.net are third-party products. This project is not affiliated with or endorsed by their maintainers.
+Released under the [MIT License](LICENSE). Draw.io and diagrams.net are third-party products; this project is not affiliated with or endorsed by their maintainers.

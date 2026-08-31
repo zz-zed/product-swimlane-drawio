@@ -6,6 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
+### Added
+
+- Add a complete fictional request-review example with its prompt, semantic specification, compact same-lane rework loop, exported preview, and deterministic local Draw.io rebuild instructions.
+- Add architecture and design-principles documentation for the semantic, deterministic, editable, incremental, and validated workflow.
+- Add Process IR v3 with behavior patterns, layout profiles, lane-local slots, semantic groups, note anchors, flow roles, stable multi-outcome IDs, and phase-rail presentation.
+- Add anonymous reference benchmarking and v3 layout-contract documentation without publishing private labels or business topology.
+
+### Changed
+
+- Reposition the project around editable product and business vertical swimlanes that remain maintainable after local Draw.io edits.
+- Refresh Claude and Codex marketplace metadata for the `0.4.0` release while continuing to let the Claude marketplace own the plugin manifest version.
+- Compile new diagrams through the v3 intent-first layout path while preserving v1 and v2 compatibility.
+- Prefer centered semantic ports, straight same-rank handoffs, main-axis terminal outcomes, separated retry corridors, and source-adjacent labels for automatic return routes.
+- Present the public request-review example as a v3 `approval-loop` with long-form spacing and a phase navigation rail.
+
+### Fixed
+
+- Preserve Process IR v3 metadata when a patch replaces `main_path` instead of silently downgrading the diagram to schema v2.
+- Keep phase-rail styling byte-stable during unrelated patches so `compare` does not report undeclared phase changes.
+
+### Documentation
+
+- Rebuild both READMEs around a 30-second quick start, product proof, direct-XML comparison, the edit-inspect-patch loop, explicit scope boundaries, and separate multimodal reliability disclosures.
+- Keep only final image assets in the README illustration directory.
+- Keep generated `.drawio` files and illustration-production artifacts outside Git while retaining curated PNG assets for GitHub documentation and fictional examples.
+
+### Tests
+
+- Add release regressions for the complete example, deterministic byte-for-byte rebuilding, strict validation, final-only illustration assets, bilingual product positioning, architecture documents, and `0.4.0` marketplace metadata.
+- Add v3 regressions for fork/join slots, request/response separation, multi-outcome decisions, horizontal decision handoffs, straight terminal branches, phase rails, profile spacing, adaptive lane axes, long retries, source-adjacent retry labels, and preservation of legacy diagrams.
+- Add a v3 local-edit → inspect → patch → compare regression covering unrelated manual geometry, groups, anchors, phase rails, outcomes, flow roles, and schema-version preservation.
+- Rebuild the public example twice in temporary storage during release tests so deterministic `.drawio` output is verified without committing generated diagram files.
+
 ## [0.3.1] - 2026-08-28
 
 ### Changed
@@ -130,7 +165,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.1...v0.2.2

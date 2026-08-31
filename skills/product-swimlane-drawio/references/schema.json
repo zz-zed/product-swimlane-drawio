@@ -1,13 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/zz-zed/product-swimlane-drawio/schema/v2.json",
+  "$id": "https://github.com/zz-zed/product-swimlane-drawio/schema/build.json",
   "title": "Product Swimlane Draw.io build specification",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "title", "lanes", "nodes", "edges", "main_path"],
   "properties": {
-    "schema_version": {"const": "2"},
+    "schema_version": {"enum": ["2", "3"]},
     "title": {"type": "string", "minLength": 1},
+    "behavior_pattern": {
+      "enum": ["linear", "approval-loop", "request-response", "fork-join", "fan-in", "lifecycle", "custom"]
+    },
     "lanes": {
       "type": "array",
       "minItems": 1,
@@ -32,8 +35,22 @@
       "type": "array",
       "items": {"$ref": "#/$defs/phase"}
     },
+    "groups": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/group"}
+    },
+    "layout": {"$ref": "#/$defs/layout"},
     "canvas": {"$ref": "#/$defs/canvas"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"schema_version": {"const": "3"}},
+        "required": ["schema_version"]
+      },
+      "then": {"required": ["behavior_pattern"]}
+    }
+  ],
   "$defs": {
     "semantic_id": {
       "type": "string",
@@ -63,7 +80,9 @@
         "width": {"type": "number", "exclusiveMinimum": 0},
         "height": {"type": "number", "exclusiveMinimum": 0},
         "x": {"type": "number"},
-        "y": {"type": "number"}
+        "y": {"type": "number"},
+        "slot": {"enum": ["left", "main", "right"]},
+        "anchor": {"$ref": "#/$defs/anchor"}
       },
       "allOf": [
         {
@@ -113,6 +132,8 @@
         "exit_offset": {"type": "number", "minimum": 0.05, "maximum": 0.95},
         "entry_offset": {"type": "number", "minimum": 0.05, "maximum": 0.95},
         "allow_port_reuse": {"type": "boolean"},
+        "flow_role": {"enum": ["main", "branch", "fork", "join", "return", "retry", "exception", "response"]},
+        "outcome": {"$ref": "#/$defs/semantic_id"},
         "waypoints": {
           "type": "array",
           "items": {"$ref": "#/$defs/waypoint"}
@@ -132,6 +153,40 @@
           "type": "string",
           "pattern": "^#[0-9A-Fa-f]{6}$"
         }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "side"],
+      "properties": {
+        "node": {"$ref": "#/$defs/semantic_id"},
+        "side": {"enum": ["left", "right"]}
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "lane", "kind", "nodes"],
+      "properties": {
+        "id": {"$ref": "#/$defs/semantic_id"},
+        "lane": {"$ref": "#/$defs/semantic_id"},
+        "kind": {"enum": ["parallel", "branch", "merge", "exception", "support"]},
+        "label": {"type": "string"},
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/semantic_id"}
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {"enum": ["compact", "review", "long-form"]},
+        "phase_presentation": {"enum": ["bands", "rail"]}
       }
     },
     "canvas": {

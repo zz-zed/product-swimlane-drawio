@@ -10,88 +10,75 @@
 
 ![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-zh.png)
 
-将已确认的流程生成原生 `.drawio` 文件，并继续在本地编辑。
+**经得起下一次修改的可编辑产品泳道图。**
 
-该 Agent Skill 用于创建和增量修改垂直泳道图，每个参与方、角色或系统分别占据一条泳道。Agent 负责理解流程语义，确定性本地引擎负责布局、路由、校验和生成可编辑的 Draw.io 文件。生成过程不需要 Draw.io MCP。
+`product-swimlane-drawio` 将已确认的产品或业务流程转换为原生 `.drawio` 文件。Agent 负责理解流程语义，确定性本地引擎负责布局、路由、校验和安全的增量修改；用户最近一次在本地保存的 Draw.io 文件始终是后续修改的权威来源。
 
-**快速导航：** [为什么使用](#为什么使用这个-skill) · [工作流程](#工作流程) · [安装](#安装) · [通过 Agent 使用](#通过-agent-使用) · [本地工具](#直接使用本地工具) · [增量修改](#增量修改的适用边界) · [校验能力](#校验能力) · [输出可靠度](#模型能力与输出可靠度)
+**语义化 → 确定性 → 可编辑 → 可迭代 → 可验证**
 
-## 为什么使用这个 Skill
+生成过程不依赖 Draw.io MCP，也不要求安装 Draw.io 应用。只有需要可视化编辑或导出时，才需要 Draw.io Desktop 或 diagrams.net。
 
-直接生成 Draw.io XML 容易出现连线混乱、回退路径不清晰，以及修改后布局失控等问题。该 Skill 使用中性的 JSON 模型和确定性的本地工具，让流程图更容易评审，也便于后续继续编辑。
+**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围) · [开发](#开发)
 
-- 输出原生、未压缩的 `.drawio` 文件
-- 支持全高度垂直泳道
-- 使用全局顺序控制自上而下的流程布局
-- 使用 Schema v2 显式记录已确认主路径，并可添加水平阶段带
-- 支持决策、分支、返回、重试和跨泳道流程
-- 通过语义端口和正交路由改善连线质量
-- 使用稳定 ID 支持增量修改
-- 支持语义检查、显式删除和已有图受影响连线修复
-- 提供严格的结构与路由质量检查
-- 提供结构化诊断和带 SHA-256 的原子输出收据
-- 生成过程不依赖 Draw.io 应用或 Draw.io MCP
-- 可在 Draw.io Desktop 或 diagrams.net 中本地编辑
+## 为什么需要这个 Skill
 
-## 工作流程
+语言模型擅长理解参与方、流程顺序、判断条件和返回关系，但不擅长在直接生成 Draw.io XML 时同时规划所有坐标与连线折点。
 
-```text
-自然语言流程描述
-        ↓
-确认泳道、主流程、分支和假设
-        ↓
-严格的 v2 JSON 规格
-        ↓
-生成原生 .drawio 文件
-        ↓
-严格校验和按模型能力执行的视觉检查
-        ↓
-本地编辑、检查最新文件或应用语义补丁
-```
+| AI 直接生成 XML | `product-swimlane-drawio` |
+|---|---|
+| 语义与几何混在一份脆弱输出中 | 先用严格的语义模型表达流程 |
+| 每次生成的布局与路由可能不同 | 确定性引擎可稳定重建同一输入 |
+| 人工调整容易被后续生成覆盖 | 稳定 ID 与几何感知补丁保留兼容的本地调整 |
+| 文件能打开就被当作完成证明 | 严格诊断与视觉检查分别报告 |
 
-![从零生成与增量修改工作流](docs/illustrations/product-swimlane-readme/create-update.png)
+它面向产品工作中最常见的闭环：**AI 先完成 80%，人再在本地调整 20%，后续迭代继续保留已经完成的工作。**
 
-## 支持的 Agent
+## 可以获得什么
 
-该包遵循 Agent Skills 目录格式，并为以下 Agent 提供原生插件清单：
+- **可编辑：** 原生未压缩 `.drawio`、全高度垂直泳道、本地拖拽编辑。
+- **可靠：** 已确认主路径、确定性布局、正交路由、独立返回和重试通道、阶段带。
+- **可维护：** 稳定语义 ID、`inspect`、`patch`、`compare`、默认保护几何、安全删除规则。
+- **可验证：** 严格 Schema、结构化诊断、路由与标签检查、带 SHA-256 的原子输出收据。
 
-- OpenAI Codex
-- Claude Code
-- 其他兼容 Agent Skills 的工具，按最佳兼容方式支持
+## 查看完整示例
 
-Claude Code、Codex 和 `npx skills` 共用 `skills/product-swimlane-drawio` 下的同一份 Skill 实现，插件包装不会复制核心文件。Agent 专属元数据统一放在 `agents/` 目录中；核心流程和 Python 工具不依赖单一 Agent 运行时。
+![请求评审示例](examples/request-review/preview.png)
 
-## 环境要求
+虚构且领域中性的[请求评审示例](examples/request-review/)采用 v3 `approval-loop` 模式，包含四条泳道、一个判断、一条紧凑的返工回路、长流程间距和阶段导航栏。目录中提供了[提示词](examples/request-review/prompt.md)、[语义规格](examples/request-review/process.json)和导出的[预览图](examples/request-review/preview.png)。
 
-- Python 3.10 或更高版本
-- 兼容 Agent Skills 的编程 Agent
-- 可选：用于可视化编辑和导出的 Draw.io Desktop 或 [diagrams.net](https://app.diagrams.net/)
+语义规格可以在本地确定性生成原生可编辑的 `.drawio` 文件，并通过零警告的严格校验。生成的 `.drawio` 不提交到仓库，GitHub 仅保留可直接引用和展示的 PNG 预览图。
 
-随附的 Python 工具只使用标准库，不需要 Draw.io MCP。
+## 30 秒快速开始
 
-## 安装
-
-以下三种方式任选其一，安装的都是同一份 Skill。Skill 运行时只依赖本地 Python，不需要 Draw.io MCP。
-
-### Agent Skills 快速安装
-
-通过 [`npx skills`](https://github.com/vercel-labs/skills) 安装需要 Node.js 和 npm；安装完成后不再依赖 Node.js。
-
-在终端中运行：
+安装 Skill：
 
 ```bash
 npx skills add zz-zed/product-swimlane-drawio
 ```
 
-安装器会检测支持的 Agent，并引导选择安装范围。仓库中只有一个 Skill，因此不需要 `--skill`。
+然后告诉 Agent：
 
-如需安装到用户级共享目录，添加 `-g`：
-
-```bash
-npx skills add zz-zed/product-swimlane-drawio -g
+```text
+使用 product-swimlane-drawio 创建一张可编辑的垂直泳道图。
+先确认泳道顺序、主路径、分支、返回关系和假设。
+在我确认结构之前不要生成文件。
 ```
 
-### Claude Code Plugin Marketplace
+## 安装
+
+所有安装方式都使用 `skills/product-swimlane-drawio` 下的同一份 Skill。运行时要求 Python 3.10+；Node.js 只在通过 `npx skills` 安装时需要。
+
+### 手动安装
+
+#### Agent Skills
+
+```bash
+npx skills add zz-zed/product-swimlane-drawio
+```
+
+安装器会识别兼容的 Agent 并询问安装位置。添加 `-g` 可安装到用户级共享目录。仓库中只有一个 Skill，因此不需要 `--skill` 参数。
+
+#### Claude Code Plugin Marketplace
 
 在 Claude Code 中执行：
 
@@ -100,62 +87,102 @@ npx skills add zz-zed/product-swimlane-drawio -g
 /plugin install product-swimlane-drawio@product-swimlane-drawio
 ```
 
-安装后可通过 Claude Code 的插件命名空间 `/product-swimlane-drawio:product-swimlane-drawio` 显式调用，也可以由 Claude 根据描述自动选择。
-
-### Codex Plugin Marketplace
-
-使用支持 `codex plugin` 的 Codex 版本，在终端执行：
+#### Codex Plugin Marketplace
 
 ```bash
 codex plugin marketplace add zz-zed/product-swimlane-drawio
 codex plugin add product-swimlane-drawio@product-swimlane-drawio
 ```
 
-### 告诉 Agent 安装
+### 通过 Agent 安装
 
-直接告诉 Codex、Claude Code 或其他兼容 Agent Skills 的编程 Agent，并说明优先采用的安装方式：
+告诉 Codex、Claude Code 或其他兼容 Agent Skills 的编程 Agent：
 
-> 请从 `github.com/zz-zed/product-swimlane-drawio` 安装 `product-swimlane-drawio`。优先使用当前 Agent 的原生 Plugin Marketplace，不支持时再使用 `npx skills`。
+> 请从 `github.com/zz-zed/product-swimlane-drawio` 安装 `product-swimlane-drawio`。优先使用当前 Agent 的原生 Plugin Marketplace；不支持时再使用 `npx skills`。
 
-Agent 可能会询问安装范围和目标运行环境，并在执行安装命令前请求你的授权。
+Agent 可能会询问安装范围，并在运行命令前请求授权。
 
 ### 验证安装结果
 
-查看项目级 Skill：
+项目级安装使用 `npx skills list`，用户级安装使用 `npx skills list -g`。Marketplace 安装可通过 `claude plugin list` 或 `codex plugin list` 检查。
 
-```bash
-npx skills list
-```
+## 让 Agent 生成或修改
 
-如果采用全局安装，则添加 `-g`：
-
-```bash
-npx skills list -g
-```
-
-Marketplace 安装结果可通过 `claude plugin list` 或 `codex plugin list` 检查。
-
-## 通过 Agent 使用
-
-可以要求 Agent 在生成文件前先确认结构：
+从零生成：
 
 ```text
-使用 product-swimlane-drawio 创建一张可编辑的垂直泳道图。
-先确认泳道顺序、主流程、分支、返回路径和假设。
-在我确认结构之前不要生成文件。
+使用 product-swimlane-drawio 将这个流程转换为可编辑的 Draw.io 泳道图。
+先确认参与方、正常路径、判断、异常路径和完成状态。
+我确认后再生成、严格校验并导出预览，视觉检查状态需要单独报告。
 ```
 
-对于已有的兼容图，可以使用：
+修改已有兼容图：
 
 ```text
 使用 product-swimlane-drawio 修改这个 .drawio 文件。
-保留现有节点位置和手工布局调整。
-只应用我要求的语义变更，然后校验并对比修改结果。
+以最近保存的文件为准，保留无关几何和人工 waypoint。
+只应用我要求的语义变更，然后严格校验并对比结果。
 ```
 
-## 直接使用本地工具
+## 工作原理
 
-生成并校验：
+```text
+自然语言流程
+        ↓ 确认语义
+版本化 JSON 模型
+        ↓ 确定性生成
+原生可编辑 .drawio
+        ↓ 严格校验 + 预览
+人工本地编辑
+        ↓ 检查最新文件
+保护几何的语义补丁
+```
+
+![从零生成与增量修改工作流](docs/illustrations/product-swimlane-readme/create-update.png)
+
+引擎支持已确认的自上而下主路径、判断、跨泳道调用、返回、重试、同顺序交互和可选水平阶段。引擎优先规划主路径，并在几何条件允许时将异常流量放到独立通道。
+
+## 编辑 → 检查 → 补丁
+
+本地编辑是设计的一部分，不是兜底手段。
+
+1. 使用 Draw.io Desktop 或 diagrams.net 打开生成的 `.drawio`。
+2. 调整文案、节点位置、泳道尺寸或连线并保存。
+3. 将最近保存的文件重新交给 Agent。
+4. Agent 运行 `inspect`，准备最小语义补丁，保留无关几何，再校验并对比结果。
+
+安全补丁依赖该 Skill 创建的语义元数据和稳定 ID。手工创建或不兼容的 `.drawio` 可能需要迁移或受控重建。明确设置的人工 waypoint 不会被静默简化。
+
+## 校验与输出可靠度
+
+严格校验覆盖语义模型、主路径连续性、判断、重试、阶段、固定宽高比节点、文字适配、端口、泳道边界距离、节点穿越、短线段、过多折点、回钩、往返路径混淆、标签位置、连线重叠和阶段层级。
+
+![严格校验与视觉检查提供两类独立证据](docs/illustrations/product-swimlane-readme/quality-gate.png)
+
+自动校验与视觉检查是两类不同证据：
+
+| 检查能力 | 可以支持什么 | 必须说明 |
+|---|---|---|
+| 纯文本 Agent | 结构与路由可靠度来自严格校验 | 模型视觉检查报告为 `not_available` |
+| 多模态 Agent | 额外检查文字裁切、视觉碰撞、箭头遮挡和过度绕行 | 分别报告严格校验、预览导出和视觉检查 |
+| 多模态 Agent 加人工复核 | 重要图形公开发布或投入使用前的推荐方式 | 检查最终预览并保留可编辑源文件 |
+
+本项目**不声明**模型生成流程图具有经过测量的准确率。预览导出成功不代表模型已经检查图片，多模态检查也仍可能漏检问题。
+
+## 适用范围
+
+| 支持 | 不作为目标 |
+|---|---|
+| 可编辑的产品和业务垂直泳道图 | 通用图形生成 |
+| 以角色或系统划分泳道 | 严格 BPMN 合规 |
+| 主路径、判断、分支、返回和重试 | UML、C4、ERD、网络或基础设施拓扑 |
+| 新建流程和安全修改兼容流程图 | 自由排版的演示图形 |
+
+## 架构与设计原则
+
+[架构说明](docs/architecture.md)介绍组件与数据流；[设计原则](docs/design-principles.md)说明为什么需要将语义生成、确定性渲染、本地编辑和校验彼此分离。维护者可以继续阅读 [Process IR v3](docs/PROCESS_IR_V3.md)、[布局约定](docs/LAYOUT_CONTRACT_V3.md)、[往返编辑约定](docs/ROUND_TRIP_CONTRACT.md)和[基准计划](docs/BENCHMARK_PLAN.md)。
+
+## 直接使用本地工具
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
@@ -163,9 +190,12 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   validate --input process.drawio --strict
+
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  inspect --input process.drawio
 ```
 
-增量修改并对比：
+补丁和对比：
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
@@ -175,97 +205,24 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json
 ```
 
-准备补丁前检查本地最新编辑的文件：
-
-```bash
-python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  inspect --input process.drawio
-```
-
-语义输入格式参见 [`references/schema.md`](skills/product-swimlane-drawio/references/schema.md)。
-
-## 增量修改的适用边界
-
-安全增量修改依赖该 Skill 生成的语义元数据和稳定 ID。对于手工创建或不兼容的 `.drawio` 文件，可能需要先迁移或受控重建，才能可靠地应用语义补丁。
-
-默认情况下，补丁会保留已有节点位置和人工设置的 waypoint。只有明确需要移动或缩放节点时，才应启用几何更新命令行参数。如果几何变化导致关联连线失效，工具只会重新路由受影响的连线，并在补丁收据中记录。
-
-可以通过稳定语义 ID 删除节点、连线和阶段。删除节点时必须显式列出所有关联连线；删除主路径节点时还必须同时提供新的主路径。
-
-## 校验能力
-
-严格校验会检查结构完整性和路由质量，包括：
-
-- 主路径连续性、节点可达性、决策结果、重试方向和阶段范围
-- 缺失端点和重复语义 ID
-- 节点超出所属泳道
-- 多语言节点文字可能溢出
-- 开始和结束节点的固定宽高比
-- 结束节点必须无标签且为实心圆，以及流程节点留白过多
-- 非预期端口复用
-- 连线与泳道边界重合或距离过近
-- 连线穿过节点
-- 连线线段重叠、交叉或不满足正交要求
-
-自动校验不能替代视觉检查。必须校验最终保存的 `.drawio` 文件。如果文件经过 Draw.io 打开、编辑、移动或保存，则交付前必须再次执行严格校验。
-
-校验结果会返回稳定的诊断代码、证据、受影响的语义 ID 和可用修复方式。生成和补丁命令采用原子写入，并返回输出路径、字节数和 SHA-256 摘要。只有明确使用 `--force` 时才会替换已存在的输出文件。
-
-![严格校验与视觉检查提供两类独立证据](docs/illustrations/product-swimlane-readme/quality-gate.png)
-
-## 模型能力与输出可靠度
-
-本项目目前没有为模型生成的流程图声明经过测量的准确率。确定性校验和模型视觉检查提供的是两类不同证据。
-
-| Agent 能力 | 相对可靠度 | 必须说明 |
-|---|---|---|
-| 纯文本模型 | 结构和路由可靠度仅来自严格自动校验，仍可能保留视觉问题。 | 明确说明“未执行模型视觉检查”。 |
-| 多模态模型 | 对文字裁切、视觉碰撞、箭头遮挡和过度绕行具有更高的发现概率，但检查结果并非确定性的，仍可能漏检。 | 分别报告自动校验、预览导出和模型视觉检查状态。 |
-| 多模态模型加人工复核 | 重要流程图在公开发布或实际使用前的推荐方式。 | 保留可编辑 `.drawio` 文件，并检查最终导出的预览。 |
-
-预览导出成功不等于模型已经检查预览。多模态模型可以提高视觉质量检查的可靠度，但不能替代严格校验，也不能保证流程图完全没有问题。
-
-## 适用范围
-
-该 Skill 用于可编辑的垂直泳道流程图，不用于严格 BPMN 合规建模、基础设施拓扑或自由排版的展示型图形。
+详见[语义 Schema 与补丁约定](skills/product-swimlane-drawio/references/schema.md)。
 
 ## 开发
 
-运行中性测试套件：
-
 ```bash
 python3 -m unittest discover -s tests -v
-```
-
-检查本地 Skill 发现结果：
-
-```bash
 npx skills add . --list
-```
-
-校验两套插件包：
-
-```bash
 claude plugin validate .
-codex plugin marketplace add .
-codex plugin list --available --marketplace product-swimlane-drawio
-codex plugin marketplace remove product-swimlane-drawio
 ```
 
-Claude manifest 按目标内部市场的版本托管规则有意省略 `version`，因此 Claude 校验器可能给出不阻塞安装的版本建议；该市场专用包不使用 `--strict`。Codex 命令只执行一次可逆的本地发现检查，不会安装插件；最后一条命令会移除临时 Marketplace 注册。
-
-贡献要求参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Claude manifest 按目标市场的版本托管规则有意省略 `version`，因此 Claude 校验器可能给出不阻塞的建议。贡献要求参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 安全与隐私
 
-该 Skill 会使用调用 Agent 当前拥有的权限运行本地脚本。安装前请审阅 Skill 指令和脚本内容。
-
-公开包不包含用户数据、组织名称、专有术语、生成后的流程图或特定领域示例流程。任务输入和输出应保存在 Skill 目录之外。
+Skill 会使用调用 Agent 当前拥有的权限运行本地脚本。安装前请审阅 Skill 与脚本。公开 Skill 包不包含用户数据、组织名称、专有术语、生成后的流程图或特定领域示例流程。任务产物应放在 Skill 目录之外。
 
 漏洞报告方式参见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证
 
-项目采用 [MIT License](LICENSE)。
-
-Draw.io 和 diagrams.net 是第三方产品，本项目与其维护方不存在隶属或官方认可关系。
+项目采用 [MIT License](LICENSE)。Draw.io 和 diagrams.net 是第三方产品，本项目与其维护方不存在隶属或官方认可关系。

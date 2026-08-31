@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "product-swimlane-drawio",
   "displayName": "Product Swimlane Draw.io",
-  "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
+  "description": "Create deterministic, editable product swimlanes and safely revise them after local Draw.io edits.",
   "author": {
     "name": "zz-zed",
     "url": "https://github.com/zz-zed"
@@ -13,7 +13,8 @@
   "keywords": [
     "drawio",
     "swimlane",
-    "process-diagram",
+    "product-process",
+    "business-process",
     "agent-skill"
   ]
 }

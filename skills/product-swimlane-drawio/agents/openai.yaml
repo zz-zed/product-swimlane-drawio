@@ -1,4 +1,4 @@
 interface:
-  display_name: "Editable Draw.io Swimlanes"
-  short_description: "Create and safely revise editable Draw.io swimlanes"
-  default_prompt: "Use $product-swimlane-drawio to confirm a new process structure or inspect and safely revise my latest editable vertical swimlane diagram."
+  display_name: "Editable Product Swimlanes"
+  short_description: "Build editable swimlanes that survive revisions"
+  default_prompt: "Use $product-swimlane-drawio to confirm this product process, create an editable vertical swimlane, and preserve compatible local edits in later revisions."

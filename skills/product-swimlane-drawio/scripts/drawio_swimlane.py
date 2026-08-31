@@ -73,23 +73,56 @@ LANE_BOUNDARY_CLEARANCE = 16.0
 POOL_EDGE_MARGIN = 8.0
 GEOMETRY_TOLERANCE = 0.75
 SCHEMA_VERSION = "2"
+V3_SCHEMA_VERSION = "3"
+STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
+
+SLOT_CLASSES = {"left", "main", "right"}
+SLOT_ORDER = {"left": 0, "main": 1, "right": 2}
+SLOT_GAP = 20.0
+SLOT_SIDE_PADDING = 20.0
+PROFILE_SLOT_GAPS = {"compact": 20.0, "review": 32.0, "long-form": 40.0}
+PROFILE_SIDE_PADDING = {"compact": 20.0, "review": 24.0, "long-form": 32.0}
+PROFILE_ROW_GAPS = {"compact": 80.0, "review": 96.0, "long-form": 104.0}
+ANCHOR_SIDES = {"left", "right"}
+BEHAVIOR_PATTERNS = {
+    "linear",
+    "approval-loop",
+    "request-response",
+    "fork-join",
+    "fan-in",
+    "lifecycle",
+    "custom",
+}
+GROUP_KINDS = {"parallel", "branch", "merge", "exception", "support"}
+LAYOUT_PROFILES = {"compact", "review", "long-form"}
+PHASE_PRESENTATIONS = {"bands", "rail"}
+PHASE_RAIL_WIDTH = 76.0
+FLOW_ROLES = {
+    "main", "branch", "fork", "join", "return", "retry", "exception", "response",
+}
 
 TOP_LEVEL_FIELDS = {
     "schema_version", "title", "lanes", "nodes", "edges", "canvas",
-    "main_path", "phases",
+    "main_path", "phases", "behavior_pattern", "groups", "layout",
 }
 LANE_FIELDS = {"id", "label", "width"}
-NODE_FIELDS = {"id", "lane", "rank", "type", "label", "width", "height", "x", "y"}
+NODE_FIELDS = {
+    "id", "lane", "rank", "type", "label", "width", "height", "x", "y",
+    "slot", "anchor",
+}
 EDGE_FIELDS = {
     "id", "from", "to", "type", "label", "route", "branch",
     "exit_side", "entry_side", "exit_offset", "entry_offset",
-    "allow_port_reuse", "waypoints",
+    "allow_port_reuse", "waypoints", "flow_role", "outcome",
 }
 CANVAS_FIELDS = {
     "x", "y", "title_height", "lane_header_height", "row_gap",
     "top_padding", "bottom_padding",
 }
 PHASE_FIELDS = {"id", "label", "from_rank", "to_rank", "fill_color"}
+GROUP_FIELDS = {"id", "label", "lane", "kind", "nodes"}
+ANCHOR_FIELDS = {"node", "side"}
+LAYOUT_FIELDS = {"profile", "phase_presentation"}
 PATCH_FIELDS = {
     "update_nodes", "update_edges", "nodes", "edges", "delete_nodes",
     "delete_edges", "update_phases", "phases", "delete_phases", "main_path",
@@ -306,6 +339,42 @@ def validate_node_object(node: dict, subject: str) -> None:
     for field in ("x", "y"):
         if field in node:
             validate_number(node[field], f"{subject}.{field}")
+    if "slot" in node:
+        slot = require_string(node["slot"], f"{subject}.slot")
+        if slot not in SLOT_CLASSES:
+            raise DiagramError(
+                f"Unsupported lane-local slot: {slot}",
+                code="schema/enum",
+                subject={"kind": "node", "id": node.get("id")},
+                evidence={"field": "slot", "allowed": sorted(SLOT_CLASSES)},
+            )
+    if "anchor" in node:
+        anchor = require_mapping(node["anchor"], f"{subject}.anchor")
+        reject_unknown_fields(anchor, ANCHOR_FIELDS, f"{subject}.anchor")
+        for field in ("node", "side"):
+            if field not in anchor:
+                raise DiagramError(
+                    f"Missing required field in {subject}.anchor: {field}",
+                    code="schema/required",
+                    subject={"kind": "node", "id": node.get("id")},
+                    evidence={"field": field},
+                )
+        validate_semantic_id(anchor["node"], f"{subject}.anchor.node")
+        side = require_string(anchor["side"], f"{subject}.anchor.side")
+        if side not in ANCHOR_SIDES:
+            raise DiagramError(
+                f"Unsupported note anchor side: {side}",
+                code="schema/enum",
+                subject={"kind": "node", "id": node.get("id")},
+                evidence={"field": "anchor.side", "allowed": sorted(ANCHOR_SIDES)},
+            )
+        if node["type"] != "note":
+            raise DiagramError(
+                f"{subject}.anchor is supported only for note nodes",
+                code="semantic/anchor-node-type",
+                subject={"kind": "node", "id": node.get("id")},
+                supported_fixes=["change-node-to-note", "remove-anchor"],
+            )
     if (
         node["type"] in FIXED_ASPECT_NODE_TYPES
         and "width" in node
@@ -358,6 +427,15 @@ def validate_edge_object(edge: dict, subject: str, *, update: bool = False) -> N
             subject={"kind": "edge", "id": edge.get("id")},
             evidence={"field": "branch", "allowed": sorted(BRANCH_CLASSES)},
         )
+    if "flow_role" in edge and edge["flow_role"] not in FLOW_ROLES:
+        raise DiagramError(
+            f"Unsupported flow role: {edge['flow_role']}",
+            code="schema/enum",
+            subject={"kind": "edge", "id": edge.get("id")},
+            evidence={"field": "flow_role", "allowed": sorted(FLOW_ROLES)},
+        )
+    if "outcome" in edge:
+        validate_semantic_id(edge["outcome"], f"{subject}.outcome")
     for field in ("exit_side", "entry_side"):
         if field in edge:
             validate_side(edge[field], field)
@@ -424,6 +502,38 @@ def validate_phase_object(phase: dict, subject: str, *, update: bool = False) ->
             )
 
 
+def validate_group_object(group: dict, subject: str) -> None:
+    require_mapping(group, subject)
+    reject_unknown_fields(group, GROUP_FIELDS, subject)
+    for field in ("id", "lane", "kind", "nodes"):
+        if field not in group:
+            raise DiagramError(
+                f"Missing required field in {subject}: {field}",
+                code="schema/required",
+                subject={"kind": subject},
+                evidence={"field": field},
+            )
+    validate_semantic_id(group["id"], f"{subject}.id")
+    validate_semantic_id(group["lane"], f"{subject}.lane")
+    if "label" in group:
+        require_string(group["label"], f"{subject}.label", allow_empty=True)
+    kind = require_string(group["kind"], f"{subject}.kind")
+    if kind not in GROUP_KINDS:
+        raise DiagramError(
+            f"Unsupported group kind: {kind}",
+            code="schema/enum",
+            subject={"kind": "group", "id": group.get("id")},
+            evidence={"field": "kind", "allowed": sorted(GROUP_KINDS)},
+        )
+    nodes = validate_id_list(group["nodes"], f"{subject}.nodes")
+    if not nodes:
+        raise DiagramError(
+            f"{subject}.nodes must contain at least one node",
+            code="schema/min-items",
+            subject={"kind": "group", "id": group.get("id")},
+        )
+
+
 def validate_id_list(values, subject: str) -> list[str]:
     values = require_list(values, subject)
     result: list[str] = []
@@ -453,12 +563,15 @@ def validate_build_spec(spec: dict) -> str:
     if "schema_version" in spec:
         require_string(spec["schema_version"], "spec.schema_version")
     schema_version = spec.get("schema_version", "1")
-    if schema_version not in {"1", SCHEMA_VERSION}:
+    if schema_version not in {"1", *STRUCTURED_SCHEMA_VERSIONS}:
         raise DiagramError(
             f"Unsupported schema_version: {schema_version}",
             code="schema/version",
             subject={"kind": "spec"},
-            evidence={"supported": ["1", SCHEMA_VERSION], "actual": schema_version},
+            evidence={
+                "supported": ["1", SCHEMA_VERSION, V3_SCHEMA_VERSION],
+                "actual": schema_version,
+            },
             supported_fixes=["migrate-spec"],
         )
     require_string(spec["title"], "spec.title")
@@ -467,8 +580,74 @@ def validate_build_spec(spec: dict) -> str:
     edges = require_list(spec["edges"], "spec.edges")
     if not lanes:
         raise DiagramError("spec.lanes must contain at least one lane", code="schema/min-items")
-    if schema_version == SCHEMA_VERSION and len(nodes) < 2:
-        raise DiagramError("schema version 2 requires at least two nodes", code="schema/min-items")
+    if schema_version in STRUCTURED_SCHEMA_VERSIONS and len(nodes) < 2:
+        raise DiagramError(
+            f"schema version {schema_version} requires at least two nodes",
+            code="schema/min-items",
+        )
+
+    if schema_version == V3_SCHEMA_VERSION:
+        if "behavior_pattern" not in spec:
+            raise DiagramError(
+                "schema_version 3 requires behavior_pattern",
+                code="schema/required",
+                subject={"kind": "spec"},
+                evidence={"field": "behavior_pattern"},
+            )
+        behavior_pattern = require_string(
+            spec["behavior_pattern"], "spec.behavior_pattern"
+        )
+        if behavior_pattern not in BEHAVIOR_PATTERNS:
+            raise DiagramError(
+                f"Unsupported behavior pattern: {behavior_pattern}",
+                code="schema/enum",
+                subject={"kind": "spec"},
+                evidence={
+                    "field": "behavior_pattern",
+                    "allowed": sorted(BEHAVIOR_PATTERNS),
+                },
+            )
+        if "layout" in spec:
+            layout = require_mapping(spec["layout"], "spec.layout")
+            reject_unknown_fields(layout, LAYOUT_FIELDS, "spec.layout")
+            if "profile" in layout:
+                profile = require_string(layout["profile"], "spec.layout.profile")
+                if profile not in LAYOUT_PROFILES:
+                    raise DiagramError(
+                        f"Unsupported layout profile: {profile}",
+                        code="schema/enum",
+                        subject={"kind": "layout"},
+                        evidence={"field": "profile", "allowed": sorted(LAYOUT_PROFILES)},
+                    )
+            if "phase_presentation" in layout:
+                presentation = require_string(
+                    layout["phase_presentation"],
+                    "spec.layout.phase_presentation",
+                )
+                if presentation not in PHASE_PRESENTATIONS:
+                    raise DiagramError(
+                        f"Unsupported phase presentation: {presentation}",
+                        code="schema/enum",
+                        subject={"kind": "layout"},
+                        evidence={
+                            "field": "phase_presentation",
+                            "allowed": sorted(PHASE_PRESENTATIONS),
+                        },
+                    )
+    else:
+        v3_fields = sorted(
+            field
+            for field in ("behavior_pattern", "groups", "layout")
+            if field in spec
+        )
+        if v3_fields:
+            raise DiagramError(
+                "v3 layout-intent fields require schema_version 3",
+                code="schema/version-field",
+                subject={"kind": "spec"},
+                evidence={"fields": v3_fields, "schema_version": schema_version},
+                supported_fixes=["set-schema-version-3", "remove-v3-fields"],
+            )
 
     for index, lane in enumerate(lanes):
         subject = f"lane[{index}]"
@@ -488,13 +667,32 @@ def validate_build_spec(spec: dict) -> str:
             validate_number(
                 lane["width"],
                 f"{subject}.width",
-                minimum=120 if schema_version == SCHEMA_VERSION else 1,
+                minimum=120 if schema_version in STRUCTURED_SCHEMA_VERSIONS else 1,
             )
 
     for index, node in enumerate(nodes):
         validate_node_object(node, f"node[{index}]")
     for index, edge in enumerate(edges):
         validate_edge_object(edge, f"edge[{index}]")
+    if schema_version != V3_SCHEMA_VERSION:
+        v3_node_fields = [
+            node["id"]
+            for node in nodes
+            if "slot" in node or "anchor" in node
+        ]
+        v3_edge_fields = [
+            edge["id"]
+            for edge in edges
+            if "flow_role" in edge or "outcome" in edge
+        ]
+        if v3_node_fields or v3_edge_fields:
+            raise DiagramError(
+                "v3 node or edge fields require schema_version 3",
+                code="schema/version-field",
+                subject={"kind": "spec"},
+                evidence={"nodes": v3_node_fields, "edges": v3_edge_fields},
+                supported_fixes=["set-schema-version-3", "remove-v3-fields"],
+            )
     require_unique(lanes, "lane")
     require_unique(nodes, "node")
     require_unique(edges, "edge")
@@ -528,9 +726,9 @@ def validate_build_spec(spec: dict) -> str:
             validate_number(value, f"spec.canvas.{field}", minimum=minimum)
 
     main_path = spec.get("main_path")
-    if schema_version == SCHEMA_VERSION and main_path is None:
+    if schema_version in STRUCTURED_SCHEMA_VERSIONS and main_path is None:
         raise DiagramError(
-            "schema_version 2 requires main_path",
+            f"schema_version {schema_version} requires main_path",
             code="schema/required",
             subject={"kind": "spec"},
             evidence={"field": "main_path"},
@@ -595,6 +793,106 @@ def validate_build_spec(spec: dict) -> str:
                 subject={"kind": "phase", "id": phase["id"]},
                 evidence={"to_rank": phase["to_rank"], "max_rank": max_rank},
             )
+
+    groups = require_list(spec.get("groups", []), "spec.groups")
+    for index, group in enumerate(groups):
+        validate_group_object(group, f"group[{index}]")
+    require_unique(groups, "group")
+    if groups and schema_version != V3_SCHEMA_VERSION:
+        raise DiagramError(
+            "groups require schema_version 3",
+            code="schema/version-field",
+            subject={"kind": "spec"},
+            evidence={"field": "groups"},
+        )
+    group_members: set[str] = set()
+    for group in groups:
+        if group["lane"] not in lane_ids:
+            raise DiagramError(
+                f"Group {group['id']} references an unknown lane",
+                code="semantic/unknown-lane",
+                subject={"kind": "group", "id": group["id"]},
+                evidence={"lane": group["lane"]},
+            )
+        for node_id in group["nodes"]:
+            if node_id not in node_ids:
+                raise DiagramError(
+                    f"Group {group['id']} references a missing node",
+                    code="semantic/group-node",
+                    subject={"kind": "group", "id": group["id"]},
+                    evidence={"node": node_id},
+                )
+            if node_by_id[node_id]["lane"] != group["lane"]:
+                raise DiagramError(
+                    f"Group {group['id']} contains a node from another lane",
+                    code="semantic/group-lane",
+                    subject={"kind": "group", "id": group["id"]},
+                    evidence={
+                        "node": node_id,
+                        "expected_lane": group["lane"],
+                        "actual_lane": node_by_id[node_id]["lane"],
+                    },
+                )
+            if node_id in group_members:
+                raise DiagramError(
+                    f"Node {node_id} belongs to more than one group",
+                    code="semantic/group-membership",
+                    subject={"kind": "node", "id": node_id},
+                    supported_fixes=["keep-one-group-membership"],
+                )
+            group_members.add(node_id)
+
+    if schema_version == V3_SCHEMA_VERSION:
+        for node in nodes:
+            anchor = node.get("anchor")
+            if not anchor:
+                continue
+            target = node_by_id.get(anchor["node"])
+            if target is None:
+                raise DiagramError(
+                    f"Note {node['id']} anchors to a missing node",
+                    code="semantic/anchor-target",
+                    subject={"kind": "node", "id": node["id"]},
+                    evidence={"anchor": anchor["node"]},
+                )
+            if target["lane"] != node["lane"] or target["rank"] != node["rank"]:
+                raise DiagramError(
+                    f"Note {node['id']} must share lane and rank with its anchor in v3",
+                    code="semantic/anchor-alignment",
+                    subject={"kind": "node", "id": node["id"]},
+                    evidence={
+                        "anchor": anchor["node"],
+                        "note_lane": node["lane"],
+                        "anchor_lane": target["lane"],
+                        "note_rank": node["rank"],
+                        "anchor_rank": target["rank"],
+                    },
+                    supported_fixes=["align-note-with-anchor", "remove-anchor"],
+                )
+            if "slot" in node and node["slot"] != anchor["side"]:
+                raise DiagramError(
+                    f"Note {node['id']} slot conflicts with its anchor side",
+                    code="layout/anchor-slot-conflict",
+                    subject={"kind": "node", "id": node["id"]},
+                    evidence={"slot": node["slot"], "anchor_side": anchor["side"]},
+                    supported_fixes=["match-slot-to-anchor", "remove-explicit-slot"],
+                )
+
+        occupied: dict[tuple[str, int, str], str] = {}
+        for node in nodes:
+            if "x" in node:
+                continue
+            slot = effective_node_slot(node)
+            key = (node["lane"], int(node["rank"]), slot)
+            if key in occupied:
+                raise DiagramError(
+                    f"Nodes {occupied[key]} and {node['id']} occupy the same lane, rank, and slot",
+                    code="layout/slot-conflict",
+                    subject={"kind": "node", "id": node["id"]},
+                    evidence={"lane": key[0], "rank": key[1], "slot": key[2]},
+                    supported_fixes=["assign-distinct-slots", "change-rank", "set-explicit-geometry"],
+                )
+            occupied[key] = node["id"]
     return schema_version
 
 
@@ -641,6 +939,22 @@ def canvas_values(spec: dict) -> dict:
     return values
 
 
+def layout_profile(spec: dict) -> str:
+    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+        return "legacy"
+    return spec.get("layout", {}).get("profile", "review")
+
+
+def profile_slot_gap(spec: dict) -> float:
+    profile = layout_profile(spec)
+    return PROFILE_SLOT_GAPS.get(profile, SLOT_GAP)
+
+
+def profile_side_padding(spec: dict) -> float:
+    profile = layout_profile(spec)
+    return PROFILE_SIDE_PADDING.get(profile, SLOT_SIDE_PADDING)
+
+
 def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
     requested = edge.get("route", "auto")
     if requested != "auto":
@@ -657,6 +971,115 @@ def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
     if target_rank > source_rank:
         return "forward"
     return "side"
+
+
+def effective_node_slot(node: dict) -> str:
+    """Return the semantic horizontal slot used by the v3 compiler."""
+    if "slot" in node:
+        return node["slot"]
+    if node.get("anchor"):
+        return node["anchor"]["side"]
+    return "main"
+
+
+def v3_slot_row_required_width(
+    row_nodes: list[dict],
+    *,
+    gap: float,
+    side_padding: float,
+) -> float:
+    left_extent, right_extent = v3_slot_row_extents(row_nodes, gap=gap)
+    return 2 * side_padding + left_extent + right_extent
+
+
+def v3_slot_row_extents(
+    row_nodes: list[dict],
+    *,
+    gap: float,
+) -> tuple[float, float]:
+    by_slot = {effective_node_slot(node): node for node in row_nodes}
+    if "main" not in by_slot:
+        content = sum(node_size(node)[0] for node in row_nodes) + gap * max(
+            0, len(row_nodes) - 1
+        )
+        return content / 2.0, content / 2.0
+
+    main_width = node_size(by_slot["main"])[0]
+    left_extent = main_width / 2.0
+    right_extent = main_width / 2.0
+    if "left" in by_slot:
+        left_extent += gap + node_size(by_slot["left"])[0]
+    if "right" in by_slot:
+        right_extent += gap + node_size(by_slot["right"])[0]
+    return left_extent, right_extent
+
+
+def v3_lane_main_axes(
+    spec: dict,
+    lane_widths: dict[str, float],
+) -> dict[str, float]:
+    gap = profile_slot_gap(spec)
+    side_padding = profile_side_padding(spec)
+    by_lane_rank: dict[tuple[str, int], list[dict]] = {}
+    for node in spec["nodes"]:
+        if "x" in node:
+            continue
+        by_lane_rank.setdefault((node["lane"], int(node["rank"])), []).append(node)
+
+    extents: dict[str, tuple[float, float]] = {}
+    for (lane_id, _rank), row_nodes in by_lane_rank.items():
+        if not any(effective_node_slot(node) == "main" for node in row_nodes):
+            continue
+        left, right = v3_slot_row_extents(row_nodes, gap=gap)
+        previous = extents.get(lane_id, (0.0, 0.0))
+        extents[lane_id] = max(previous[0], left), max(previous[1], right)
+
+    axes: dict[str, float] = {}
+    for lane_id, (left, right) in extents.items():
+        spare = max(0.0, lane_widths[lane_id] - left - right - 2 * side_padding)
+        axes[lane_id] = side_padding + spare / 2.0 + left
+    return axes
+
+
+def v3_node_x_positions(
+    spec: dict,
+    lane_widths: dict[str, float],
+) -> dict[str, float]:
+    """Compile left/main/right slots into deterministic lane-local positions."""
+    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+        return {}
+    gap = profile_slot_gap(spec)
+    lane_axes = v3_lane_main_axes(spec, lane_widths)
+
+    positions: dict[str, float] = {}
+    by_lane_rank: dict[tuple[str, int], list[dict]] = {}
+    for node in spec["nodes"]:
+        if "x" in node:
+            continue
+        by_lane_rank.setdefault((node["lane"], int(node["rank"])), []).append(node)
+
+    for (lane_id, _rank), row_nodes in by_lane_rank.items():
+        ordered = sorted(row_nodes, key=lambda item: SLOT_ORDER[effective_node_slot(item)])
+        by_slot = {effective_node_slot(node): node for node in ordered}
+        if "main" in by_slot:
+            main = by_slot["main"]
+            main_width = node_size(main)[0]
+            main_x = lane_axes.get(lane_id, lane_widths[lane_id] / 2.0) - main_width / 2.0
+            positions[main["id"]] = main_x
+            if "left" in by_slot:
+                left = by_slot["left"]
+                positions[left["id"]] = main_x - gap - node_size(left)[0]
+            if "right" in by_slot:
+                right = by_slot["right"]
+                positions[right["id"]] = main_x + main_width + gap
+        else:
+            widths = [node_size(node)[0] for node in ordered]
+            content_width = sum(widths) + gap * max(0, len(ordered) - 1)
+            cursor = (lane_widths[lane_id] - content_width) / 2.0
+            for node, width in zip(ordered, widths):
+                positions[node["id"]] = cursor
+                cursor += width + gap
+    return positions
 
 
 def effective_lane_widths(spec: dict) -> dict[str, float]:
@@ -677,6 +1100,22 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
             math.ceil(node_width + 8.0),
         )
 
+    if spec.get("schema_version") == V3_SCHEMA_VERSION:
+        gap = profile_slot_gap(spec)
+        side_padding = profile_side_padding(spec)
+        by_lane_rank: dict[tuple[str, int], list[dict]] = {}
+        for node in spec["nodes"]:
+            if "x" in node:
+                continue
+            by_lane_rank.setdefault((node["lane"], int(node["rank"])), []).append(node)
+        for (lane_id, _rank), row_nodes in by_lane_rank.items():
+            required_width = v3_slot_row_required_width(
+                row_nodes,
+                gap=gap,
+                side_padding=side_padding,
+            )
+            widths[lane_id] = max(widths[lane_id], float(math.ceil(required_width)))
+
     for edge in spec["edges"]:
         if inferred_spec_route_class(edge, nodes) != "back":
             continue
@@ -688,6 +1127,26 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
             target_width + 2 * required_gutter + GEOMETRY_TOLERANCE
         )
         widths[target["lane"]] = max(widths[target["lane"]], float(minimum_width))
+
+        if spec.get("schema_version") == V3_SCHEMA_VERSION:
+            # Cross-lane returns need a safe escape gutter at the source as
+            # well as an entry gutter at the historical target.  Otherwise a
+            # centered node can leave only a few pixels between its jetty and
+            # the lane boundary, forcing the route through another lane.
+            required_side_space = (
+                LANE_BOUNDARY_CLEARANCE + ROUTE_CLEARANCE + GEOMETRY_TOLERANCE
+            )
+            for endpoint in (nodes[edge["from"]], target):
+                if "x" in endpoint:
+                    continue
+                endpoint_width, _ = node_size(endpoint)
+                endpoint_minimum = math.ceil(
+                    endpoint_width + 2 * required_side_space
+                )
+                widths[endpoint["lane"]] = max(
+                    widths[endpoint["lane"]],
+                    float(endpoint_minimum),
+                )
 
     return widths
 
@@ -772,6 +1231,8 @@ def adaptive_canvas_values(spec: dict) -> dict:
     values = canvas_values(spec)
     if "row_gap" in spec.get("canvas", {}):
         return values
+    if spec.get("schema_version") == V3_SCHEMA_VERSION:
+        values["row_gap"] = PROFILE_ROW_GAPS[layout_profile(spec)]
 
     rank_heights: dict[int, float] = {}
     for node in spec["nodes"]:
@@ -815,10 +1276,24 @@ def node_y(node: dict, values: dict) -> float:
     return float(node.get("y", center - height / 2))
 
 
-def create_node_cell(root: ET.Element, parent: ET.Element, node: dict, lane_width: float, values: dict) -> ET.Element:
+def create_node_cell(
+    root: ET.Element,
+    parent: ET.Element,
+    node: dict,
+    lane_width: float,
+    values: dict,
+    *,
+    automatic_x: float | None = None,
+    group_id: str | None = None,
+) -> ET.Element:
     kind = node.get("type", "process")
     width, height = node_size(node)
-    x = float(node.get("x", (lane_width - width) / 2))
+    x = float(
+        node.get(
+            "x",
+            automatic_x if automatic_x is not None else (lane_width - width) / 2,
+        )
+    )
     y = node_y(node, values)
     cell = ET.SubElement(
         root,
@@ -836,11 +1311,26 @@ def create_node_cell(root: ET.Element, parent: ET.Element, node: dict, lane_widt
             "data-rank": str(node["rank"]),
         },
     )
+    if "slot" in node or automatic_x is not None:
+        cell.attrib["data-slot"] = effective_node_slot(node)
+    if node.get("anchor"):
+        cell.attrib["data-anchor"] = json.dumps(
+            node["anchor"], ensure_ascii=True, separators=(",", ":")
+        )
+    if group_id:
+        cell.attrib["data-group-id"] = group_id
     geometry(cell, x=x, y=y, width=width, height=height)
     return cell
 
 
-def phase_geometry_values(phase: dict, values: dict, pool_width: float) -> dict[str, float]:
+def phase_geometry_values(
+    phase: dict,
+    values: dict,
+    pool_width: float,
+    *,
+    presentation: str = "bands",
+    rail_width: float = PHASE_RAIL_WIDTH,
+) -> dict[str, float]:
     first_center = (
         values["title_height"]
         + values["lane_header_height"]
@@ -855,7 +1345,8 @@ def phase_geometry_values(phase: dict, values: dict, pool_width: float) -> dict[
     )
     top = max(values["title_height"] + values["lane_header_height"], first_center - values["row_gap"] / 2)
     bottom = last_center + values["row_gap"] / 2
-    return {"x": 0.0, "y": top, "width": pool_width, "height": max(24.0, bottom - top)}
+    width = rail_width if presentation == "rail" else pool_width
+    return {"x": 0.0, "y": top, "width": width, "height": max(24.0, bottom - top)}
 
 
 def create_phase_cell(
@@ -866,6 +1357,21 @@ def create_phase_cell(
     pool_width: float,
 ) -> ET.Element:
     fill_color = phase.get("fill_color", "#f5f5f5")
+    presentation = pool.attrib.get("data-phase-presentation", "bands")
+    rail_width = float(pool.attrib.get("data-phase-rail-width", PHASE_RAIL_WIDTH))
+    if presentation == "rail":
+        phase_style = (
+            "rounded=0;whiteSpace=wrap;html=1;verticalAlign=middle;align=center;"
+            "spacing=4;fontSize=10;fontStyle=1;fontColor=#555555;"
+            "fillColor=#ffffff;strokeColor=#808080;pointerEvents=0;"
+        )
+    else:
+        phase_style = (
+            "rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;"
+            "spacingTop=4;spacingLeft=6;fontSize=10;fontStyle=1;fontColor=#666666;"
+            f"fillColor={fill_color};fillOpacity=12;strokeColor=#b3b3b3;"
+            "strokeOpacity=55;dashed=1;pointerEvents=0;"
+        )
     cell = ET.SubElement(
         root,
         "mxCell",
@@ -875,12 +1381,7 @@ def create_phase_cell(
             "vertex": "1",
             "connectable": "0",
             "value": str(phase["label"]),
-            "style": (
-                "rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;"
-                "spacingTop=4;spacingLeft=6;fontSize=10;fontStyle=1;fontColor=#666666;"
-                f"fillColor={fill_color};fillOpacity=12;strokeColor=#b3b3b3;"
-                "strokeOpacity=55;dashed=1;pointerEvents=0;"
-            ),
+            "style": phase_style,
             "data-kind": "phase",
             "data-semantic-id": phase["id"],
             "data-from-rank": str(phase["from_rank"]),
@@ -888,7 +1389,18 @@ def create_phase_cell(
             "data-fill-color": fill_color,
         },
     )
-    geometry(cell, **phase_geometry_values(phase, values, pool_width))
+    if pool.attrib.get("data-schema-version") == V3_SCHEMA_VERSION:
+        cell.attrib["data-presentation"] = presentation
+    geometry(
+        cell,
+        **phase_geometry_values(
+            phase,
+            values,
+            pool_width,
+            presentation=presentation,
+            rail_width=rail_width,
+        ),
+    )
     return cell
 
 
@@ -929,12 +1441,13 @@ def normalize_phase_layering(
         if cell.attrib.get("data-kind") == "lane"
         and cell.attrib.get("parent") == pool.attrib["id"]
     ]
+    presentation = pool.attrib.get("data-phase-presentation", "bands")
     if phases or restore_lane_fill_without_phases:
         for lane in lanes:
             set_style_option(
                 lane,
                 "swimlaneFillColor",
-                "none" if phases else "#ffffff",
+                "none" if phases and presentation == "bands" else "#ffffff",
             )
     if not phases:
         return
@@ -1268,10 +1781,11 @@ def allocate_port_pair(
                 alignment = 0.0
             center_cost = abs(exit_offset - 0.5) + abs(entry_offset - 0.5)
             if prefer_center_ports:
-                # For adjacent-rank cross-lane flow, chasing endpoint alignment
-                # commonly pushes ports to 0.1/0.9 and creates a visually
-                # unbalanced staircase.  Human-edited product swimlanes prefer
-                # centered ports and accept one clear orthogonal carrier.
+                # Centered side ports are the normal human-authored attachment
+                # points.  Chasing endpoint alignment commonly pushes a long
+                # return to 0.1/0.9 even when both center ports are free.  Keep
+                # alignment as a secondary preference and move off center only
+                # when the center port is occupied or explicitly overridden.
                 pair_cost = center_cost * 10000.0 + alignment
             else:
                 pair_cost = alignment * 100.0 + center_cost
@@ -1330,11 +1844,14 @@ def preferred_sides(
     *,
     main_path_pairs: set[tuple[str, str]] | None = None,
     outgoing_counts: dict[str, int] | None = None,
+    bottom_reserved_sources: set[str] | None = None,
+    v3_semantics: bool = False,
 ) -> tuple[str, str]:
     branch = edge.get("branch")
     if branch is not None and branch not in BRANCH_CLASSES:
         raise DiagramError(f"Unsupported branch class: {branch}")
     source_type = source["cell"].attrib.get("data-node-type", "process")
+    target_type = target["cell"].attrib.get("data-node-type", "process")
     source_rank = int(source["cell"].attrib.get("data-rank", "0"))
     target_rank = int(target["cell"].attrib.get("data-rank", "0"))
     is_main_path = (edge["from"], edge["to"]) in (main_path_pairs or set())
@@ -1342,10 +1859,39 @@ def preferred_sides(
     actual_split = (outgoing_counts or {}).get(edge["from"], 0) > 1
 
     if route_class == "back":
-        default_exit = "left"
-        default_entry = "left"
+        source_index = list(lanes).index(source["lane"])
+        target_index = list(lanes).index(target["lane"])
+        if edge.get("flow_role") and abs(source_index - target_index) == 1:
+            if source_index < target_index:
+                default_exit, default_entry = "right", "right"
+            else:
+                default_exit, default_entry = "left", "left"
+        elif edge.get("flow_role") and source_index > target_index:
+            default_exit, default_entry = "right", "left"
+        elif edge.get("flow_role") and source_index < target_index:
+            default_exit, default_entry = "left", "right"
+        else:
+            default_exit = "left"
+            default_entry = "left"
     elif route_class == "forward":
-        if is_main_path and same_lane_down:
+        if (
+            is_main_path
+            and (
+                same_lane_down
+                or (
+                    v3_semantics
+                    and target_rank > source_rank
+                    and edge["from"] not in (bottom_reserved_sources or set())
+                )
+            )
+        ):
+            default_exit = "bottom"
+        elif (
+            v3_semantics
+            and source_type == "decision"
+            and target_type == "end"
+            and same_lane_down
+        ):
             default_exit = "bottom"
         elif source_type == "decision" and branch == "positive" and source["lane"] != target["lane"]:
             source_index = list(lanes).index(source["lane"])
@@ -1759,9 +2305,13 @@ def label_box_candidates(
             center_positions = (
                 (low_x + high_x) / 2,
                 low_x + width / 2 + EDGE_LABEL_GAP,
+                low_x + width * 1.5 + EDGE_LABEL_GAP * 2,
                 high_x - width / 2 - EDGE_LABEL_GAP,
+                high_x - width * 1.5 - EDGE_LABEL_GAP * 2,
             )
             for center_x in dict.fromkeys(round(value, 4) for value in center_positions):
+                if not low_x + width / 2 <= center_x <= high_x - width / 2:
+                    continue
                 for top in (y1 - height - EDGE_LABEL_GAP, y1 + EDGE_LABEL_GAP):
                     box = {
                         "left": center_x - width / 2,
@@ -1777,9 +2327,13 @@ def label_box_candidates(
             center_positions = (
                 (low_y + high_y) / 2,
                 low_y + height / 2 + EDGE_LABEL_GAP,
+                low_y + height * 2 + EDGE_LABEL_GAP * 2,
                 high_y - height / 2 - EDGE_LABEL_GAP,
+                high_y - height * 2 - EDGE_LABEL_GAP * 2,
             )
             for center_y in dict.fromkeys(round(value, 4) for value in center_positions):
+                if not low_y + height / 2 <= center_y <= high_y - height / 2:
+                    continue
                 for left in (x1 + EDGE_LABEL_GAP, x1 - width - EDGE_LABEL_GAP):
                     box = {
                         "left": left,
@@ -1801,23 +2355,41 @@ def choose_label_box(
     other_labels: list[dict[str, float]],
     preferred_side: str | None = None,
     container_bounds: dict[str, float] | None = None,
+    prefer_source_proximity: bool = False,
 ) -> tuple[int, dict[str, float]] | None:
     candidates = label_box_candidates(points, label)
-    if preferred_side in {"left", "right"}:
-        def preference(item: tuple[int, dict[str, float], float]) -> int:
-            segment_index, box, _ = item
-            segment = list(zip(points, points[1:]))[segment_index]
-            if segment_axis(segment) != "vertical":
-                return 1
-            box_center = box["left"] + box["width"] / 2
-            is_preferred = (
-                box_center < segment[0][0]
-                if preferred_side == "left"
-                else box_center > segment[0][0]
-            )
-            return 0 if is_preferred else 2
 
-        candidates = sorted(candidates, key=preference)
+    def side_preference(item: tuple[int, dict[str, float], float]) -> int:
+        if preferred_side not in {"left", "right"}:
+            return 0
+        segment_index, box, _ = item
+        segment = list(zip(points, points[1:]))[segment_index]
+        if segment_axis(segment) != "vertical":
+            return 1
+        box_center = box["left"] + box["width"] / 2
+        is_preferred = (
+            box_center < segment[0][0]
+            if preferred_side == "left"
+            else box_center > segment[0][0]
+        )
+        return 0 if is_preferred else 2
+
+    if prefer_source_proximity and points:
+        source_x, source_y = points[0]
+
+        def source_distance(item: tuple[int, dict[str, float], float]) -> float:
+            _, box, _ = item
+            center_x = box["left"] + box["width"] / 2
+            center_y = box["top"] + box["height"] / 2
+            return (center_x - source_x) ** 2 + (center_y - source_y) ** 2
+
+        candidates = sorted(
+            candidates,
+            key=lambda item: (source_distance(item), side_preference(item), -item[2]),
+        )
+    if preferred_side in {"left", "right"}:
+        if not prefer_source_proximity:
+            candidates = sorted(candidates, key=side_preference)
     for segment_index, box, _ in candidates:
         if container_bounds is not None and not (
             container_bounds["left"] <= box["left"]
@@ -1911,6 +2483,7 @@ def route_candidates(
     target_bounds: dict[str, float],
     target_lane: dict[str, float],
     pool_width: float,
+    pool_height: float,
     lane_boundaries: list[float],
     base_waypoints: list[tuple[float, float]],
     minimum_carrier_span: float = MIN_INTERNAL_SEGMENT,
@@ -1970,6 +2543,39 @@ def route_candidates(
                 target_point,
             ]
         )
+
+        if route_class == "back":
+            # A long cross-lane return must first leave the source rank before
+            # traversing other lanes.  Carrying it through the source center
+            # line is likely to cut through peers that share that rank.
+            carrier_y = (
+                source_bounds["bottom"] + ROUTE_CLEARANCE
+                if ty < sy
+                else source_bounds["top"] - ROUTE_CLEARANCE
+            )
+            add(
+                [
+                    source_point,
+                    source_escape,
+                    (source_escape[0], carrier_y),
+                    (corridor_x, carrier_y),
+                    (corridor_x, target_escape[1]),
+                    target_escape,
+                    target_point,
+                ]
+            )
+            outer_y = pool_height - POOL_EDGE_MARGIN
+            add(
+                [
+                    source_point,
+                    source_escape,
+                    (source_escape[0], outer_y),
+                    (corridor_x, outer_y),
+                    (corridor_x, target_escape[1]),
+                    target_escape,
+                    target_point,
+                ]
+            )
 
     for corridor_y in ((sy + ty) / 2, sy + ROUTE_CLEARANCE, ty - ROUTE_CLEARANCE):
         add(
@@ -2079,6 +2685,8 @@ def route_edge(
         lanes,
         main_path_pairs=main_path_pairs,
         outgoing_counts=outgoing_counts,
+        bottom_reserved_sources=context.get("bottom_reserved_sources", set()),
+        v3_semantics=bool(context.get("v3_semantics", False)),
     )
     source_bounds = node_bounds_in_pool(source, source_lane)
     target_bounds = node_bounds_in_pool(target, target_lane)
@@ -2091,10 +2699,19 @@ def route_edge(
         entry_side,
         context.get("port_limits", {}).get(edge["id"]),
         prefer_center_ports=(
-            route_class == "forward"
-            and source["lane"] != target["lane"]
-            and exit_side in {"top", "bottom"}
-            and entry_side in {"top", "bottom"}
+            (
+                bool(context.get("v3_semantics", False))
+                and (
+                    route_class == "back"
+                    or source["cell"].attrib.get("data-node-type") == "decision"
+                )
+            )
+            or (
+                route_class == "forward"
+                and source["lane"] != target["lane"]
+                and exit_side in {"top", "bottom"}
+                and entry_side in {"top", "bottom"}
+            )
         ),
     )
     source_point = port_point(source_bounds, exit_side, exit_offset)
@@ -2142,6 +2759,7 @@ def route_edge(
             existing_labels,
             preferred_label_side,
             label_container,
+            route_class == "back",
         )
     else:
         base_points = automatic_waypoints(
@@ -2177,6 +2795,7 @@ def route_edge(
             target_bounds,
             target_lane["geometry"],
             pool_width,
+            pool_height,
             lane_boundaries,
             base_points,
             max(
@@ -2209,6 +2828,7 @@ def route_edge(
                 existing_labels,
                 preferred_label_side,
                 label_container,
+                route_class == "back",
             )
             score = candidate_score(
                 candidate,
@@ -2377,6 +2997,7 @@ def reflow_automatic_edge_labels(
             assigned_labels,
             (preferred_sides or {}).get(edge_id),
             container,
+            cell.attrib.get("data-route", "auto") == "back",
         )
         set_edge_label_position(cell, path, choice)
         if choice is not None:
@@ -2418,6 +3039,14 @@ def apply_edge_route(
         cell.attrib["data-branch"] = edge["branch"]
     else:
         cell.attrib.pop("data-branch", None)
+    if edge.get("flow_role"):
+        cell.attrib["data-flow-role"] = edge["flow_role"]
+    else:
+        cell.attrib.pop("data-flow-role", None)
+    if edge.get("outcome"):
+        cell.attrib["data-outcome"] = edge["outcome"]
+    else:
+        cell.attrib.pop("data-outcome", None)
     set_edge_points(cell, routed["points"])
     set_edge_label_position(cell, routed["full_path"], routed["label_choice"])
     if routing_context is not None:
@@ -2452,13 +3081,56 @@ def create_edge_cell(
     return apply_edge_route(cell, edge, lanes, nodes, allocator, routing_context)
 
 
-def new_routing_context(main_path: list[str], edges: list[dict]) -> dict:
+def new_routing_context(
+    main_path: list[str],
+    edges: list[dict],
+    nodes: dict[str, dict] | None = None,
+    *,
+    v3_semantics: bool = False,
+) -> dict:
+    bottom_reserved_sources: set[str] = set()
+    for edge in edges:
+        if not nodes or edge["from"] not in nodes or edge["to"] not in nodes:
+            continue
+        source = nodes[edge["from"]]
+        target = nodes[edge["to"]]
+        source_type = (
+            source["cell"].attrib.get("data-node-type", "process")
+            if "cell" in source
+            else source.get("type", "process")
+        )
+        target_type = (
+            target["cell"].attrib.get("data-node-type", "process")
+            if "cell" in target
+            else target.get("type", "process")
+        )
+        source_rank = int(
+            source["cell"].attrib.get("data-rank", "0")
+            if "cell" in source
+            else source.get("rank", 0)
+        )
+        target_rank = int(
+            target["cell"].attrib.get("data-rank", "0")
+            if "cell" in target
+            else target.get("rank", 0)
+        )
+        source_lane = source.get("lane")
+        target_lane = target.get("lane")
+        if (
+            source_type == "decision"
+            and target_type == "end"
+            and source_lane == target_lane
+            and target_rank > source_rank
+        ):
+            bottom_reserved_sources.add(edge["from"])
     return {
         "main_path_pairs": set(zip(main_path, main_path[1:])),
         "outgoing_counts": {
             source_id: sum(edge["from"] == source_id for edge in edges)
             for source_id in {edge["from"] for edge in edges}
         },
+        "bottom_reserved_sources": bottom_reserved_sources,
+        "v3_semantics": v3_semantics,
         "paths": {},
         "endpoints": {},
         "labels": {},
@@ -2518,6 +3190,8 @@ def derive_port_limits(
                 lanes,
                 main_path_pairs=context.get("main_path_pairs", set()),
                 outgoing_counts=context.get("outgoing_counts", {}),
+                bottom_reserved_sources=context.get("bottom_reserved_sources", set()),
+                v3_semantics=bool(context.get("v3_semantics", False)),
             )
             if other.get("to") == source_id and entry_side == back_side and back_side in {"left", "right"}:
                 target_is_above = target_bounds["top"] < source_bounds["top"]
@@ -2592,14 +3266,54 @@ def edge_routing_order(edges: list[dict], main_path: list[str], nodes: dict[str,
     return sorted(edges, key=key)
 
 
+def compile_v3_edges(spec: dict) -> list[dict]:
+    """Apply topology-aware routing defaults without mutating the source IR."""
+    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+        return spec["edges"]
+
+    nodes = {node["id"]: node for node in spec["nodes"]}
+    compiled: list[dict] = []
+    for original in spec["edges"]:
+        edge = dict(original)
+        source = nodes[edge["from"]]
+        target = nodes[edge["to"]]
+        target_slot = effective_node_slot(target)
+        is_forward_split = (
+            source.get("type") == "decision"
+            and target.get("type") != "end"
+            and target["lane"] == source["lane"]
+            and int(target["rank"]) > int(source["rank"])
+            and target_slot in {"left", "right"}
+        )
+        if is_forward_split:
+            edge.setdefault("route", "forward")
+            edge.setdefault("exit_side", target_slot)
+            edge.setdefault("entry_side", "top")
+        compiled.append(edge)
+    return compiled
+
+
 def build_tree(spec: dict) -> ET.ElementTree:
     schema_version = validate_build_spec(spec)
 
     values = adaptive_canvas_values(spec)
     lane_widths = effective_lane_widths(spec)
+    node_x_positions = v3_node_x_positions(spec, lane_widths)
+    phase_presentation = (
+        spec.get("layout", {}).get("phase_presentation", "bands")
+        if schema_version == V3_SCHEMA_VERSION
+        else "bands"
+    )
+    phase_rail_width = (
+        PHASE_RAIL_WIDTH
+        if phase_presentation == "rail" and spec.get("phases")
+        else 0.0
+    )
     max_rank = max((int(node["rank"]) for node in spec["nodes"]), default=1)
     current_lane_height = lane_height(max_rank, values)
-    pool_width = sum(lane_widths[lane["id"]] for lane in spec["lanes"])
+    pool_width = phase_rail_width + sum(
+        lane_widths[lane["id"]] for lane in spec["lanes"]
+    )
     pool_height = values["title_height"] + current_lane_height
 
     mxfile = ET.Element("mxfile", {"host": "Electron", "modified": "product-swimlane-drawio"})
@@ -2630,10 +3344,18 @@ def build_tree(spec: dict) -> ET.ElementTree:
             "data-main-path": json.dumps(spec.get("main_path", []), ensure_ascii=True, separators=(",", ":")),
         },
     )
+    if schema_version == V3_SCHEMA_VERSION:
+        pool.attrib["data-behavior-pattern"] = spec["behavior_pattern"]
+        pool.attrib["data-layout-profile"] = spec.get("layout", {}).get("profile", "review")
+        pool.attrib["data-phase-presentation"] = phase_presentation
+        pool.attrib["data-phase-rail-width"] = number(phase_rail_width)
+        pool.attrib["data-groups"] = json.dumps(
+            spec.get("groups", []), ensure_ascii=True, separators=(",", ":")
+        )
     geometry(pool, x=values["x"], y=values["y"], width=pool_width, height=pool_height)
 
     lane_cells: dict[str, ET.Element] = {}
-    offset_x = 0.0
+    offset_x = phase_rail_width
     for lane in spec["lanes"]:
         width = lane_widths[lane["id"]]
         lane_cell = ET.SubElement(
@@ -2653,17 +3375,36 @@ def build_tree(spec: dict) -> ET.ElementTree:
     for phase in spec.get("phases", []):
         create_phase_cell(root, pool, phase, values, pool_width)
 
+    group_by_node = {
+        node_id: group["id"]
+        for group in spec.get("groups", [])
+        for node_id in group["nodes"]
+    }
     for node in spec["nodes"]:
         lane_cell = lane_cells[node["lane"]]
         lane_width = parse_geometry(lane_cell)["width"]
-        create_node_cell(root, lane_cell, node, lane_width, values)
+        create_node_cell(
+            root,
+            lane_cell,
+            node,
+            lane_width,
+            values,
+            automatic_x=node_x_positions.get(node["id"]),
+            group_id=group_by_node.get(node["id"]),
+        )
 
     lanes, nodes = lane_node_records(root, pool)
+    compiled_edges = compile_v3_edges(spec)
     allocator = PortAllocator()
-    routing_context = new_routing_context(spec.get("main_path", []), spec["edges"])
-    derive_port_limits(routing_context, spec["edges"], lanes, nodes)
+    routing_context = new_routing_context(
+        spec.get("main_path", []),
+        compiled_edges,
+        nodes,
+        v3_semantics=schema_version == V3_SCHEMA_VERSION,
+    )
+    derive_port_limits(routing_context, compiled_edges, lanes, nodes)
     spec_nodes = {node["id"]: node for node in spec["nodes"]}
-    for edge in edge_routing_order(spec["edges"], spec.get("main_path", []), spec_nodes):
+    for edge in edge_routing_order(compiled_edges, spec.get("main_path", []), spec_nodes):
         create_edge_cell(root, pool, edge, lanes, nodes, allocator, routing_context)
     reflow_automatic_edge_labels(
         root,
@@ -2827,6 +3568,10 @@ def existing_edge_spec(cell: ET.Element, *, for_reroute: bool = False) -> dict:
     }
     if cell.attrib.get("data-branch"):
         spec["branch"] = cell.attrib["data-branch"]
+    if cell.attrib.get("data-flow-role"):
+        spec["flow_role"] = cell.attrib["data-flow-role"]
+    if cell.attrib.get("data-outcome"):
+        spec["outcome"] = cell.attrib["data-outcome"]
     explicit_waypoints = cell.attrib.get("data-waypoints-origin") == "explicit"
     exit_port = port_from_style(cell, "exit")
     entry_port = port_from_style(cell, "entry")
@@ -2889,14 +3634,34 @@ def apply_phase_update(
     cell.attrib["data-from-rank"] = str(current["from_rank"])
     cell.attrib["data-to-rank"] = str(current["to_rank"])
     cell.attrib["data-fill-color"] = current["fill_color"]
+    presentation = cell.attrib.get("data-presentation", "bands")
     style = cell.attrib.get("style", "")
-    style = re.sub(r"fillColor=#[0-9A-Fa-f]{6}", f"fillColor={current['fill_color']}", style)
+    if presentation == "bands":
+        style = re.sub(
+            r"fillColor=#[0-9A-Fa-f]{6}",
+            f"fillColor={current['fill_color']}",
+            style,
+        )
     cell.attrib["style"] = style
     geom = cell.find("mxGeometry")
     if geom is None:
         geom = geometry(cell)
+    rail_width = (
+        parse_geometry(cell)["width"]
+        if presentation == "rail"
+        else PHASE_RAIL_WIDTH
+    )
     geom.attrib.update(
-        {key: number(value) for key, value in phase_geometry_values(current, values, pool_width).items()}
+        {
+            key: number(value)
+            for key, value in phase_geometry_values(
+                current,
+                values,
+                pool_width,
+                presentation=presentation,
+                rail_width=rail_width,
+            ).items()
+        }
     )
 
 
@@ -3094,6 +3859,8 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     routing_context = new_routing_context(
         effective_main_path,
         [*updated_specs.values(), *new_edges],
+        nodes,
+        v3_semantics=pool.attrib.get("data-schema-version") == V3_SCHEMA_VERSION,
     )
     derive_port_limits(
         routing_context,
@@ -3148,7 +3915,8 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         pool.attrib["data-main-path"] = json.dumps(
             changes["main_path"], ensure_ascii=True, separators=(",", ":")
         )
-        pool.attrib["data-schema-version"] = SCHEMA_VERSION
+        if pool.attrib.get("data-schema-version") not in STRUCTURED_SCHEMA_VERSIONS:
+            pool.attrib["data-schema-version"] = SCHEMA_VERSION
     elif deleted_node_ids.intersection(read_main_path(pool)):
         raise DiagramError(
             "Deleting a main_path node requires supplying the replacement main_path",
@@ -3447,6 +4215,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 supported_fixes=["normalize-phase-layering"],
             )
 
+        phase_presentation = pool.attrib.get("data-phase-presentation", "bands")
         opaque_lanes = [
             lane_id
             for lane_id, record in lanes.items()
@@ -3455,7 +4224,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             )
             != "none"
         ]
-        if opaque_lanes:
+        if phase_presentation == "bands" and opaque_lanes:
             add(
                 "layout/phase-lane-visibility",
                 "error",
@@ -3464,6 +4233,17 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 evidence={"lanes": sorted(opaque_lanes)},
                 supported_fixes=["make-lane-bodies-transparent"],
             )
+        if phase_presentation == "rail":
+            transparent_lanes = sorted(set(lanes) - set(opaque_lanes))
+            if transparent_lanes:
+                add(
+                    "layout/phase-rail-lane-fill",
+                    "error",
+                    "Lane bodies must remain opaque when phases use a label rail",
+                    subject={"kind": "diagram"},
+                    evidence={"lanes": transparent_lanes},
+                    supported_fixes=["restore-lane-body-fill"],
+                )
 
         interactive_phases = [
             phase_id
@@ -3511,7 +4291,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 subject={"kind": "node", "id": semantic_id},
                 supported_fixes=["move-node-inside-lane", "increase-lane-height"],
             )
-        if schema_version == SCHEMA_VERSION:
+        if schema_version in STRUCTURED_SCHEMA_VERSIONS:
             label = record["cell"].attrib.get("value", "")
             node_type = record["cell"].attrib.get("data-node-type", "process")
             if (
@@ -3599,6 +4379,18 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         semantic_id: node_bounds_in_pool(record, lanes[record["lane"]])
         for semantic_id, record in nodes.items()
     }
+    node_ids = sorted(node_bounds)
+    for index, first_id in enumerate(node_ids):
+        for second_id in node_ids[index + 1 :]:
+            if bounds_overlap(node_bounds[first_id], node_bounds[second_id]):
+                add(
+                    "layout/node-overlap",
+                    "error",
+                    f"Nodes overlap: {first_id} and {second_id}",
+                    subject={"kind": "diagram"},
+                    evidence={"nodes": [first_id, second_id]},
+                    supported_fixes=["assign-distinct-slots", "change-rank", "move-node"],
+                )
     edge_segments: dict[str, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
     edge_points: dict[str, list[tuple[float, float]]] = {}
     edge_label_bounds: dict[str, tuple[int, dict[str, float]]] = {}
@@ -3653,6 +4445,10 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     record["geometry"]["x"] + record["geometry"]["width"]
                     for record in lanes.values()
                 )
+                pool_height = max(
+                    record["geometry"]["y"] + record["geometry"]["height"]
+                    for record in lanes.values()
+                )
                 simple_candidates = route_candidates(
                     "forward",
                     points[0],
@@ -3663,6 +4459,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     target_bounds,
                     lanes[nodes[target_id]["lane"]]["geometry"],
                     pool_width,
+                    pool_height,
                     internal_boundaries,
                     [],
                 )
@@ -3912,7 +4709,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     supported_fixes=["move-edge-label", "reroute-edge", "increase-rank-spacing"],
                 )
 
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in STRUCTURED_SCHEMA_VERSIONS:
         node_ranks = {
             node_id: int(record["cell"].attrib.get("data-rank", "0"))
             for node_id, record in nodes.items()
@@ -3994,6 +4791,8 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 nodes[source_id]["lane"] == nodes[target_id]["lane"]
                 and node_ranks[target_id] > node_ranks[source_id]
                 and edge is not None
+                and nodes[source_id]["cell"].attrib.get("data-slot", "main") == "main"
+                and nodes[target_id]["cell"].attrib.get("data-slot", "main") == "main"
             ):
                 edge_id = edge.attrib.get("data-semantic-id", "unknown")
                 bends = bend_count(edge_points.get(edge_id, []))
@@ -4044,13 +4843,24 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             if unmanaged_outgoing.get(node_id, 0):
                 continue
             branches = [edge.attrib.get("data-branch") for edge in decision_edges]
-            if any(branch not in BRANCH_CLASSES for branch in branches) or len(set(branches)) != len(branches):
+            outcomes = [edge.attrib.get("data-outcome") for edge in decision_edges]
+            has_distinct_v3_outcomes = (
+                schema_version == V3_SCHEMA_VERSION
+                and all(outcomes)
+                and len(set(outcomes)) >= 2
+            )
+            has_binary_branches = (
+                len(branches) == 2
+                and all(branch in BRANCH_CLASSES for branch in branches)
+                and len(set(branches)) == 2
+            )
+            if not has_distinct_v3_outcomes and not has_binary_branches:
                 add(
                     "semantic/decision-outcome",
                     "warning",
-                    f"Decision branches must use distinct positive/negative outcomes: {node_id}",
+                    f"Decision branches require explicit outcome IDs: {node_id}",
                     subject={"kind": "node", "id": node_id},
-                    evidence={"branches": branches},
+                    evidence={"branches": branches, "outcomes": outcomes},
                     supported_fixes=["label-decision-branches"],
                 )
 
@@ -4127,7 +4937,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     diagnostic_codes = [item["code"] for item in diagnostics]
     main_path_bends = 0
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in STRUCTURED_SCHEMA_VERSIONS:
         main_pairs = set(zip(read_main_path(pool), read_main_path(pool)[1:]))
         for edge_id, cell in edge_cells_by_id.items():
             if (cell.attrib.get("data-from"), cell.attrib.get("data-to")) in main_pairs:
@@ -4281,16 +5091,21 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
             item[0],
         ),
     ):
-        node_specs.append(
-            {
-                "id": node_id,
-                "lane": record["lane"],
-                "rank": int(record["cell"].attrib.get("data-rank", "0")),
-                "type": record["cell"].attrib.get("data-node-type", "process"),
-                "label": record["cell"].attrib.get("value", ""),
-                **record["geometry"],
-            }
-        )
+        node_spec = {
+            "id": node_id,
+            "lane": record["lane"],
+            "rank": int(record["cell"].attrib.get("data-rank", "0")),
+            "type": record["cell"].attrib.get("data-node-type", "process"),
+            "label": record["cell"].attrib.get("value", ""),
+            **record["geometry"],
+        }
+        if record["cell"].attrib.get("data-slot"):
+            node_spec["slot"] = record["cell"].attrib["data-slot"]
+        if record["cell"].attrib.get("data-anchor"):
+            node_spec["anchor"] = json.loads(record["cell"].attrib["data-anchor"])
+        if record["cell"].attrib.get("data-group-id"):
+            node_spec["group_id"] = record["cell"].attrib["data-group-id"]
+        node_specs.append(node_spec)
 
     edge_specs = []
     for edge_id, cell in sorted(edge_records(root).items()):
@@ -4302,7 +5117,7 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
 
     phase_specs = [phase_cell_spec(cell) for _, cell in sorted(phases.items())]
     validation = validate_tree(tree)
-    return {
+    result = {
         "compatible": True,
         "schema_version": pool.attrib.get("data-schema-version", "1"),
         "title": pool.attrib.get("value", ""),
@@ -4314,6 +5129,14 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         "unmanaged_edges": unmanaged_edge_specs(root, nodes),
         "validation": validation,
     }
+    if result["schema_version"] == V3_SCHEMA_VERSION:
+        result["behavior_pattern"] = pool.attrib.get("data-behavior-pattern", "custom")
+        result["layout"] = {
+            "profile": pool.attrib.get("data-layout-profile", "review"),
+            "phase_presentation": pool.attrib.get("data-phase-presentation", "bands"),
+        }
+        result["groups"] = json.loads(pool.attrib.get("data-groups", "[]"))
+    return result
 
 
 def ensure_output_available(output: Path, force: bool) -> None:

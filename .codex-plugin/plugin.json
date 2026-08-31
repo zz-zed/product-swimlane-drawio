@@ -1,7 +1,7 @@
 {
   "name": "product-swimlane-drawio",
-  "version": "0.3.1",
-  "description": "Create and safely update native, editable Draw.io vertical swimlane process diagrams.",
+  "version": "0.4.0",
+  "description": "Create deterministic, editable product swimlanes and safely revise them after local Draw.io edits.",
   "author": {
     "name": "zz-zed",
     "url": "https://github.com/zz-zed"
@@ -12,14 +12,15 @@
   "keywords": [
     "drawio",
     "swimlane",
-    "process-diagram",
+    "product-process",
+    "business-process",
     "agent-skill"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Product Swimlane Draw.io",
-    "shortDescription": "Create editable vertical swimlane diagrams.",
-    "longDescription": "Create, inspect, validate, and safely update native Draw.io vertical swimlane process diagrams while preserving compatible manual layout changes.",
+    "shortDescription": "Build editable product swimlanes that survive revisions.",
+    "longDescription": "Turn a confirmed product or business process into deterministic native Draw.io swimlanes, then inspect and safely revise the latest locally edited file without discarding compatible manual layout changes.",
     "developerName": "zz-zed",
     "category": "Productivity",
     "capabilities": [

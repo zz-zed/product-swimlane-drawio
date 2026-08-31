@@ -1,0 +1,50 @@
+{
+  "schema_version": "3",
+  "title": "Request Review Workflow",
+  "behavior_pattern": "approval-loop",
+  "layout": {
+    "profile": "long-form",
+    "phase_presentation": "rail"
+  },
+  "lanes": [
+    {"id": "requester", "label": "Requester", "width": 220},
+    {"id": "portal", "label": "Portal", "width": 220},
+    {"id": "reviewer", "label": "Reviewer", "width": 220},
+    {"id": "archive", "label": "Record Store", "width": 220}
+  ],
+  "nodes": [
+    {"id": "start", "lane": "requester", "rank": 1, "type": "start", "label": ""},
+    {"id": "prepare", "lane": "requester", "rank": 2, "type": "process", "label": "Prepare request"},
+    {"id": "submit", "lane": "portal", "rank": 3, "type": "process", "label": "Submit request"},
+    {"id": "review", "lane": "reviewer", "rank": 4, "type": "process", "label": "Review request"},
+    {"id": "approved", "lane": "reviewer", "rank": 5, "type": "decision", "label": "Approved?"},
+    {"id": "record", "lane": "archive", "rank": 6, "type": "process", "label": "Store approved record"},
+    {"id": "notify", "lane": "requester", "rank": 7, "type": "process", "label": "Receive outcome"},
+    {"id": "end", "lane": "requester", "rank": 8, "type": "end", "label": ""}
+  ],
+  "edges": [
+    {"id": "start-prepare", "from": "start", "to": "prepare", "flow_role": "main"},
+    {"id": "prepare-submit", "from": "prepare", "to": "submit", "flow_role": "main"},
+    {"id": "submit-review", "from": "submit", "to": "review", "flow_role": "main"},
+    {"id": "review-approved", "from": "review", "to": "approved", "flow_role": "main"},
+    {"id": "approved-record", "from": "approved", "to": "record", "branch": "positive", "outcome": "approved", "flow_role": "main", "label": "Approved"},
+    {"id": "approved-review", "from": "approved", "to": "review", "type": "retry", "route": "back", "branch": "negative", "outcome": "rework", "flow_role": "retry", "label": "Rework"},
+    {"id": "record-notify", "from": "record", "to": "notify", "flow_role": "main"},
+    {"id": "notify-end", "from": "notify", "to": "end", "flow_role": "main"}
+  ],
+  "main_path": [
+    "start",
+    "prepare",
+    "submit",
+    "review",
+    "approved",
+    "record",
+    "notify",
+    "end"
+  ],
+  "phases": [
+    {"id": "intake", "label": "Intake", "from_rank": 1, "to_rank": 3, "fill_color": "#EEF4FF"},
+    {"id": "review-phase", "label": "Review", "from_rank": 4, "to_rank": 5, "fill_color": "#FFF7E6"},
+    {"id": "completion", "label": "Completion", "from_rank": 6, "to_rank": 8, "fill_color": "#ECFDF3"}
+  ]
+}

@@ -206,15 +206,19 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn(install_command, chinese)
         self.assertNotIn("--skill product-swimlane-drawio", english)
         self.assertNotIn("--skill product-swimlane-drawio", chinese)
-        self.assertIn("### Agent Skills quick install", english)
-        self.assertIn("### Claude Code Plugin Marketplace", english)
-        self.assertIn("### Codex Plugin Marketplace", english)
-        self.assertIn("### Ask an agent", english)
+        self.assertIn("## 30-second quick start", english)
+        self.assertIn("### Manual installation", english)
+        self.assertIn("#### Agent Skills", english)
+        self.assertIn("#### Claude Code Plugin Marketplace", english)
+        self.assertIn("#### Codex Plugin Marketplace", english)
+        self.assertIn("### Agent-assisted installation", english)
         self.assertIn("### Verify installation", english)
-        self.assertIn("### Agent Skills 快速安装", chinese)
-        self.assertIn("### Claude Code Plugin Marketplace", chinese)
-        self.assertIn("### Codex Plugin Marketplace", chinese)
-        self.assertIn("### 告诉 Agent 安装", chinese)
+        self.assertIn("## 30 秒快速开始", chinese)
+        self.assertIn("### 手动安装", chinese)
+        self.assertIn("#### Agent Skills", chinese)
+        self.assertIn("#### Claude Code Plugin Marketplace", chinese)
+        self.assertIn("#### Codex Plugin Marketplace", chinese)
+        self.assertIn("### 通过 Agent 安装", chinese)
         self.assertIn("### 验证安装结果", chinese)
         self.assertIn("github.com/zz-zed/product-swimlane-drawio", english)
         self.assertIn("github.com/zz-zed/product-swimlane-drawio", chinese)
@@ -239,6 +243,12 @@ class ReleasePackageTests(unittest.TestCase):
         for image_reference in shared_images:
             self.assertIn(image_reference, english)
             self.assertIn(image_reference, chinese)
+        self.assertIn("examples/request-review/preview.png", english)
+        self.assertIn("examples/request-review/preview.png", chinese)
+        self.assertIn("Semantic → Deterministic → Editable → Incremental → Validated", english)
+        self.assertIn("语义化 → 确定性 → 可编辑 → 可迭代 → 可验证", chinese)
+        self.assertIn("## Edit → inspect → patch", english)
+        self.assertIn("## 编辑 → 检查 → 补丁", chinese)
         self.assertEqual(english.count("\n## "), chinese.count("\n## "))
         self.assertEqual(english.count("```"), chinese.count("```"))
 
@@ -265,7 +275,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.3.1")
+        self.assertEqual(codex_plugin["version"], "0.4.0")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -289,13 +299,99 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertGreater(width, height)
             self.assertAlmostEqual(width / height, 16 / 9, delta=0.03)
 
+    def test_readme_illustration_directory_contains_final_images_only(self) -> None:
+        image_dir = ROOT / "docs" / "illustrations" / "product-swimlane-readme"
+        relative_files = {
+            path.relative_to(image_dir).as_posix()
+            for path in image_dir.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(
+            relative_files,
+            {
+                "overview-en.png",
+                "overview-zh.png",
+                "create-update.png",
+                "quality-gate.png",
+            },
+        )
+
+    def test_complete_example_rebuilds_deterministically_and_strictly_validates(self) -> None:
+        example = ROOT / "examples" / "request-review"
+        preview = example / "preview.png"
+        self.assertTrue((example / "prompt.md").is_file())
+        self.assertTrue((example / "README.md").is_file())
+        self.assertEqual(preview.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+        with tempfile.TemporaryDirectory() as temp:
+            rebuilt = Path(temp) / "process.drawio"
+            rebuilt_again = Path(temp) / "process-again.drawio"
+            report = json.loads(
+                run_tool(
+                    "build",
+                    "--spec",
+                    str(example / "process.json"),
+                    "--output",
+                    str(rebuilt),
+                ).stdout
+            )
+            self.assertTrue(report["valid"])
+            self.assertEqual(report["warnings"], [])
+            run_tool(
+                "build",
+                "--spec",
+                str(example / "process.json"),
+                "--output",
+                str(rebuilt_again),
+            )
+            self.assertEqual(rebuilt.read_bytes(), rebuilt_again.read_bytes())
+            validation = json.loads(
+                run_tool("validate", "--input", str(rebuilt), "--strict").stdout
+            )
+            self.assertTrue(validation["valid"])
+            self.assertEqual(validation["warnings"], [])
+
+            inspected = json.loads(
+                run_tool("inspect", "--input", str(rebuilt)).stdout
+            )
+            self.assertEqual(inspected["schema_version"], "3")
+            self.assertEqual(inspected["behavior_pattern"], "approval-loop")
+            self.assertEqual(inspected["layout"]["profile"], "long-form")
+            self.assertEqual(inspected["layout"]["phase_presentation"], "rail")
+            lanes = {lane["id"]: lane for lane in inspected["lanes"]}
+            nodes = {node["id"]: node for node in inspected["nodes"]}
+            retry = next(
+                edge for edge in inspected["edges"] if edge["id"] == "approved-review"
+            )
+            self.assertEqual((retry["from"], retry["to"]), ("approved", "review"))
+            self.assertEqual(nodes[retry["from"]]["lane"], "reviewer")
+            self.assertEqual(nodes[retry["to"]]["lane"], "reviewer")
+            corridor_x = {point["x"] for point in retry["waypoints"]}
+            self.assertEqual(len(corridor_x), 1)
+            corridor_x = corridor_x.pop()
+            reviewer = lanes["reviewer"]
+            review_left = reviewer["x"] + nodes["review"]["x"]
+            self.assertGreaterEqual(corridor_x - reviewer["x"], 16.0)
+            self.assertLess(corridor_x, review_left)
+
+    def test_architecture_documents_capture_product_boundaries(self) -> None:
+        architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+        principles = (ROOT / "docs" / "design-principles.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Versioned semantic JSON", architecture)
+        self.assertIn("Inspect latest file → semantic patch → compare", architecture)
+        self.assertIn("Strict validation and visual review are independent", architecture)
+        self.assertIn("Stay narrow", principles)
+        self.assertIn("does not attempt to become a general-purpose generator", principles)
+
     def test_readme_discloses_multimodal_review_reliability(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
-        self.assertIn("Model capability and output reliability", english)
-        self.assertIn("does not claim a measured accuracy percentage", english)
-        self.assertIn("模型能力与输出可靠度", chinese)
-        self.assertIn("没有为模型生成的流程图声明经过测量的准确率", chinese)
+        self.assertIn("Validation and reliability", english)
+        self.assertIn("does **not** claim a measured accuracy percentage", english)
+        self.assertIn("校验与输出可靠度", chinese)
+        self.assertIn("**不声明**模型生成流程图具有经过测量的准确率", chinese)
 
     def test_expected_skill_files_only(self) -> None:
         relative_files = {
