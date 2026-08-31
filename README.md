@@ -37,7 +37,7 @@ The result is built for the common product workflow: **AI creates the first 80%,
 
 - **Editable:** native, uncompressed `.drawio`; full-height vertical lanes; local drag-and-drop editing.
 - **Reliable:** confirmed main path; deterministic layout; orthogonal routing; separate return and retry channels; phase bands.
-- **Maintainable:** stable semantic IDs; `inspect`, `patch`, and `compare`; geometry-preserving defaults; safe deletion rules.
+- **Maintainable:** stable semantic IDs; `inspect`, `patch`, and `compare`; geometry-preserving defaults; safe lane and node changes.
 - **Verifiable:** strict schema; structured diagnostics; routing and label checks; atomic output receipts with SHA-256.
 
 ## See it in action
@@ -151,7 +151,7 @@ Local editing is part of the design, not an escape hatch.
 3. Give the latest saved file back to the agent.
 4. The agent runs `inspect`, checks the artifact state, binds the patch to the reported input SHA-256, prepares the smallest semantic patch, preserves unrelated geometry, validates, and compares the result.
 
-Safe patching depends on semantic metadata, a matching semantic-model hash, stable IDs, and the exact inspected input file. Reviewed direct semantic edits can establish a new baseline explicitly; malformed or manually created `.drawio` files may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
+Safe patching depends on semantic metadata, a matching semantic-model hash, stable IDs, and the exact inspected input file. A patch can insert, resize, rename, or safely remove lanes, and v3 patch-added nodes can use lane-local slots and note anchors without rebuilding the diagram. Dependent lane shifts and automatic reroutes are reported separately. Reviewed direct semantic edits can establish a new baseline explicitly; malformed or manually created `.drawio` files may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
 
 ## Validation and reliability
 

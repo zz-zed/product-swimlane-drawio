@@ -125,13 +125,16 @@ For an automatic `back`, `retry`, or `return` route, source proximity takes prec
 
 A patch may contain:
 
-- `update_nodes`, `update_edges`, `update_phases`.
-- New `nodes`, `edges`, or `phases`.
-- `delete_nodes`, `delete_edges`, `delete_phases` as arrays of semantic IDs.
+- `update_lanes`, `update_nodes`, `update_edges`, `update_phases`, `update_groups`.
+- New `lanes`, `nodes`, `edges`, `phases`, or `groups`.
+- `delete_lanes`, `delete_nodes`, `delete_edges`, `delete_phases`, `delete_groups` as arrays of semantic IDs.
 - `main_path` to replace the confirmed normal path.
 
 ```json
 {
+  "lanes": [
+    {"id": "lane-b", "label": "<new-lane>", "width": 180, "after": "lane-a"}
+  ],
   "update_nodes": [
     {"id": "node-a", "label": "<updated-label>"}
   ],
@@ -145,11 +148,16 @@ A patch may contain:
 Patch rules:
 
 - Include only requested changes.
+- A new lane must name exactly one existing `before` or `after` lane. Numeric indexes are not a patch interface. A lane update may change `label` or `width`; existing lane-local node geometry remains authoritative.
+- Deleting a lane requires explicitly deleting every owned node. The same patch must reconcile incident edges, any affected `main_path`, and groups; otherwise it fails with a dependency diagnostic. At least one lane must remain.
+- Group additions, updates, and deletions are supported for v3 dependency reconciliation. Group membership remains mirrored on member nodes and is revalidated after the patch.
+- A patch-added v3 node consumes `slot` and `anchor` intent. It must not occupy an existing lane/rank/slot. Right-side placement may widen the lane and shift later lanes; left-side placement that would require moving existing user geometry is rejected unless explicit geometry is supplied.
 - Updating an edge label recomputes automatic label placement and may choose another automatic route. Explicit waypoints remain byte-for-byte equivalent in geometry.
 - `reroute: true` or any routing field recomputes that edge.
+- Changing a node type requires every surviving incident edge to be explicitly rerouted in the same patch.
 - Existing node geometry requires `--allow-geometry-updates`.
 - Moving or resizing a node automatically reroutes only incident edges whose routes become invalid.
-- Valid manual waypoints and unrelated geometry remain unchanged.
+- Valid manual waypoints and unrelated geometry remain unchanged. A lane change that moves an endpoint lane reports affected explicit-waypoint edges for visual review without rewriting them.
 - Deleting a node requires explicitly listing every incident edge in `delete_edges`.
 - Deleting a node on `main_path` requires a replacement `main_path` in the same patch.
 - Write to a new output path. Use `--force` only when replacing a reviewed output intentionally.
@@ -179,7 +187,7 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 
 Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
 
-Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes the IDs added, updated, deleted, and automatically rerouted, together with the inspected input digest and integrity state. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
+Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes requested lane/node/edge changes, lane order, dependent lane shifts, automatic reroutes, affected explicit-waypoint edges, and the inspected input integrity evidence. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
 
 ## Artifact integrity
 

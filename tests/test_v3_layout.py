@@ -83,6 +83,33 @@ def v3_fork_join_spec() -> dict:
     }
 
 
+def v3_incremental_spec() -> dict:
+    return {
+        "schema_version": "3",
+        "title": "Generic Incremental Flow",
+        "behavior_pattern": "custom",
+        "layout": {"profile": "review"},
+        "lanes": [
+            {"id": "primary", "label": "Primary", "width": 180},
+            {"id": "optional", "label": "Optional", "width": 180},
+        ],
+        "nodes": [
+            {"id": "start", "lane": "primary", "rank": 1, "type": "start", "label": ""},
+            {"id": "work", "lane": "primary", "rank": 2, "type": "process", "label": "Work"},
+            {"id": "end", "lane": "primary", "rank": 3, "type": "end", "label": ""},
+            {"id": "note", "lane": "optional", "rank": 2, "type": "note", "label": "Context"},
+        ],
+        "groups": [
+            {"id": "support", "lane": "optional", "kind": "support", "nodes": ["note"]}
+        ],
+        "edges": [
+            {"id": "e1", "from": "start", "to": "work", "flow_role": "main"},
+            {"id": "e2", "from": "work", "to": "end", "flow_role": "main"},
+        ],
+        "main_path": ["start", "work", "end"],
+    }
+
+
 class V3LayoutTests(unittest.TestCase):
     def test_multi_outcome_decision_uses_outcome_ids_and_three_distinct_sides(self) -> None:
         spec = {
@@ -580,6 +607,526 @@ class V3LayoutTests(unittest.TestCase):
             self.assertEqual(inspected["schema_version"], "3")
             self.assertEqual(inspected["behavior_pattern"], "fork-join")
             self.assertEqual(inspected["layout"]["profile"], "review")
+
+    def test_patch_adds_lane_by_stable_reference_and_places_right_slot_node(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            after = root / "after.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "review",
+                                "label": "Review",
+                                "width": 180,
+                                "after": "primary",
+                            }
+                        ],
+                        "nodes": [
+                            {
+                                "id": "parallel-work",
+                                "lane": "primary",
+                                "rank": 2,
+                                "type": "note",
+                                "label": "Parallel guidance",
+                                "slot": "right",
+                            },
+                            {
+                                "id": "review-step",
+                                "lane": "review",
+                                "rank": 3,
+                                "type": "process",
+                                "label": "Review item",
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "review-branch",
+                                "from": "work",
+                                "to": "review-step",
+                                "flow_role": "branch",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            receipt = json.loads(
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(changes_path),
+                    "--output",
+                    str(after),
+                    "--strict",
+                ).stdout
+            )["patch_receipt"]
+            inspected = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            self.assertEqual(
+                [lane["id"] for lane in inspected["lanes"]],
+                ["primary", "review", "optional"],
+            )
+            nodes = {node["id"]: node for node in inspected["nodes"]}
+            self.assertEqual(nodes["parallel-work"]["slot"], "right")
+            self.assertGreater(nodes["parallel-work"]["x"], nodes["work"]["x"])
+            self.assertIn("review-step", nodes)
+            self.assertIn(
+                "review-branch",
+                {
+                    edge["id"]
+                    for edge in inspected["edges"]
+                },
+            )
+            self.assertGreater(
+                next(lane for lane in inspected["lanes"] if lane["id"] == "primary")["width"],
+                180,
+            )
+            self.assertEqual(receipt["added_lanes"], ["review"])
+            self.assertIn("optional", receipt["dependency_changes"]["shifted_lanes"])
+            comparison = json.loads(
+                run_tool(
+                    "compare",
+                    "--before",
+                    str(before),
+                    "--after",
+                    str(after),
+                    "--changes",
+                    str(changes_path),
+                ).stdout
+            )
+            self.assertTrue(comparison["preserved"])
+
+    def test_v2_lane_operations_remain_compatible(self) -> None:
+        spec = {
+            "schema_version": "2",
+            "title": "Generic Compatible Flow",
+            "lanes": [
+                {"id": "primary", "label": "Primary", "width": 180},
+                {"id": "unused", "label": "Unused", "width": 160},
+            ],
+            "nodes": [
+                {"id": "start", "lane": "primary", "rank": 1, "type": "start", "label": ""},
+                {"id": "work", "lane": "primary", "rank": 2, "type": "process", "label": "Work"},
+                {"id": "end", "lane": "primary", "rank": 3, "type": "end", "label": ""},
+            ],
+            "edges": [
+                {"id": "e1", "from": "start", "to": "work"},
+                {"id": "e2", "from": "work", "to": "end"},
+            ],
+            "main_path": ["start", "work", "end"],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            after = root / "after.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "update_lanes": [
+                            {"id": "primary", "label": "Primary updated", "width": 200}
+                        ],
+                        "delete_lanes": ["unused"],
+                        "lanes": [
+                            {"id": "review", "label": "Review", "width": 160, "after": "primary"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before), "--strict")
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes_path),
+                "--output",
+                str(after),
+                "--strict",
+            )
+            inspected = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            self.assertEqual(inspected["schema_version"], "2")
+            self.assertEqual(
+                [(lane["id"], lane["label"]) for lane in inspected["lanes"]],
+                [("primary", "Primary updated"), ("review", "Review")],
+            )
+
+    def test_lane_delete_requires_nodes_and_group_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            unsafe_changes = root / "unsafe.json"
+            missing_group_changes = root / "missing-group.json"
+            safe_changes = root / "safe.json"
+            after = root / "after.drawio"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            unsafe_changes.write_text(
+                json.dumps({"delete_lanes": ["optional"]}),
+                encoding="utf-8",
+            )
+            missing_group_changes.write_text(
+                json.dumps(
+                    {"delete_lanes": ["optional"], "delete_nodes": ["note"]}
+                ),
+                encoding="utf-8",
+            )
+            safe_changes.write_text(
+                json.dumps(
+                    {
+                        "delete_lanes": ["optional"],
+                        "delete_nodes": ["note"],
+                        "delete_groups": ["support"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            rejected = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(unsafe_changes),
+                "--output",
+                str(root / "unsafe.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("semantic/lane-not-empty", rejected.stdout)
+
+            missing_group = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(missing_group_changes),
+                "--output",
+                str(root / "missing-group.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(missing_group.returncode, 0)
+            self.assertIn("patch/group-lane-dependency", missing_group.stdout)
+
+            receipt = json.loads(
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(safe_changes),
+                    "--output",
+                    str(after),
+                ).stdout
+            )["patch_receipt"]
+            inspected = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            self.assertEqual([lane["id"] for lane in inspected["lanes"]], ["primary"])
+            self.assertEqual(inspected["groups"], [])
+            self.assertEqual(receipt["deleted_lanes"], ["optional"])
+            self.assertEqual(receipt["deleted_groups"], ["support"])
+
+    def test_node_type_change_requires_explicit_incident_reroutes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            unsafe_changes = root / "unsafe.json"
+            safe_changes = root / "safe.json"
+            after = root / "after.drawio"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            unsafe_changes.write_text(
+                json.dumps({"update_nodes": [{"id": "work", "type": "decision"}]}),
+                encoding="utf-8",
+            )
+            safe_changes.write_text(
+                json.dumps(
+                    {
+                        "update_nodes": [{"id": "work", "type": "decision"}],
+                        "update_edges": [
+                            {"id": "e1", "reroute": True},
+                            {"id": "e2", "reroute": True},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            rejected = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(unsafe_changes),
+                "--output",
+                str(root / "unsafe.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("patch/node-type-incident-edge", rejected.stdout)
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(safe_changes),
+                "--output",
+                str(after),
+            )
+            nodes = {
+                node["id"]: node
+                for node in json.loads(run_tool("inspect", "--input", str(after)).stdout)["nodes"]
+            }
+            self.assertEqual(nodes["work"]["type"], "decision")
+
+    def test_lane_update_preserves_node_local_geometry_and_reports_downstream_shift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            after = root / "after.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "update_lanes": [
+                            {"id": "primary", "label": "Primary updated", "width": 240}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            before_nodes = {
+                node["id"]: node
+                for node in json.loads(run_tool("inspect", "--input", str(before)).stdout)["nodes"]
+            }
+            receipt = json.loads(
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(changes_path),
+                    "--output",
+                    str(after),
+                ).stdout
+            )["patch_receipt"]
+            inspected = json.loads(run_tool("inspect", "--input", str(after)).stdout)
+            lanes = {lane["id"]: lane for lane in inspected["lanes"]}
+            after_nodes = {node["id"]: node for node in inspected["nodes"]}
+            self.assertEqual(lanes["primary"]["label"], "Primary updated")
+            self.assertEqual(lanes["primary"]["width"], 240)
+            self.assertEqual(after_nodes["work"]["x"], before_nodes["work"]["x"])
+            self.assertEqual(after_nodes["work"]["y"], before_nodes["work"]["y"])
+            self.assertIn("optional", receipt["dependency_changes"]["shifted_lanes"])
+            self.assertEqual(receipt["updated_lanes"], ["primary"])
+
+    def test_patch_added_note_uses_anchor_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            after = root / "after.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "id": "work-guidance",
+                                "lane": "primary",
+                                "rank": 2,
+                                "type": "note",
+                                "label": "Guidance",
+                                "anchor": {"node": "work", "side": "right"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes_path),
+                "--output",
+                str(after),
+            )
+            nodes = {
+                node["id"]: node
+                for node in json.loads(run_tool("inspect", "--input", str(after)).stdout)["nodes"]
+            }
+            self.assertEqual(
+                nodes["work-guidance"]["anchor"],
+                {"node": "work", "side": "right"},
+            )
+            self.assertEqual(nodes["work-guidance"]["slot"], "right")
+            self.assertGreater(nodes["work-guidance"]["x"], nodes["work"]["x"])
+
+    def test_patch_rejects_explicit_x_anchor_outside_target_lane_or_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            for case, lane, rank in (
+                ("cross-lane", "optional", 2),
+                ("cross-rank", "primary", 3),
+            ):
+                with self.subTest(case=case):
+                    changes_path = root / f"{case}.json"
+                    changes_path.write_text(
+                        json.dumps(
+                            {
+                                "nodes": [
+                                    {
+                                        "id": f"{case}-guidance",
+                                        "lane": lane,
+                                        "rank": rank,
+                                        "type": "note",
+                                        "label": "Guidance",
+                                        "x": 12,
+                                        "anchor": {"node": "work", "side": "right"},
+                                    }
+                                ]
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    rejected = run_tool(
+                        "patch",
+                        "--input",
+                        str(before),
+                        "--changes",
+                        str(changes_path),
+                        "--output",
+                        str(root / f"{case}.drawio"),
+                        check=False,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("semantic/anchor-alignment", rejected.stdout)
+
+    def test_patch_rejects_explicit_x_anchor_slot_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(v3_incremental_spec()), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "id": "conflicting-guidance",
+                                "lane": "primary",
+                                "rank": 2,
+                                "type": "note",
+                                "label": "Guidance",
+                                "x": 12,
+                                "slot": "left",
+                                "anchor": {"node": "work", "side": "right"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            rejected = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes_path),
+                "--output",
+                str(root / "after.drawio"),
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("layout/anchor-slot-conflict", rejected.stdout)
+
+    def test_lane_insertion_preserves_explicit_waypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec = v3_incremental_spec()
+            spec["edges"].append(
+                {
+                    "id": "support-edge",
+                    "from": "work",
+                    "to": "note",
+                    "flow_role": "branch",
+                    "exit_side": "right",
+                    "entry_side": "left",
+                    "waypoints": [{"x": 190, "y": 208}],
+                }
+            )
+            spec_path = root / "spec.json"
+            before = root / "before.drawio"
+            after = root / "after.drawio"
+            changes_path = root / "changes.json"
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            changes_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "inserted",
+                                "label": "Inserted",
+                                "width": 160,
+                                "after": "primary",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_tool("build", "--spec", str(spec_path), "--output", str(before))
+            before_edge = next(
+                edge
+                for edge in json.loads(run_tool("inspect", "--input", str(before)).stdout)["edges"]
+                if edge["id"] == "support-edge"
+            )
+            receipt = json.loads(
+                run_tool(
+                    "patch",
+                    "--input",
+                    str(before),
+                    "--changes",
+                    str(changes_path),
+                    "--output",
+                    str(after),
+                ).stdout
+            )["patch_receipt"]
+            after_edge = next(
+                edge
+                for edge in json.loads(run_tool("inspect", "--input", str(after)).stdout)["edges"]
+                if edge["id"] == "support-edge"
+            )
+            self.assertEqual(after_edge["waypoints"], before_edge["waypoints"])
+            self.assertTrue(receipt["manual_waypoints_preserved"])
+            self.assertIn(
+                "support-edge",
+                receipt["manual_waypoint_edges_affected_by_lane_changes"],
+            )
 
     def test_duplicate_slot_is_rejected(self) -> None:
         spec = v3_fork_join_spec()

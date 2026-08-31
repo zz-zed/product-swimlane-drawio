@@ -48,7 +48,7 @@ The output is native, uncompressed `.drawio`, not a flattened image. Draw.io Des
 
 ### Incremental update loop
 
-After local editing, `inspect` reads the latest file rather than relying on an older JSON source. It reports the exact input digest and whether embedded semantics are managed, recoverable, or unsafe. `patch` requires the inspected digest as a baseline, applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints, and refreshes the versioned semantic-model hash. `compare` checks the before-and-after files against the declared patch.
+After local editing, `inspect` reads the latest file rather than relying on an older JSON source. It reports the exact input digest and whether embedded semantics are managed, recoverable, or unsafe. `patch` requires the inspected digest as a baseline, applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints, and refreshes the versioned semantic-model hash. Lane operations use stable neighboring IDs, enforce dependency-safe deletion, and expose downstream shifts separately from requested changes. Patch-added v3 nodes compile `slot` and note `anchor` intent against the current saved geometry. `compare` replays the declaration and checks the exact before-and-after result.
 
 ### Managed artifact identity
 

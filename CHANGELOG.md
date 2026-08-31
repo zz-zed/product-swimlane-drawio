@@ -6,16 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-31
+
 ### Added
 
 - Add versioned semantic-model hashes and `managed`, `recoverable`, and `unsafe` artifact states for detecting undeclared semantic drift without treating local geometry or style edits as corruption.
 - Add input SHA-256 baselines for inspection and patching, plus an explicit reviewed `--accept-model-drift` path for intentional direct semantic edits.
 - Add integrity diagnostics for semantic-hash mismatches, unsupported schema composition, unmanaged vertices, and unsupported hash versions.
+- Add stable `before` / `after` lane insertion, lane label and width updates, and dependency-safe lane deletion to semantic patches.
+- Add v3 `slot` and note `anchor` placement for patch-added nodes, including bounded lane expansion when a right-side placement needs more space.
+- Add explicit group patch operations needed to reconcile group membership when nodes or lanes are removed.
 
 ### Changed
 
 - Refresh managed metadata after build and patch, and include input integrity evidence in patch receipts.
 - Require incremental updates to bind to the exact file inspected before the patch.
+- Separate requested semantic changes from dependent lane shifts and automatic edge reroutes in patch receipts.
+- Require explicit incident-edge rerouting when a patch changes a node type.
 
 ### Fixed
 
@@ -28,6 +35,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Add regressions for geometry-safe hashing, reviewed semantic rebaselining, required and changed-input rejection, legacy metadata upgrades, malformed schema composition, nested metadata, group mirrors, undeclared pool changes, and unmanaged vertices.
 - Add a regression proving that loading the tool module leaves the Skill directory unchanged when the test suite runs without `-B`.
+- Add regressions for lane insertion, lane resizing, safe lane deletion, group dependencies, v3 slot and anchor placement, node-type reroute guards, exact waypoint preservation, and impact-aware compare receipts.
 
 ## [0.4.1] - 2026-08-31
 
@@ -212,7 +220,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...v0.3.1

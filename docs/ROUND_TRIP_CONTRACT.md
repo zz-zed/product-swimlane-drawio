@@ -30,10 +30,13 @@ Inspection returns semantic intent, current geometry, the exact input SHA-256 di
 ## Patch
 
 - Semantic updates apply to declared IDs only.
+- Lane insertion uses stable `before` / `after` references. Lane deletion requires explicit reconciliation of owned nodes, incident edges, `main_path`, and groups.
 - Unrelated geometry remains unchanged.
 - Manual waypoints remain exact unless the user explicitly reroutes that edge.
 - Moving or resizing an existing node requires geometry authorization.
 - A new v3 layout intent field may affect only its declared group or incident region unless a required lane expansion shifts later lanes.
+- Patch-added v3 nodes consume `slot` and note `anchor` intent; dependent lane shifts and automatic reroutes are separate receipt evidence.
+- A node-type change requires explicit rerouting of all surviving incident edges.
 - A patch must name the `input.sha256` observed during inspection through `--expected-input-sha256`, preventing a later save from silently changing the baseline.
 - Reviewed direct semantic edits require both an equivalent declared patch and `--accept-model-drift`. Schema-composition errors cannot be overridden.
 

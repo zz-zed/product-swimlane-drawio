@@ -110,7 +110,7 @@ Treat automated validation and visual review as separate evidence:
    - For `recoverable`, review every diagnostic. A legacy file with only `integrity/model-hash-missing` may be upgraded by a reviewed patch. Unmanaged vertices or connectors must be reconciled or preserved deliberately.
    - For `unsafe`, stop. A schema-composition error requires migration or controlled rebuilding. A model-hash mismatch may be accepted only after the user confirms that the direct semantic edits are intentional and the patch represents them.
    The legacy `compatible` field is only a coarse alias; do not use it as the sole safety decision. If a user redraws a connector directly in Draw.io, report it under `unmanaged_edges` and the `interoperability/unmanaged-edges` diagnostic. Recover its source/target relationship for review, but do not pretend its stable semantic ID was preserved.
-4. Put only requested updates, additions, deletions, phase changes, or a replacement `main_path` in a task-local patch file. Explicitly list incident edges when deleting a node.
+4. Put only requested updates, additions, deletions, phase changes, or a replacement `main_path` in a task-local patch file. Add lanes relative to a stable neighboring lane with exactly one of `before` or `after`; do not use a numeric index. Explicitly list incident edges when deleting a node. Deleting a lane also requires explicit deletion of every owned node and reconciliation of affected edges, `main_path`, and groups.
 5. Write to a new output file, validate, and compare against the declared patch:
 
    ```bash
@@ -120,10 +120,12 @@ Treat automated validation and visual review as separate evidence:
    ```
 
 6. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
-7. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. The tool reroutes only incident edges that become invalid and reports their IDs.
-8. Keep valid manual waypoints and all unrelated geometry unchanged.
-9. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
-10. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
+7. When changing an existing node type, explicitly reroute every incident edge in the same patch. Do not leave old port semantics attached to a new shape.
+8. For a new v3 node, use `slot` or `anchor` when that intent is known. The patcher preserves existing node-local geometry, expands right-side lane space when necessary, and reports downstream lane shifts separately.
+9. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. The tool reroutes only incident edges that become invalid and reports their IDs.
+10. Keep valid manual waypoints and all unrelated geometry unchanged. If a lane change affects an edge with explicit waypoints, report it for visual review; never rewrite the waypoints silently.
+11. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
+12. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
 
 ## Layout and handoff
 
@@ -135,7 +137,7 @@ Treat automated validation and visual review as separate evidence:
 - When phases use `bands`, keep semantic Z-order as phase backgrounds, lanes, nodes, then connectors; make lane bodies transparent. When phases use `rail`, reserve the left label column and keep lane bodies opaque. Phase cells remain non-interactive in both modes.
 - Prefer three to five lanes per page; split dense exception detail when necessary.
 - Preserve stable IDs across revisions.
-- Report the inspected input SHA-256, input managed state, drift acceptance status, and added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
+- Report the inspected input SHA-256, input managed state, drift acceptance status, requested semantic IDs, dependent lane shifts, and automatically rerouted edges from the patch receipt.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
 - Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.

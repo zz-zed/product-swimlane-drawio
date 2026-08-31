@@ -127,12 +127,17 @@ GROUP_FIELDS = {"id", "label", "lane", "kind", "nodes"}
 ANCHOR_FIELDS = {"node", "side"}
 LAYOUT_FIELDS = {"profile", "phase_presentation"}
 PATCH_FIELDS = {
+    "update_lanes", "lanes", "delete_lanes",
     "update_nodes", "update_edges", "nodes", "edges", "delete_nodes",
-    "delete_edges", "update_phases", "phases", "delete_phases", "main_path",
+    "delete_edges", "update_phases", "phases", "delete_phases",
+    "update_groups", "groups", "delete_groups", "main_path",
 }
+LANE_PATCH_FIELDS = LANE_FIELDS | {"before", "after"}
+LANE_UPDATE_FIELDS = LANE_FIELDS
 NODE_UPDATE_FIELDS = {"id", "label", "type", "x", "y", "width", "height"}
 EDGE_UPDATE_FIELDS = EDGE_FIELDS | {"reroute"}
 PHASE_UPDATE_FIELDS = PHASE_FIELDS
+GROUP_UPDATE_FIELDS = GROUP_FIELDS
 
 
 class DiagramError(ValueError):
@@ -298,6 +303,47 @@ def validate_semantic_id(value, subject: str) -> str:
             supported_fixes=["replace-semantic-id"],
         )
     return value
+
+
+def validate_lane_object(
+    lane: dict,
+    subject: str,
+    *,
+    patch_addition: bool = False,
+    update: bool = False,
+    minimum_width: float = 120,
+) -> None:
+    require_mapping(lane, subject)
+    allowed = (
+        LANE_UPDATE_FIELDS
+        if update
+        else LANE_PATCH_FIELDS if patch_addition else LANE_FIELDS
+    )
+    reject_unknown_fields(lane, allowed, subject)
+    required = ("id",) if update else ("id", "label")
+    for field in required:
+        if field not in lane:
+            raise DiagramError(
+                f"Missing required field in {subject}: {field}",
+                code="schema/required",
+                subject={"kind": subject},
+                evidence={"field": field},
+            )
+    validate_semantic_id(lane["id"], f"{subject}.id")
+    if "label" in lane:
+        require_string(lane["label"], f"{subject}.label")
+    if "width" in lane:
+        validate_number(lane["width"], f"{subject}.width", minimum=minimum_width)
+    if patch_addition:
+        placements = [field for field in ("before", "after") if field in lane]
+        if len(placements) != 1:
+            raise DiagramError(
+                f"{subject} must specify exactly one of before or after",
+                code="patch/lane-placement",
+                subject={"kind": "lane", "id": lane.get("id")},
+                supported_fixes=["set-before", "set-after"],
+            )
+        validate_semantic_id(lane[placements[0]], f"{subject}.{placements[0]}")
 
 
 def validate_node_object(node: dict, subject: str) -> None:
@@ -505,10 +551,11 @@ def validate_phase_object(phase: dict, subject: str, *, update: bool = False) ->
             )
 
 
-def validate_group_object(group: dict, subject: str) -> None:
+def validate_group_object(group: dict, subject: str, *, update: bool = False) -> None:
     require_mapping(group, subject)
-    reject_unknown_fields(group, GROUP_FIELDS, subject)
-    for field in ("id", "lane", "kind", "nodes"):
+    reject_unknown_fields(group, GROUP_UPDATE_FIELDS if update else GROUP_FIELDS, subject)
+    required = ("id",) if update else ("id", "lane", "kind", "nodes")
+    for field in required:
         if field not in group:
             raise DiagramError(
                 f"Missing required field in {subject}: {field}",
@@ -517,19 +564,20 @@ def validate_group_object(group: dict, subject: str) -> None:
                 evidence={"field": field},
             )
     validate_semantic_id(group["id"], f"{subject}.id")
-    validate_semantic_id(group["lane"], f"{subject}.lane")
+    if "lane" in group:
+        validate_semantic_id(group["lane"], f"{subject}.lane")
     if "label" in group:
         require_string(group["label"], f"{subject}.label", allow_empty=True)
-    kind = require_string(group["kind"], f"{subject}.kind")
-    if kind not in GROUP_KINDS:
+    kind = require_string(group["kind"], f"{subject}.kind") if "kind" in group else None
+    if kind is not None and kind not in GROUP_KINDS:
         raise DiagramError(
             f"Unsupported group kind: {kind}",
             code="schema/enum",
             subject={"kind": "group", "id": group.get("id")},
             evidence={"field": "kind", "allowed": sorted(GROUP_KINDS)},
         )
-    nodes = validate_id_list(group["nodes"], f"{subject}.nodes")
-    if not nodes:
+    nodes = validate_id_list(group["nodes"], f"{subject}.nodes") if "nodes" in group else None
+    if nodes is not None and not nodes:
         raise DiagramError(
             f"{subject}.nodes must contain at least one node",
             code="schema/min-items",
@@ -653,25 +701,11 @@ def validate_build_spec(spec: dict) -> str:
             )
 
     for index, lane in enumerate(lanes):
-        subject = f"lane[{index}]"
-        require_mapping(lane, subject)
-        reject_unknown_fields(lane, LANE_FIELDS, subject)
-        for field in ("id", "label"):
-            if field not in lane:
-                raise DiagramError(
-                    f"Missing required field in {subject}: {field}",
-                    code="schema/required",
-                    subject={"kind": subject},
-                    evidence={"field": field},
-                )
-        validate_semantic_id(lane["id"], f"{subject}.id")
-        require_string(lane["label"], f"{subject}.label")
-        if "width" in lane:
-            validate_number(
-                lane["width"],
-                f"{subject}.width",
-                minimum=120 if schema_version in STRUCTURED_SCHEMA_VERSIONS else 1,
-            )
+        validate_lane_object(
+            lane,
+            f"lane[{index}]",
+            minimum_width=120 if schema_version in STRUCTURED_SCHEMA_VERSIONS else 1,
+        )
 
     for index, node in enumerate(nodes):
         validate_node_object(node, f"node[{index}]")
@@ -902,9 +936,16 @@ def validate_build_spec(spec: dict) -> str:
 def validate_patch_spec(changes: dict) -> None:
     require_mapping(changes, "patch")
     reject_unknown_fields(changes, PATCH_FIELDS, "patch")
-    for field in ("update_nodes", "update_edges", "nodes", "edges", "update_phases", "phases"):
+    for field in (
+        "update_lanes", "lanes", "update_nodes", "update_edges", "nodes",
+        "edges", "update_phases", "phases", "update_groups", "groups",
+    ):
         if field in changes:
             require_list(changes[field], f"patch.{field}")
+    for index, update in enumerate(changes.get("update_lanes", [])):
+        validate_lane_object(update, f"update_lane[{index}]", update=True)
+    for index, lane in enumerate(changes.get("lanes", [])):
+        validate_lane_object(lane, f"new_lane[{index}]", patch_addition=True)
     for index, update in enumerate(changes.get("update_nodes", [])):
         require_mapping(update, f"update_node[{index}]")
         reject_unknown_fields(update, NODE_UPDATE_FIELDS, f"update_node[{index}]")
@@ -926,12 +967,22 @@ def validate_patch_spec(changes: dict) -> None:
         validate_phase_object(update, f"update_phase[{index}]", update=True)
     for index, phase in enumerate(changes.get("phases", [])):
         validate_phase_object(phase, f"new_phase[{index}]")
-    for field in ("delete_nodes", "delete_edges", "delete_phases"):
+    for index, update in enumerate(changes.get("update_groups", [])):
+        validate_group_object(update, f"update_group[{index}]", update=True)
+    for index, group in enumerate(changes.get("groups", [])):
+        validate_group_object(group, f"new_group[{index}]")
+    for field in (
+        "delete_lanes", "delete_nodes", "delete_edges", "delete_phases",
+        "delete_groups",
+    ):
         if field in changes:
             validate_id_list(changes[field], f"patch.{field}")
     if "main_path" in changes:
         validate_id_list(changes["main_path"], "patch.main_path")
-    for field in ("update_nodes", "update_edges", "nodes", "edges", "update_phases", "phases"):
+    for field in (
+        "update_lanes", "lanes", "update_nodes", "update_edges", "nodes",
+        "edges", "update_phases", "phases", "update_groups", "groups",
+    ):
         if field in changes:
             require_unique(changes[field], field)
 
@@ -1277,6 +1328,44 @@ def node_y(node: dict, values: dict) -> float:
     _, height = node_size(node)
     center = values["lane_header_height"] + values["top_padding"] + (int(node["rank"]) - 1) * values["row_gap"]
     return float(node.get("y", center - height / 2))
+
+
+def create_lane_cell(
+    root: ET.Element,
+    pool: ET.Element,
+    lane: dict,
+    values: dict,
+    *,
+    x: float,
+    width: float,
+    height: float,
+) -> ET.Element:
+    cell = ET.SubElement(
+        root,
+        "mxCell",
+        {
+            "id": mx_id("lane", lane["id"]),
+            "parent": pool.attrib["id"],
+            "vertex": "1",
+            "value": lane["label"],
+            "style": (
+                "swimlane;html=1;"
+                f"startSize={number(values['lane_header_height'])};"
+                "horizontal=1;rounded=0;strokeWidth=1;fontSize=13;fontStyle=1;"
+                "fillColor=#dae8fc;swimlaneFillColor=#ffffff;"
+            ),
+            "data-kind": "lane",
+            "data-semantic-id": lane["id"],
+        },
+    )
+    geometry(
+        cell,
+        x=x,
+        y=values["title_height"],
+        width=width,
+        height=height,
+    )
+    return cell
 
 
 def create_node_cell(
@@ -3368,17 +3457,15 @@ def build_tree(spec: dict) -> ET.ElementTree:
     offset_x = phase_rail_width
     for lane in spec["lanes"]:
         width = lane_widths[lane["id"]]
-        lane_cell = ET.SubElement(
+        lane_cell = create_lane_cell(
             root,
-            "mxCell",
-            {
-                "id": mx_id("lane", lane["id"]), "parent": pool.attrib["id"], "vertex": "1",
-                "value": lane["label"],
-                "style": f"swimlane;html=1;startSize={number(values['lane_header_height'])};horizontal=1;rounded=0;strokeWidth=1;fontSize=13;fontStyle=1;fillColor=#dae8fc;swimlaneFillColor=#ffffff;",
-                "data-kind": "lane", "data-semantic-id": lane["id"],
-            },
+            pool,
+            lane,
+            values,
+            x=offset_x,
+            width=width,
+            height=current_lane_height,
         )
-        geometry(lane_cell, x=offset_x, y=values["title_height"], width=width, height=current_lane_height)
         lane_cells[lane["id"]] = lane_cell
         offset_x += width
 
@@ -4017,6 +4104,354 @@ def read_main_path(pool: ET.Element) -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
+def read_lane_order(pool: ET.Element, root: ET.Element, lanes: dict[str, dict]) -> list[str]:
+    order = managed_id_list_attribute(pool, "data-lane-order", None)
+    if order is None:
+        order = [
+            cell.attrib["data-semantic-id"]
+            for cell in list(root)
+            if cell.attrib.get("data-kind") == "lane"
+            and cell.attrib.get("data-semantic-id") in lanes
+        ]
+    if len(order) != len(set(order)) or set(order) != set(lanes):
+        raise DiagramError(
+            "Managed lane order does not match the diagram lanes",
+            code="integrity/schema-composition-mismatch",
+            evidence={"lane_order": order, "lane_ids": sorted(lanes)},
+            supported_fixes=["restore-lane-order", "controlled-rebuild"],
+        )
+    return order
+
+
+def reflow_lane_order_geometry(
+    pool: ET.Element,
+    order: list[str],
+    lanes: dict[str, dict],
+    previous: dict[str, dict],
+) -> list[dict]:
+    phase_rail_width = (
+        float(pool.attrib.get("data-phase-rail-width", PHASE_RAIL_WIDTH))
+        if pool.attrib.get("data-phase-presentation") == "rail"
+        else 0.0
+    )
+    cursor = phase_rail_width
+    shifts: list[dict] = []
+    for lane_id in order:
+        record = lanes[lane_id]
+        geom = record["cell"].find("mxGeometry")
+        assert geom is not None
+        width = float(geom.attrib.get("width", "0"))
+        old = previous.get(lane_id)
+        geom.attrib["x"] = number(cursor)
+        record["geometry"] = parse_geometry(record["cell"])
+        if old is not None and (
+            abs(old["x"] - cursor) >= GEOMETRY_TOLERANCE
+            or abs(old["width"] - width) >= GEOMETRY_TOLERANCE
+        ):
+            shifts.append(
+                {
+                    "id": lane_id,
+                    "from_x": old["x"],
+                    "to_x": cursor,
+                    "from_width": old["width"],
+                    "to_width": width,
+                }
+            )
+        cursor += width
+
+    pool_geom = pool.find("mxGeometry")
+    assert pool_geom is not None
+    pool_geom.attrib["width"] = number(cursor)
+    pool.attrib["data-lane-order"] = json.dumps(
+        order, ensure_ascii=True, separators=(",", ":")
+    )
+    return shifts
+
+
+def apply_lane_operations(
+    root: ET.Element,
+    pool: ET.Element,
+    lanes: dict[str, dict],
+    values: dict,
+    changes: dict,
+) -> tuple[list[str], dict[str, dict], list[dict]]:
+    """Apply lane semantics and deterministic horizontal geometry.
+
+    Existing lane-local node geometry remains untouched. Inserting or resizing
+    a lane changes only lane/pool geometry plus automatic incident routes.
+    """
+    order = read_lane_order(pool, root, lanes)
+    deleted = set(changes.get("delete_lanes", []))
+    for lane_id in deleted:
+        if lane_id not in lanes:
+            raise DiagramError(
+                f"Cannot delete missing lane: {lane_id}",
+                code="patch/missing-lane",
+            )
+    if len(order) - len(deleted) + len(changes.get("lanes", [])) < 1:
+        raise DiagramError(
+            "A diagram must retain at least one lane",
+            code="patch/delete-last-lane",
+            supported_fixes=["retain-one-lane", "add-replacement-lane"],
+        )
+
+    updates = {item["id"]: item for item in changes.get("update_lanes", [])}
+    for lane_id in updates:
+        if lane_id not in lanes:
+            raise DiagramError(
+                f"Cannot update missing lane: {lane_id}",
+                code="patch/missing-lane",
+            )
+        if lane_id in deleted:
+            raise DiagramError(
+                f"Lane {lane_id} cannot be updated and deleted in one patch",
+                code="patch/conflicting-operation",
+                subject={"kind": "lane", "id": lane_id},
+            )
+
+    added_ids = {item["id"] for item in changes.get("lanes", [])}
+    duplicate_added = sorted(added_ids.intersection(lanes))
+    if duplicate_added:
+        raise DiagramError(
+            f"Lane already exists: {duplicate_added[0]}",
+            code="patch/duplicate-lane",
+        )
+
+    previous = {
+        lane_id: {
+            "x": record["geometry"]["x"],
+            "width": record["geometry"]["width"],
+        }
+        for lane_id, record in lanes.items()
+    }
+    for lane_id in deleted:
+        root.remove(lanes[lane_id]["cell"])
+        order.remove(lane_id)
+        del lanes[lane_id]
+
+    lane_height_value = next(
+        (record["geometry"]["height"] for record in lanes.values()),
+        lane_height(int(pool.attrib.get("data-max-rank", "1")), values),
+    )
+    for lane in changes.get("lanes", []):
+        placement = "before" if "before" in lane else "after"
+        reference = lane[placement]
+        if reference not in order:
+            raise DiagramError(
+                f"New lane {lane['id']} references missing placement lane {reference}",
+                code="patch/lane-placement-target",
+                subject={"kind": "lane", "id": lane["id"]},
+                evidence={"placement": placement, "reference": reference},
+                supported_fixes=["use-existing-placement-lane"],
+            )
+        index = order.index(reference) + (1 if placement == "after" else 0)
+        order.insert(index, lane["id"])
+        width = float(lane.get("width", 200))
+        cell = create_lane_cell(
+            root,
+            pool,
+            lane,
+            values,
+            x=0,
+            width=width,
+            height=lane_height_value,
+        )
+        lanes[lane["id"]] = {"cell": cell, "geometry": parse_geometry(cell)}
+
+    for lane_id, update in updates.items():
+        cell = lanes[lane_id]["cell"]
+        if "label" in update:
+            cell.attrib["value"] = update["label"]
+        if "width" in update:
+            geom = cell.find("mxGeometry")
+            assert geom is not None
+            geom.attrib["width"] = number(update["width"])
+            lanes[lane_id]["geometry"] = parse_geometry(cell)
+
+    shifts = reflow_lane_order_geometry(pool, order, lanes, previous)
+    return order, lanes, shifts
+
+
+def current_groups_for_patch(pool: ET.Element) -> list[dict]:
+    return copy.deepcopy(json_attribute(pool, "data-groups", list, []))
+
+
+def apply_group_operations(
+    pool: ET.Element,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    changes: dict,
+) -> tuple[list[str], list[str], list[str]]:
+    groups = current_groups_for_patch(pool)
+    by_id = {group.get("id"): group for group in groups}
+    if len(by_id) != len(groups) or None in by_id:
+        raise managed_metadata_error(
+            "Managed group metadata is invalid",
+            attribute="data-groups",
+        )
+    deleted = set(changes.get("delete_groups", []))
+    for group_id in deleted:
+        if group_id not in by_id:
+            raise DiagramError(
+                f"Cannot delete missing group: {group_id}",
+                code="patch/missing-group",
+            )
+    groups = [group for group in groups if group["id"] not in deleted]
+    by_id = {group["id"]: group for group in groups}
+
+    updated_ids: list[str] = []
+    for update in changes.get("update_groups", []):
+        group_id = update["id"]
+        if group_id not in by_id:
+            raise DiagramError(
+                f"Cannot update missing group: {group_id}",
+                code="patch/missing-group",
+            )
+        if group_id in deleted:
+            raise DiagramError(
+                f"Group {group_id} cannot be updated and deleted in one patch",
+                code="patch/conflicting-operation",
+                subject={"kind": "group", "id": group_id},
+            )
+        by_id[group_id].update(update)
+        updated_ids.append(group_id)
+
+    added_ids: list[str] = []
+    for group in changes.get("groups", []):
+        if group["id"] in by_id:
+            raise DiagramError(
+                f"Group already exists: {group['id']}",
+                code="patch/duplicate-group",
+            )
+        item = copy.deepcopy(group)
+        groups.append(item)
+        by_id[item["id"]] = item
+        added_ids.append(item["id"])
+
+    member_to_group: dict[str, str] = {}
+    for group in groups:
+        validate_group_object(group, f"group[{group['id']}]")
+        if group["lane"] not in lanes:
+            raise DiagramError(
+                f"Group {group['id']} references a deleted or missing lane",
+                code="patch/group-lane-dependency",
+                subject={"kind": "group", "id": group["id"]},
+                evidence={"lane": group["lane"]},
+                supported_fixes=["delete-group", "update-group-lane"],
+            )
+        for node_id in group["nodes"]:
+            if node_id not in nodes:
+                raise DiagramError(
+                    f"Group {group['id']} references a deleted or missing node",
+                    code="patch/group-node-dependency",
+                    subject={"kind": "group", "id": group["id"]},
+                    evidence={"node": node_id},
+                    supported_fixes=["delete-group", "update-group-nodes"],
+                )
+            if nodes[node_id]["lane"] != group["lane"]:
+                raise DiagramError(
+                    f"Group {group['id']} contains a node from another lane",
+                    code="semantic/group-lane",
+                    subject={"kind": "group", "id": group["id"]},
+                    evidence={"node": node_id},
+                )
+            if node_id in member_to_group:
+                raise DiagramError(
+                    f"Node {node_id} belongs to more than one group",
+                    code="semantic/group-membership",
+                    subject={"kind": "node", "id": node_id},
+                )
+            member_to_group[node_id] = group["id"]
+
+    for node_id, record in nodes.items():
+        cell = record["cell"]
+        group_id = member_to_group.get(node_id)
+        if group_id:
+            cell.attrib["data-group-id"] = group_id
+        else:
+            cell.attrib.pop("data-group-id", None)
+    pool.attrib["data-groups"] = json.dumps(
+        groups, ensure_ascii=True, separators=(",", ":")
+    )
+    return sorted(added_ids), sorted(updated_ids), sorted(deleted)
+
+
+def patch_node_automatic_x(
+    node: dict,
+    lane_record: dict,
+    nodes: dict[str, dict],
+    layout_profile_name: str,
+) -> float:
+    lane_width = lane_record["geometry"]["width"]
+    width, _ = node_size(node)
+    slot = effective_node_slot(node)
+    rank = int(node["rank"])
+    row = [
+        record
+        for record in nodes.values()
+        if record["lane"] == node["lane"]
+        and int(record["cell"].attrib.get("data-rank", "0")) == rank
+    ]
+    occupied = {
+        record["cell"].attrib.get("data-slot", "main"): record
+        for record in row
+    }
+    if slot in occupied:
+        raise DiagramError(
+            f"Node {node['id']} conflicts with an occupied lane-local slot",
+            code="layout/slot-conflict",
+            subject={"kind": "node", "id": node["id"]},
+            evidence={"lane": node["lane"], "rank": rank, "slot": slot},
+            supported_fixes=["assign-distinct-slot", "change-rank", "set-explicit-geometry"],
+        )
+
+    gap = PROFILE_SLOT_GAPS.get(layout_profile_name, PROFILE_SLOT_GAPS["review"])
+    if node.get("anchor"):
+        target_id = node["anchor"]["node"]
+        target = nodes.get(target_id)
+        if target is None:
+            raise DiagramError(
+                f"Note {node['id']} anchors to a missing node",
+                code="semantic/anchor-target",
+                subject={"kind": "node", "id": node["id"]},
+                evidence={"anchor": target_id},
+            )
+        target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+        if target["lane"] != node["lane"] or target_rank != rank:
+            raise DiagramError(
+                f"Note {node['id']} must share lane and rank with its anchor",
+                code="semantic/anchor-alignment",
+                subject={"kind": "node", "id": node["id"]},
+            )
+        target_geom = target["geometry"]
+        if node["anchor"]["side"] == "left":
+            x = target_geom["x"] - gap - width
+        else:
+            x = target_geom["x"] + target_geom["width"] + gap
+    elif slot == "main" or "main" not in occupied:
+        x = (lane_width - width) / 2.0
+    else:
+        main_geom = occupied["main"]["geometry"]
+        if slot == "left":
+            x = main_geom["x"] - gap - width
+        else:
+            x = main_geom["x"] + main_geom["width"] + gap
+
+    side_padding = PROFILE_SIDE_PADDING.get(
+        layout_profile_name,
+        PROFILE_SIDE_PADDING["review"],
+    )
+    if x < side_padding - GEOMETRY_TOLERANCE:
+        raise DiagramError(
+            f"Node {node['id']} does not fit in the requested left slot without moving existing geometry",
+            code="layout/slot-space",
+            subject={"kind": "node", "id": node["id"]},
+            evidence={"required_x": x, "minimum_x": side_padding},
+            supported_fixes=["widen-and-realign-lane", "set-explicit-geometry", "change-slot"],
+        )
+    return x
+
+
 def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool) -> dict:
     validate_patch_spec(changes)
     pool = find_pool(tree)
@@ -4037,8 +4472,28 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     )
 
     deleted_edge_ids = set(changes.get("delete_edges", []))
+    deleted_lane_ids = set(changes.get("delete_lanes", []))
     deleted_node_ids = set(changes.get("delete_nodes", []))
     deleted_phase_ids = set(changes.get("delete_phases", []))
+    existing_lane_nodes = {
+        lane_id: sorted(
+            node_id for node_id, record in nodes.items() if record["lane"] == lane_id
+        )
+        for lane_id in deleted_lane_ids
+        if lane_id in lanes
+    }
+    undeclared_lane_nodes = {
+        lane_id: [node_id for node_id in node_ids if node_id not in deleted_node_ids]
+        for lane_id, node_ids in existing_lane_nodes.items()
+        if any(node_id not in deleted_node_ids for node_id in node_ids)
+    }
+    if undeclared_lane_nodes:
+        raise DiagramError(
+            "Deleting a lane requires explicitly deleting every node in that lane",
+            code="semantic/lane-not-empty",
+            evidence={"lanes": undeclared_lane_nodes},
+            supported_fixes=["add-delete-nodes", "retain-lane"],
+        )
     for edge_id in deleted_edge_ids:
         if edge_id not in existing_edges:
             raise DiagramError(f"Cannot delete missing edge: {edge_id}", code="patch/missing-edge")
@@ -4066,6 +4521,45 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             supported_fixes=["add-delete-edges"],
         )
 
+    deleted_main_path_nodes = deleted_node_ids.intersection(read_main_path(pool))
+    if deleted_main_path_nodes and "main_path" not in changes:
+        raise DiagramError(
+            "Deleting a main_path node requires supplying the replacement main_path",
+            code="patch/main-path",
+            evidence={"deleted_nodes": sorted(deleted_main_path_nodes)},
+            supported_fixes=["supply-main-path"],
+        )
+
+    edge_updates = changes.get("update_edges", [])
+    explicit_type_reroutes = {
+        update["id"]
+        for update in edge_updates
+        if update.get("reroute") is True
+        or any(key in update for key in ROUTING_FIELDS if key != "reroute")
+    }
+    for update in changes.get("update_nodes", []):
+        node_id = update["id"]
+        if node_id not in nodes or "type" not in update:
+            continue
+        current_type = nodes[node_id]["cell"].attrib.get("data-node-type", "process")
+        if current_type == update["type"]:
+            continue
+        incident = sorted(
+            edge_id
+            for edge_id, cell in existing_edges.items()
+            if edge_id not in deleted_edge_ids
+            and node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}
+            and edge_id not in explicit_type_reroutes
+        )
+        if incident:
+            raise DiagramError(
+                "Changing a node type requires explicit rerouting of every incident edge",
+                code="patch/node-type-incident-edge",
+                subject={"kind": "node", "id": node_id},
+                evidence={"edges": incident, "from": current_type, "to": update["type"]},
+                supported_fixes=["add-update-edges-reroute"],
+            )
+
     for edge_id in deleted_edge_ids:
         root.remove(existing_edges[edge_id])
     for node_id in deleted_node_ids:
@@ -4074,6 +4568,10 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         root.remove(phases[phase_id])
 
     lanes, nodes = lane_node_records(root, pool)
+    lane_order, lanes, lane_shifts = apply_lane_operations(
+        root, pool, lanes, values, changes
+    )
+    pool_width = parse_geometry(pool)["width"]
     existing_edges = edge_records(root)
     phases = phase_records(root, pool)
     moved_node_ids: set[str] = set()
@@ -4122,18 +4620,144 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             nodes[semantic_id]["geometry"] = parse_geometry(cell)
 
     new_nodes = changes.get("nodes", [])
+    schema_version = pool.attrib.get("data-schema-version", "1")
+    if schema_version != V3_SCHEMA_VERSION:
+        v3_new_nodes = [
+            node["id"] for node in new_nodes if "slot" in node or "anchor" in node
+        ]
+        if v3_new_nodes:
+            raise DiagramError(
+                "slot and anchor intent require a schema version 3 diagram",
+                code="schema/version-field",
+                evidence={"nodes": v3_new_nodes, "schema_version": schema_version},
+                supported_fixes=["migrate-to-v3", "remove-v3-fields"],
+            )
+    new_node_by_id = {node["id"]: node for node in new_nodes}
+    new_node_ids = set(new_node_by_id)
+    all_target_ids = set(nodes) | new_node_ids
     for node in new_nodes:
         if node["id"] in nodes:
             raise DiagramError(f"Node already exists: {node['id']}")
         if node.get("lane") not in lanes:
             raise DiagramError(f"Unknown lane for node {node.get('id')}: {node.get('lane')}")
+        anchor = node.get("anchor")
+        if anchor and anchor["node"] not in all_target_ids:
+            raise DiagramError(
+                f"Note {node['id']} anchors to a missing node",
+                code="semantic/anchor-target",
+                subject={"kind": "node", "id": node["id"]},
+                evidence={"anchor": anchor["node"]},
+            )
+        if not anchor:
+            continue
+        target_id = anchor["node"]
+        if target_id in nodes:
+            target_lane = nodes[target_id]["lane"]
+            target_rank = int(nodes[target_id]["cell"].attrib.get("data-rank", "0"))
+        else:
+            target = new_node_by_id[target_id]
+            target_lane = target["lane"]
+            target_rank = int(target["rank"])
+        if target_lane != node["lane"] or target_rank != int(node["rank"]):
+            raise DiagramError(
+                f"Note {node['id']} must share lane and rank with its anchor",
+                code="semantic/anchor-alignment",
+                subject={"kind": "node", "id": node["id"]},
+                evidence={
+                    "anchor": target_id,
+                    "note_lane": node["lane"],
+                    "anchor_lane": target_lane,
+                    "note_rank": int(node["rank"]),
+                    "anchor_rank": target_rank,
+                },
+                supported_fixes=["align-note-with-anchor", "remove-anchor"],
+            )
+        if "slot" in node and node["slot"] != anchor["side"]:
+            raise DiagramError(
+                f"Note {node['id']} slot conflicts with its anchor side",
+                code="layout/anchor-slot-conflict",
+                subject={"kind": "node", "id": node["id"]},
+                evidence={"slot": node["slot"], "anchor_side": anchor["side"]},
+                supported_fixes=["match-slot-to-anchor", "remove-explicit-slot"],
+            )
+
+    layout_profile_name = pool.attrib.get("data-layout-profile", "review")
+    ordered_new_nodes = sorted(new_nodes, key=lambda node: bool(node.get("anchor")))
+    for node in ordered_new_nodes:
         lane_cell = lanes[node["lane"]]["cell"]
         lane_width = lanes[node["lane"]]["geometry"]["width"]
-        create_node_cell(root, lane_cell, node, lane_width, values)
+        automatic_x = None
+        if schema_version == V3_SCHEMA_VERSION and "x" not in node:
+            automatic_x = patch_node_automatic_x(
+                node,
+                lanes[node["lane"]],
+                nodes,
+                layout_profile_name,
+            )
+            width, _ = node_size(node)
+            side_padding = PROFILE_SIDE_PADDING.get(
+                layout_profile_name,
+                PROFILE_SIDE_PADDING["review"],
+            )
+            required_width = automatic_x + width + side_padding
+            if required_width > lane_width + GEOMETRY_TOLERANCE:
+                before_reflow = {
+                    lane_id: dict(record["geometry"])
+                    for lane_id, record in lanes.items()
+                }
+                lane_geom = lane_cell.find("mxGeometry")
+                assert lane_geom is not None
+                lane_geom.attrib["width"] = number(math.ceil(required_width))
+                lanes[node["lane"]]["geometry"] = parse_geometry(lane_cell)
+                expansion_shifts = reflow_lane_order_geometry(
+                    pool,
+                    lane_order,
+                    lanes,
+                    before_reflow,
+                )
+                by_lane = {item["id"]: item for item in lane_shifts}
+                for item in expansion_shifts:
+                    existing = by_lane.get(item["id"])
+                    if existing:
+                        existing["to_x"] = item["to_x"]
+                        existing["to_width"] = item["to_width"]
+                    else:
+                        lane_shifts.append(item)
+                        by_lane[item["id"]] = item
+                lane_width = lanes[node["lane"]]["geometry"]["width"]
+                pool_width = parse_geometry(pool)["width"]
+        created = create_node_cell(
+            root,
+            lane_cell,
+            node,
+            lane_width,
+            values,
+            automatic_x=automatic_x,
+        )
+        nodes[node["id"]] = {
+            "cell": created,
+            "geometry": parse_geometry(created),
+            "lane": node["lane"],
+        }
 
     lanes, nodes = lane_node_records(root, pool)
+    group_patch_requested = any(
+        field in changes for field in ("update_groups", "groups", "delete_groups")
+    )
+    if schema_version == V3_SCHEMA_VERSION:
+        added_group_ids, updated_group_ids, deleted_group_ids = apply_group_operations(
+            pool, lanes, nodes, changes
+        )
+    elif group_patch_requested:
+        raise DiagramError(
+            "Group patch operations require a schema version 3 diagram",
+            code="schema/version-field",
+            evidence={"schema_version": schema_version},
+            supported_fixes=["migrate-to-v3", "remove-group-operations"],
+        )
+    else:
+        added_group_ids, updated_group_ids, deleted_group_ids = [], [], []
     existing_edges = edge_records(root)
-    edge_updates = changes.get("update_edges", [])
     for update in edge_updates:
         if update["id"] not in existing_edges:
             raise DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
@@ -4147,14 +4771,34 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             key in update for key in ROUTING_FIELDS if key != "reroute"
         )
     }
-    auto_reroute_ids = {
+    changed_lane_ids = {item["id"] for item in lane_shifts}
+    lane_impacted_edge_ids = {
         edge_id
         for edge_id, cell in existing_edges.items()
         if (
-            cell.attrib.get("data-from") in moved_node_ids
-            or cell.attrib.get("data-to") in moved_node_ids
+            nodes.get(cell.attrib.get("data-from", ""), {}).get("lane")
+            in changed_lane_ids
+            or nodes.get(cell.attrib.get("data-to", ""), {}).get("lane")
+            in changed_lane_ids
         )
-        and not edge_route_is_locally_valid(cell, lanes, nodes)
+    }
+    manual_waypoint_edges_affected_by_lane_changes = sorted(
+        edge_id
+        for edge_id in lane_impacted_edge_ids
+        if existing_edges[edge_id].attrib.get("data-waypoints-origin") == "explicit"
+    )
+    auto_reroute_ids = {
+        edge_id
+        for edge_id, cell in existing_edges.items()
+        if cell.attrib.get("data-waypoints-origin") != "explicit"
+        and (
+            edge_id in lane_impacted_edge_ids
+            or (
+                cell.attrib.get("data-from") in moved_node_ids
+                or cell.attrib.get("data-to") in moved_node_ids
+            )
+            and not edge_route_is_locally_valid(cell, lanes, nodes)
+        )
     }
     reroute_ids = explicit_reroute_ids | auto_reroute_ids
     allocator = PortAllocator()
@@ -4285,6 +4929,20 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     )
 
     return {
+        "added_lanes": sorted(lane["id"] for lane in changes.get("lanes", [])),
+        "updated_lanes": sorted(lane["id"] for lane in changes.get("update_lanes", [])),
+        "deleted_lanes": sorted(deleted_lane_ids),
+        "lane_order": lane_order,
+        "lane_geometry_changes": sorted(lane_shifts, key=lambda item: item["id"]),
+        "dependent_lane_shifts": sorted(
+            (
+                item
+                for item in lane_shifts
+                if item["id"]
+                not in {lane["id"] for lane in changes.get("update_lanes", [])}
+            ),
+            key=lambda item: item["id"],
+        ),
         "updated_nodes": sorted(update["id"] for update in changes.get("update_nodes", [])),
         "updated_edges": sorted(update["id"] for update in edge_updates),
         "auto_rerouted_edges": sorted(auto_reroute_ids - explicit_reroute_ids),
@@ -4295,9 +4953,36 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         "added_phases": sorted(phase["id"] for phase in changes.get("phases", [])),
         "updated_phases": sorted(phase["id"] for phase in changes.get("update_phases", [])),
         "deleted_phases": sorted(deleted_phase_ids),
+        "added_groups": added_group_ids,
+        "updated_groups": updated_group_ids,
+        "deleted_groups": deleted_group_ids,
         "main_path_updated": "main_path" in changes,
         "manual_waypoints_preserved": manual_waypoints_preserved,
         "manual_waypoints_checked": len(remaining_explicit_waypoints),
+        "manual_waypoint_edges_affected_by_lane_changes": (
+            manual_waypoint_edges_affected_by_lane_changes
+        ),
+        "requested_changes": {
+            "lanes": sorted(
+                {lane["id"] for lane in changes.get("lanes", [])}
+                | {lane["id"] for lane in changes.get("update_lanes", [])}
+                | deleted_lane_ids
+            ),
+            "nodes": sorted(
+                {node["id"] for node in new_nodes}
+                | {node["id"] for node in changes.get("update_nodes", [])}
+                | deleted_node_ids
+            ),
+            "edges": sorted(
+                {edge["id"] for edge in new_edges}
+                | {edge["id"] for edge in edge_updates}
+                | deleted_edge_ids
+            ),
+        },
+        "dependency_changes": {
+            "shifted_lanes": sorted(item["id"] for item in lane_shifts),
+            "auto_rerouted_edges": sorted(auto_reroute_ids - explicit_reroute_ids),
+        },
     }
 
 
@@ -5523,7 +6208,8 @@ def comparison_attributes(cell: ET.Element) -> tuple[tuple[str, str], ...]:
 def allowed_missing_from_patch(changes: dict | None) -> set[str]:
     if not changes:
         return set()
-    allowed = {f"node:{semantic_id}" for semantic_id in changes.get("delete_nodes", [])}
+    allowed = {f"lane:{semantic_id}" for semantic_id in changes.get("delete_lanes", [])}
+    allowed.update(f"node:{semantic_id}" for semantic_id in changes.get("delete_nodes", []))
     allowed.update(f"edge:{semantic_id}" for semantic_id in changes.get("delete_edges", []))
     allowed.update(f"phase:{semantic_id}" for semantic_id in changes.get("delete_phases", []))
     return allowed
