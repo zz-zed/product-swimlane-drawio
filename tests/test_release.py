@@ -40,7 +40,12 @@ def load_tool_module():
     spec = importlib.util.spec_from_file_location("drawio_swimlane_under_test", TOOL)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
     return module
 
 
@@ -528,6 +533,13 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), tool.ANCHOR_FIELDS)
         self.assertEqual(set(schema["$defs"]["layout"]["properties"]), tool.LAYOUT_FIELDS)
         self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), tool.CANVAS_FIELDS)
+
+    def test_loading_tool_module_does_not_write_into_skill_directory(self) -> None:
+        cache_directory = TOOL.parent / "__pycache__"
+        before = set(cache_directory.iterdir()) if cache_directory.exists() else set()
+        load_tool_module()
+        after = set(cache_directory.iterdir()) if cache_directory.exists() else set()
+        self.assertEqual(after, before)
 
     def test_json_schema_and_runtime_agree_on_representative_v2_v3_specs(self) -> None:
         schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))

@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevent the test-only dynamic module loader from writing Python bytecode into the packaged Skill directory during CI.
+
+### Tests
+
+- Add a regression proving that loading the tool module leaves the Skill directory unchanged when the test suite runs without `-B`.
+
 ## [0.4.1] - 2026-08-31
 
 ### Added
