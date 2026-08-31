@@ -18,7 +18,7 @@
 
 Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development) · [Internal release publishing](docs/INTERNAL_RELEASE.md)
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope) · [Development](#development)
 
 ## Why this exists
 
