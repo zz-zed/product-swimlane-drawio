@@ -1,5 +1,8 @@
+import contextlib
 import json
 import hashlib
+import importlib.util
+import io
 import re
 import subprocess
 import struct
@@ -31,6 +34,88 @@ def run_tool(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
             f"stderr:\n{result.stderr}"
         )
     return result
+
+
+def load_tool_module():
+    spec = importlib.util.spec_from_file_location("drawio_swimlane_under_test", TOOL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def schema_matches(value, rule: dict, root: dict) -> bool:
+    if "$ref" in rule:
+        target = root
+        for part in rule["$ref"].removeprefix("#/").split("/"):
+            target = target[part.replace("~1", "/").replace("~0", "~")]
+        return schema_matches(value, target, root)
+    if "allOf" in rule and not all(schema_matches(value, item, root) for item in rule["allOf"]):
+        return False
+    if "oneOf" in rule and sum(schema_matches(value, item, root) for item in rule["oneOf"]) != 1:
+        return False
+    if "anyOf" in rule and not any(schema_matches(value, item, root) for item in rule["anyOf"]):
+        return False
+    if "not" in rule and schema_matches(value, rule["not"], root):
+        return False
+    if "if" in rule:
+        branch = rule.get("then") if schema_matches(value, rule["if"], root) else rule.get("else")
+        if branch is not None and not schema_matches(value, branch, root):
+            return False
+    if "const" in rule and value != rule["const"]:
+        return False
+    if "enum" in rule and value not in rule["enum"]:
+        return False
+
+    expected_type = rule.get("type")
+    if expected_type == "object" and not isinstance(value, dict):
+        return False
+    if expected_type == "array" and not isinstance(value, list):
+        return False
+    if expected_type == "string" and not isinstance(value, str):
+        return False
+    if expected_type == "boolean" and not isinstance(value, bool):
+        return False
+    if expected_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        return False
+    if expected_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+        return False
+
+    if isinstance(value, dict):
+        required = set(rule.get("required", []))
+        if not required.issubset(value):
+            return False
+        properties = rule.get("properties", {})
+        if rule.get("additionalProperties") is False and set(value) - set(properties):
+            return False
+        for key, child in properties.items():
+            if key in value and not schema_matches(value[key], child, root):
+                return False
+    if isinstance(value, list):
+        if len(value) < rule.get("minItems", 0) or len(value) > rule.get("maxItems", float("inf")):
+            return False
+        if rule.get("uniqueItems"):
+            serialized = [json.dumps(item, sort_keys=True) for item in value]
+            if len(serialized) != len(set(serialized)):
+                return False
+        for index, child in enumerate(rule.get("prefixItems", [])):
+            if index < len(value) and not schema_matches(value[index], child, root):
+                return False
+        if "items" in rule and not all(schema_matches(item, rule["items"], root) for item in value):
+            return False
+    if isinstance(value, str):
+        if len(value) < rule.get("minLength", 0):
+            return False
+        if "pattern" in rule and re.fullmatch(rule["pattern"], value) is None:
+            return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in rule and value < rule["minimum"]:
+            return False
+        if "exclusiveMinimum" in rule and value <= rule["exclusiveMinimum"]:
+            return False
+        if "maximum" in rule and value > rule["maximum"]:
+            return False
+    return True
 
 
 def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
@@ -249,6 +334,16 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("语义化 → 确定性 → 可编辑 → 可迭代 → 可验证", chinese)
         self.assertIn("## Edit → inspect → patch", english)
         self.assertIn("## 编辑 → 检查 → 补丁", chinese)
+        self.assertIn("build --spec process.json --output process.drawio --strict", english)
+        self.assertIn("build --spec process.json --output process.drawio --strict", chinese)
+        self.assertIn(
+            "patch --input process.drawio --changes changes.json --output process-updated.drawio --strict",
+            english,
+        )
+        self.assertIn(
+            "patch --input process.drawio --changes changes.json --output process-updated.drawio --strict",
+            chinese,
+        )
         self.assertEqual(english.count("\n## "), chinese.count("\n## "))
         self.assertEqual(english.count("```"), chinese.count("```"))
 
@@ -275,7 +370,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.4.0")
+        self.assertEqual(codex_plugin["version"], "0.4.1")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -382,6 +477,9 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("Versioned semantic JSON", architecture)
         self.assertIn("Inspect latest file → semantic patch → compare", architecture)
         self.assertIn("Strict validation and visual review are independent", architecture)
+        self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
+        self.assertIn("currently live in one standard-library Python file", architecture)
+        self.assertIn("single-page process view", architecture)
         self.assertIn("Stay narrow", principles)
         self.assertIn("does not attempt to become a general-purpose generator", principles)
 
@@ -418,6 +516,85 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("main_path", schema["required"])
         self.assertFalse(schema["$defs"]["edge"]["additionalProperties"])
 
+    def test_json_schema_fields_match_runtime_build_contract(self) -> None:
+        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
+        tool = load_tool_module()
+        self.assertEqual(set(schema["properties"]), tool.TOP_LEVEL_FIELDS)
+        self.assertEqual(set(schema["$defs"]["lane"]["properties"]), tool.LANE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["node"]["properties"]), tool.NODE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["edge"]["properties"]), tool.EDGE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["phase"]["properties"]), tool.PHASE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["group"]["properties"]), tool.GROUP_FIELDS)
+        self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), tool.ANCHOR_FIELDS)
+        self.assertEqual(set(schema["$defs"]["layout"]["properties"]), tool.LAYOUT_FIELDS)
+        self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), tool.CANVAS_FIELDS)
+
+    def test_json_schema_and_runtime_agree_on_representative_v2_v3_specs(self) -> None:
+        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
+        valid_v2 = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+        valid_v3 = json.loads(
+            (ROOT / "examples" / "request-review" / "process.json").read_text(encoding="utf-8")
+        )
+
+        invalid_specs = []
+        missing_pattern = json.loads(json.dumps(valid_v3))
+        missing_pattern.pop("behavior_pattern")
+        invalid_specs.append(missing_pattern)
+
+        v2_layout = json.loads(json.dumps(valid_v2))
+        v2_layout["layout"] = {"profile": "review"}
+        invalid_specs.append(v2_layout)
+
+        v2_slot = json.loads(json.dumps(valid_v2))
+        v2_slot["nodes"][1]["slot"] = "main"
+        invalid_specs.append(v2_slot)
+
+        v2_flow_role = json.loads(json.dumps(valid_v2))
+        v2_flow_role["edges"][0]["flow_role"] = "main"
+        invalid_specs.append(v2_flow_role)
+
+        labeled_end = json.loads(json.dumps(valid_v2))
+        end_node = next(node for node in labeled_end["nodes"] if node["type"] == "end")
+        end_node["label"] = "Done"
+        invalid_specs.append(labeled_end)
+
+        unknown_edge_field = json.loads(json.dumps(valid_v2))
+        unknown_edge_field["edges"][0]["unexpected"] = True
+        invalid_specs.append(unknown_edge_field)
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            for index, candidate in enumerate((valid_v2, valid_v3)):
+                self.assertTrue(schema_matches(candidate, schema, schema))
+                spec_path = directory / f"valid-{index}.json"
+                output = directory / f"valid-{index}.drawio"
+                spec_path.write_text(json.dumps(candidate), encoding="utf-8")
+                result = run_tool(
+                    "build",
+                    "--spec",
+                    str(spec_path),
+                    "--output",
+                    str(output),
+                    "--strict",
+                )
+                self.assertTrue(json.loads(result.stdout)["quality_gate_passed"])
+
+            for index, candidate in enumerate(invalid_specs):
+                self.assertFalse(schema_matches(candidate, schema, schema))
+                spec_path = directory / f"invalid-{index}.json"
+                output = directory / f"invalid-{index}.drawio"
+                spec_path.write_text(json.dumps(candidate), encoding="utf-8")
+                result = run_tool(
+                    "build",
+                    "--spec",
+                    str(spec_path),
+                    "--output",
+                    str(output),
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(output.exists())
+
     def test_frontmatter_is_minimal(self) -> None:
         content = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         self.assertTrue(content.startswith("---\n"))
@@ -450,7 +627,10 @@ class DiagramWorkflowTests(unittest.TestCase):
         )
         report = json.loads(build.stdout)
         self.assertTrue(report["valid"])
+        self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
+        self.assertIsNone(report["manual_waypoints_preserved"])
+        self.assertEqual(report["manual_waypoints_checked"], 0)
         self.assertTrue(output.is_file())
         return output
 
@@ -462,6 +642,102 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertTrue(report["valid"])
             self.assertEqual(report["errors"], [])
             self.assertEqual(report["warnings"], [])
+
+    def test_strict_build_rejects_warnings_without_writing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = directory / "warning.json"
+            write_linear_v2_spec(spec, long_label=True)
+            compatible_output = directory / "compatible.drawio"
+            compatible = json.loads(
+                run_tool(
+                    "build",
+                    "--spec",
+                    str(spec),
+                    "--output",
+                    str(compatible_output),
+                ).stdout
+            )
+            self.assertTrue(compatible["warnings"])
+            self.assertFalse(compatible["strict_mode"])
+            self.assertFalse(compatible["quality_gate_passed"])
+
+            strict_output = directory / "strict.drawio"
+            strict = run_tool(
+                "build",
+                "--spec",
+                str(spec),
+                "--output",
+                str(strict_output),
+                "--strict",
+                check=False,
+            )
+            self.assertNotEqual(strict.returncode, 0)
+            self.assertFalse(strict_output.exists())
+            report = json.loads(strict.stdout)
+            self.assertEqual(
+                report["diagnostics"][0]["code"],
+                "delivery/strict-validation-failed",
+            )
+
+    def test_strict_patch_rejects_warnings_without_writing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            changes = directory / "warning-patch.json"
+            changes.write_text(
+                json.dumps({"update_nodes": [{"id": "step-a", "label": "W" * 600}]}),
+                encoding="utf-8",
+            )
+            output = directory / "strict-patch.drawio"
+            result = run_tool(
+                "patch",
+                "--input",
+                str(before),
+                "--changes",
+                str(changes),
+                "--output",
+                str(output),
+                "--strict",
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+            report = json.loads(result.stdout)
+            self.assertEqual(
+                report["diagnostics"][0]["code"],
+                "delivery/strict-validation-failed",
+            )
+
+    def test_unexpected_exception_returns_stable_json_without_details(self) -> None:
+        tool = load_tool_module()
+
+        class Parser:
+            def parse_args(self):
+                def fail(_args):
+                    raise RuntimeError("private implementation detail")
+
+                return type("Args", (), {"func": staticmethod(fail)})()
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        original_build_parser = tool.build_parser
+        tool.build_parser = lambda: Parser()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                return_code = tool.main()
+        finally:
+            tool.build_parser = original_build_parser
+
+        self.assertEqual(return_code, 3)
+        self.assertNotIn("private implementation detail", stdout.getvalue())
+        self.assertNotIn("private implementation detail", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(report["diagnostics"][0]["code"], "internal/unexpected")
+        self.assertEqual(
+            report["diagnostics"][0]["evidence"]["exception_type"],
+            "RuntimeError",
+        )
 
     def test_patch_validate_and_compare(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -641,7 +917,11 @@ class DiagramWorkflowTests(unittest.TestCase):
                 str(after),
                 "--allow-geometry-updates",
             )
-            self.assertEqual(json.loads(result.stdout)["patch_receipt"]["auto_rerouted_edges"], [])
+            receipt = json.loads(result.stdout)
+            self.assertEqual(receipt["patch_receipt"]["auto_rerouted_edges"], [])
+            self.assertTrue(receipt["manual_waypoints_preserved"])
+            self.assertEqual(receipt["manual_waypoints_checked"], 1)
+            self.assertTrue(receipt["patch_receipt"]["manual_waypoints_preserved"])
             before_inspect = json.loads(run_tool("inspect", "--input", str(before)).stdout)
             after_inspect = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             before_edge = next(edge for edge in before_inspect["edges"] if edge["id"] == "edge-a")

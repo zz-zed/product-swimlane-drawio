@@ -186,7 +186,7 @@ Read [Architecture](docs/architecture.md) for the component and data-flow model,
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  build --spec process.json --output process.drawio
+  build --spec process.json --output process.drawio --strict
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   validate --input process.drawio --strict
@@ -199,7 +199,7 @@ Patch and compare:
 
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
-  patch --input process.drawio --changes changes.json --output process-updated.drawio
+  patch --input process.drawio --changes changes.json --output process-updated.drawio --strict
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json

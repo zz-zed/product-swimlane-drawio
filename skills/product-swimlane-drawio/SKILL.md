@@ -45,7 +45,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 5. Build and run strict validation:
 
    ```bash
-   python3 "<skill-root>/scripts/drawio_swimlane.py" build --spec "<spec.json>" --output "<diagram.drawio>"
+   python3 "<skill-root>/scripts/drawio_swimlane.py" build --spec "<spec.json>" --output "<diagram.drawio>" --strict
    python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<diagram.drawio>" --strict
    ```
 
@@ -111,7 +111,7 @@ Treat automated validation and visual review as separate evidence:
 5. Write to a new output file, validate, and compare against the declared patch:
 
    ```bash
-   python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --changes "<changes.json>" --output "<updated.drawio>"
+   python3 "<skill-root>/scripts/drawio_swimlane.py" patch --input "<current.drawio>" --changes "<changes.json>" --output "<updated.drawio>" --strict
    python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<updated.drawio>" --strict
    python3 "<skill-root>/scripts/drawio_swimlane.py" compare --before "<current.drawio>" --after "<updated.drawio>" --changes "<changes.json>"
    ```
@@ -133,7 +133,7 @@ Treat automated validation and visual review as separate evidence:
 - Preserve stable IDs across revisions.
 - Report added, updated, deleted, and automatically rerouted semantic IDs from the patch receipt.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
-- Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt.
+- Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.
 
 ## Package neutrality

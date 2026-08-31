@@ -1,6 +1,6 @@
 # Semantic schema and patch contract
 
-Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language. The executable v2/v3 contract is [schema.json](schema.json).
+Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visible labels may use any language. The build-spec v2/v3 field contract is [schema.json](schema.json) and is checked against the runtime field sets in the test suite. Legacy v1 compatibility is implemented by the runtime and is intentionally outside that JSON Schema.
 
 ## Contents
 
@@ -178,7 +178,7 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 
 Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
 
-Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Patch output includes the IDs added, updated, deleted, and automatically rerouted. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review`. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
+Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes the IDs added, updated, deleted, and automatically rerouted. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
 
 ## Compatibility
 

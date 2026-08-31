@@ -36,6 +36,8 @@ Schema v3 is the default for new diagrams. It represents lanes, nodes, edges, a 
 
 The standard-library Python tool validates input, calculates lane and node geometry, allocates ports, routes orthogonal connectors, places labels, emits native Draw.io XML, and returns an atomic delivery receipt.
 
+The engine uses a bounded compilation pipeline, not an unbounded global solver. It allocates lane and rank space, selects among finite route candidates for each automatic edge, and performs label reflow against the compiled scene. It does not repeatedly optimize the whole diagram until a subjective visual optimum is reached, and it does not infer durable layout intent from a person's drag operations. Deterministic means that the same supported input produces the same bytes; it does not mean that every valid process is automatically presentation-perfect.
+
 ### Validator
 
 Strict validation covers semantic consistency and diagram-quality heuristics. Diagnostics use stable codes, evidence, affected semantic IDs, and supported fixes. Warnings fail strict validation.
@@ -56,6 +58,12 @@ After local editing, `inspect` reads the latest file rather than relying on an o
 - Strict validation and visual review are independent evidence.
 - The latest user-saved `.drawio` is canonical after local editing.
 - Incompatible or manually created Draw.io files require migration or controlled rebuilding before safe semantic patching.
+
+## Current implementation and page scope
+
+The portable CLI and its logical compiler, routing, Draw.io, validation, and round-trip responsibilities currently live in one standard-library Python file. These are responsibility boundaries, not separate runtime packages. The public interface is the CLI and its structured JSON receipts; internal function boundaries are not compatibility guarantees.
+
+Each generated file is a single-page process view. The tool does not provide multi-page navigation, cross-page connectors, or cross-file references. Split a dense end-to-end process and its exception detail into separate `.drawio` files when one page would no longer be readable.
 
 ## Distribution
 

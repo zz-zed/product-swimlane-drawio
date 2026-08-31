@@ -28,6 +28,8 @@ Agents should start without absolute coordinates, ports, or waypoints. A diagnos
 6. Route connectors and place labels.
 7. Validate the final scene used for Draw.io serialization.
 
+This is a bounded deterministic pass with finite route candidates and a label-reflow stage, not a whole-scene iterative solver. A warning may require clearer semantic intent, a supported spacing control, or an explicit route; the compiler does not keep relaxing geometry without a fixed stopping condition.
+
 ## Slot rules
 
 - A single node with no authored slot uses `main` and remains centered.
@@ -88,9 +90,9 @@ The profiles now select minimum automatic rank gaps of 80, 96, and 104 px respec
 
 The rail is part of pool geometry, not a business lane. Nodes and routing coordinates remain lane-local, while later lane positions include the reserved rail width.
 
-## Layout receipt
+## Target layout receipt
 
-The compiler should return stable author-facing evidence:
+The following fields describe the intended stable author-facing receipt. The current v0.4.x receipt reports routing diagnostics and resolved output geometry through build, validate, and inspect, but does not yet expose every item below as a dedicated field:
 
 - Selected behavior pattern and layout profile.
 - Effective lane widths.

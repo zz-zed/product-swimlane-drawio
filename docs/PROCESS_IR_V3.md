@@ -9,11 +9,11 @@ Process IR describes what a product or business process means without asking an 
 The v3 compiler separates four concerns:
 
 1. Process facts: participants, steps, decisions, artifacts, outcomes, and relationships.
-2. Behavior pattern: the dominant interaction pattern used to choose a layout grammar.
+2. Behavior pattern: the author's declaration of the dominant interaction pattern.
 3. Layout intent: logical ranks, lane-local slots, groups, anchors, and optional locks.
 4. Compiled scene: measured geometry, ports, orthogonal routes, labels, and Draw.io XML.
 
-The semantic and layout-intent layers are author-facing. Solver candidates and scoring remain implementation details.
+The semantic and layout-intent layers are author-facing. Solver candidates and scoring remain implementation details. In v0.4.x, `behavior_pattern` is validated and preserved as metadata; topology, `main_path`, `flow_role`, ranks, slots, and explicit layout intent drive compilation. Pattern-specific validation or layout defaults are not yet applied.
 
 ## Supported behavior patterns
 
@@ -27,7 +27,7 @@ The first v3 contract accepts:
 - `lifecycle`
 - `custom`
 
-A behavior pattern does not add facts or silently rewrite topology. It selects defaults and validation rules. `custom` means the authored topology and layout intent take precedence over a built-in grammar.
+A behavior pattern does not add facts or silently rewrite topology. The current compiler records it for inspection and future versioned contracts; it does not yet select defaults or pattern-specific validation rules. `custom` means no more specific declared pattern fits the authored topology.
 
 ## Core process objects
 
@@ -54,7 +54,7 @@ A group names a bounded set of nodes that should be reasoned about together. Ini
 - `exception`
 - `support`
 
-Groups are semantic layout regions, not necessarily visible rectangles. A renderer may show a group only when its label or boundary adds useful information.
+Groups are validated semantic memberships and are preserved through inspection. The current compiler does not draw group frames or apply group-specific spacing.
 
 ### Edges
 

@@ -6,6 +6,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-31
+
+### Added
+
+- Add opt-in `--strict` delivery gates to `build` and `patch`; warnings now stop the command before the requested output is written.
+- Add stable `internal/unexpected` JSON diagnostics for unanticipated failures without exposing implementation details.
+
+### Changed
+
+- Make the Skill, bilingual README commands, and fictional example use strict build and patch delivery by default.
+- Report `strict_mode` and `quality_gate_passed` on successful build and patch operations.
+- Clarify that v3 behavior patterns and groups are currently validated, preserved semantic metadata rather than active pattern-specific layout grammars.
+- Document the bounded non-global solver, the current single-file standard-library implementation, and the single-page diagram scope.
+
+### Fixed
+
+- Replace the constant manual-waypoint success flag with a patch-time measurement and an explicit checked-waypoint count; report `null` when no pre-existing explicit waypoints apply.
+- Reject v3-only layout, slot, anchor, flow-role, and outcome fields from v2 specifications consistently in both the declarative JSON Schema and runtime validation.
+
+### Tests
+
+- Add regressions for strict build and patch atomicity, unexpected-error envelopes, manual-waypoint receipts, and JSON Schema/runtime field conformance.
+- Add representative v2/v3 acceptance and rejection cases that exercise the declarative Schema and the actual CLI without adding a runtime or test dependency.
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
@@ -165,7 +189,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.2.2...v0.3.0

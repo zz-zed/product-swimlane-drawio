@@ -49,6 +49,43 @@
         "required": ["schema_version"]
       },
       "then": {"required": ["behavior_pattern"]}
+    },
+    {
+      "if": {
+        "properties": {"schema_version": {"const": "2"}},
+        "required": ["schema_version"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["behavior_pattern"]},
+            {"required": ["groups"]},
+            {"required": ["layout"]}
+          ]
+        },
+        "properties": {
+          "nodes": {
+            "items": {
+              "not": {
+                "anyOf": [
+                  {"required": ["slot"]},
+                  {"required": ["anchor"]}
+                ]
+              }
+            }
+          },
+          "edges": {
+            "items": {
+              "not": {
+                "anyOf": [
+                  {"required": ["flow_role"]},
+                  {"required": ["outcome"]}
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {

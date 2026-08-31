@@ -15,7 +15,7 @@ From the repository root:
 ```bash
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   build --spec examples/request-review/process.json \
-  --output /tmp/request-review.drawio
+  --output /tmp/request-review.drawio --strict
 
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   validate --input /tmp/request-review.drawio --strict

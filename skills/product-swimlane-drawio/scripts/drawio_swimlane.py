@@ -3711,6 +3711,11 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     values = values_from_pool(pool)
     lanes, nodes = lane_node_records(root, pool)
     existing_edges = edge_records(root)
+    explicit_waypoints_before = {
+        edge_id: edge_waypoints(cell)
+        for edge_id, cell in existing_edges.items()
+        if cell.attrib.get("data-waypoints-origin") == "explicit"
+    }
     phases = phase_records(root, pool)
     had_phases_before_patch = bool(phases)
     pool_width = max(
@@ -3948,6 +3953,23 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         restore_lane_fill_without_phases=had_phases_before_patch,
     )
 
+    remaining_explicit_waypoints = {
+        edge_id: points
+        for edge_id, points in explicit_waypoints_before.items()
+        if edge_id not in deleted_edge_ids
+    }
+    final_edges = edge_records(root)
+    manual_waypoints_preserved = (
+        all(
+            edge_id in final_edges
+            and final_edges[edge_id].attrib.get("data-waypoints-origin") == "explicit"
+            and edge_waypoints(final_edges[edge_id]) == points
+            for edge_id, points in remaining_explicit_waypoints.items()
+        )
+        if remaining_explicit_waypoints
+        else None
+    )
+
     return {
         "updated_nodes": sorted(update["id"] for update in changes.get("update_nodes", [])),
         "updated_edges": sorted(update["id"] for update in edge_updates),
@@ -3960,6 +3982,8 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         "updated_phases": sorted(phase["id"] for phase in changes.get("update_phases", [])),
         "deleted_phases": sorted(deleted_phase_ids),
         "main_path_updated": "main_path" in changes,
+        "manual_waypoints_preserved": manual_waypoints_preserved,
+        "manual_waypoints_checked": len(remaining_explicit_waypoints),
     }
 
 
@@ -4945,6 +4969,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     return {
         "valid": not errors,
+        "quality_gate_passed": not errors and not warnings,
         "errors": errors,
         "warnings": warnings,
         "diagnostics": diagnostics,
@@ -4957,7 +4982,8 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         "short_segments": diagnostic_codes.count("routing/short-segment"),
         "label_conflicts": sum(code.startswith("text/edge-label-") for code in diagnostic_codes),
         "reciprocal_ambiguities": diagnostic_codes.count("routing/reciprocal-ambiguity"),
-        "manual_waypoints_preserved": True,
+        "manual_waypoints_preserved": None,
+        "manual_waypoints_checked": 0,
         "visual_review": "not_available",
     }
 
@@ -5193,14 +5219,25 @@ def command_build(args: argparse.Namespace) -> None:
     spec = load_json(args.spec)
     tree = build_tree(spec)
     result = validate_tree(tree)
-    if not result["valid"]:
+    strict_failed = bool(args.strict and result["warnings"])
+    if not result["valid"] or strict_failed:
         raise DiagramError(
-            "Generated diagram failed validation",
-            code="delivery/validation-failed",
-            evidence={"diagnostics": result["diagnostics"]},
+            "Generated diagram failed strict validation"
+            if strict_failed
+            else "Generated diagram failed validation",
+            code="delivery/strict-validation-failed"
+            if strict_failed
+            else "delivery/validation-failed",
+            evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
     write_tree(tree, args.output)
-    result.update({"operation": "build", "output": file_receipt(args.output)})
+    result.update(
+        {
+            "operation": "build",
+            "strict_mode": args.strict,
+            "output": file_receipt(args.output),
+        }
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -5210,16 +5247,24 @@ def command_patch(args: argparse.Namespace) -> None:
     tree = ET.parse(args.input)
     patch_receipt = patch_tree(tree, load_json(args.changes), args.allow_geometry_updates)
     result = validate_tree(tree)
-    if not result["valid"]:
+    strict_failed = bool(args.strict and result["warnings"])
+    if not result["valid"] or strict_failed:
         raise DiagramError(
-            "Patched diagram failed validation",
-            code="delivery/validation-failed",
-            evidence={"diagnostics": result["diagnostics"]},
+            "Patched diagram failed strict validation"
+            if strict_failed
+            else "Patched diagram failed validation",
+            code="delivery/strict-validation-failed"
+            if strict_failed
+            else "delivery/validation-failed",
+            evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
     write_tree(tree, args.output)
     result.update(
         {
             "operation": "patch",
+            "strict_mode": args.strict,
+            "manual_waypoints_preserved": patch_receipt["manual_waypoints_preserved"],
+            "manual_waypoints_checked": patch_receipt["manual_waypoints_checked"],
             "patch_receipt": patch_receipt,
             "output": file_receipt(args.output),
         }
@@ -5253,6 +5298,11 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build", help="Build a new editable Draw.io file")
     build.add_argument("--spec", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
+    build.add_argument(
+        "--strict",
+        action="store_true",
+        help="Do not write output when quality warnings are present",
+    )
     build.add_argument("--force", action="store_true", help="Replace an existing output file")
     build.set_defaults(func=command_build)
 
@@ -5260,6 +5310,11 @@ def build_parser() -> argparse.ArgumentParser:
     patch.add_argument("--input", type=Path, required=True)
     patch.add_argument("--changes", type=Path, required=True)
     patch.add_argument("--output", type=Path, required=True)
+    patch.add_argument(
+        "--strict",
+        action="store_true",
+        help="Do not write output when quality warnings are present",
+    )
     patch.add_argument("--allow-geometry-updates", action="store_true")
     patch.add_argument("--force", action="store_true", help="Replace an existing output file")
     patch.set_defaults(func=command_patch)
@@ -5325,6 +5380,29 @@ def main() -> int:
             )
         )
         return 2
+    except Exception as exc:
+        message = "Unexpected internal error"
+        diagnostic = make_diagnostic(
+            "internal/unexpected",
+            "error",
+            message,
+            evidence={"exception_type": type(exc).__name__},
+            supported_fixes=["report-bug"],
+        )
+        print("error: Unexpected internal error", file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "valid": False,
+                    "errors": [message],
+                    "warnings": [],
+                    "diagnostics": [diagnostic],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 3
 
 
 if __name__ == "__main__":
