@@ -14,6 +14,9 @@ SKILL_PREFIX = "skills/product-swimlane-drawio"
 EXPECTED_SKILL_FILES = frozenset({
     "SKILL.md", "agents/openai.yaml", "references/schema.json",
     "references/schema.md", "scripts/drawio_swimlane.py",
+    "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/contracts.py",
+    "scripts/swimlane_core/geometry.py",
+    "scripts/swimlane_core/document.py", "scripts/swimlane_core/metadata.py",
 })
 EXPECTED_RELEASE_FILES = frozenset(json.loads(
     (Path(__file__).resolve().parents[1] / "release-files.json").read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 {
   "name": "product-swimlane-drawio",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Create deterministic, editable product swimlanes and safely revise them after local Draw.io edits.",
   "author": {
     "name": "zz-zed",

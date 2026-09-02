@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-02
+
+### Changed
+
+- Extract shared contracts, pure geometry, Draw.io document adaptation and managed semantic metadata into four private modules inside the Skill; keep layout, routing, validation and patch/compare orchestration in the existing CLI entrypoint.
+- Make the complete Skill directory the distribution unit. The existing Python 3.10+ command path and standard-library-only runtime remain unchanged; copying the entry script alone is no longer supported.
+- Route Skill guidance by new, update and read-only tasks; document command-specific compatibility, compare acceptance, safe stopping conditions and separate preview/visual-review evidence.
+
+### Tests and evidence
+
+- Add dependency, atomic-write, metadata, path-loading and installation checks, including Skill-only, minimal Codex plugin, symlink, non-repository and read-only layouts.
+- Keep exact release inventories and reject missing/unknown modules, tracked or exported nested caches, symlinks and private payloads.
+- Retain the frozen CLI baseline and extend only the explicit valid-stamp allowlist to 0.6.0, including wrong-value/type/artifact mutation checks.
+
+### Compatibility
+
+- Preserve the five CLI commands, schema/model-hash versions, diagnostics, routing and patch authorization rules against a same-version reference derived from the original single-file runtime with only its tool-version constant changed. Audit original-version upgrade differences separately; do not claim unconditional cross-version receipt equality.
+- Retain an existing limitation: 0.6.0 `compare --changes` may reject a valid patch already completed by 0.5.1 solely because replay uses the current producing stamp. Use the same version for a new patch and comparison. Do not waive failed comparisons, ignore pool attributes or rewrite historical stamps; read-only review never authorizes automatic patching or rebuilding.
+- No migration, doctor, renderer or visual-review API is added. Raw `visual_review` remains `not_available`; actual installation, preview export and human review require separate evidence.
+
 ## [0.5.1] - 2026-09-02
 
 ### Fixed

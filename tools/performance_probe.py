@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from evidence_cases import digest, linear_spec
+from swimlane_loader import load_skill_modules
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py"
@@ -34,18 +35,18 @@ def check_limits(edges: int, timeout: float = 15) -> None:
         raise ValueError(f"timeout must be finite and between 0 (exclusive) and {MAX_TIMEOUT} seconds")
 
 
-def replay_label_overlaps(tool, tree) -> dict:
+def replay_label_overlaps(tool, geometry, tree) -> dict:
     """Time the three validation overlap loops without XML/diagnostic overhead.
 
     This is a separately executed microbenchmark, NOT a disjoint slice of the
     validation wall time. Preparation is outside the timed region.
     """
-    root = tool.graph_root(tree)
-    lanes, nodes = tool.lane_node_records(root, tool.find_pool(tree))
-    bounds = [tool.node_bounds_in_pool(node, lanes[node["lane"]]) for node in nodes.values()]
+    root = tool.document.graph_root(tree)
+    lanes, nodes = tool.document.lane_node_records(root, tool.document.find_pool(tree))
+    bounds = [tool.document.node_bounds_in_pool(node, lanes[node["lane"]]) for node in nodes.values()]
     segments, labels = {}, {}
-    for edge_id, cell in tool.edge_records(root).items():
-        points = tool.edge_polyline(cell, lanes, nodes)
+    for edge_id, cell in tool.document.edge_records(root).items():
+        points = tool.document.edge_polyline(cell, lanes, nodes)
         segments[edge_id] = list(zip(points, points[1:]))
         label = tool.effective_label_bounds(cell, points)
         if label is not None:
@@ -53,32 +54,26 @@ def replay_label_overlaps(tool, tree) -> dict:
     started = time.perf_counter()
     hits = 0
     for edge_id, (carrier, box) in labels.items():
-        hits += sum(tool.bounds_overlap(box, node, gap=1.0) for node in bounds)
+        hits += sum(geometry.bounds_overlap(box, node, gap=1.0) for node in bounds)
         for other_id, pieces in segments.items():
             for index, segment in enumerate(pieces):
                 if edge_id == other_id and index == carrier:
                     continue
-                if tool.segment_intersects_box(segment, box, gap=1.0):
+                if geometry.segment_intersects_box(segment, box, gap=1.0):
                     hits += 1
                     break
     label_ids = sorted(labels)
     for index, first in enumerate(label_ids):
         for second in label_ids[index + 1:]:
-            hits += tool.bounds_overlap(labels[first][1], labels[second][1], gap=2.0)
+            hits += geometry.bounds_overlap(labels[first][1], labels[second][1], gap=2.0)
     return {"seconds": time.perf_counter() - started, "overlap_hits": hits,
             "labels": len(labels), "nodes": len(bounds), "edges": len(segments)}
 
 
 def worker(edges: int) -> dict:
     check_limits(edges)
-    module_spec = importlib.util.spec_from_file_location("swimlane_probe", TOOL)
-    tool = importlib.util.module_from_spec(module_spec)
-    previous = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
-    try:
-        module_spec.loader.exec_module(tool)
-    finally:
-        sys.dont_write_bytecode = previous
+    loaded = load_skill_modules(TOOL, module_name="swimlane_probe")
+    tool = loaded.tool
     spec = linear_spec(edges)
     profiler = cProfile.Profile()
     profiler.enable()
@@ -89,7 +84,7 @@ def worker(edges: int) -> dict:
     finished = time.perf_counter()
     profiler.disable()
     stats = pstats.Stats(profiler).stats
-    label_overlap = replay_label_overlaps(tool, tree)
+    label_overlap = replay_label_overlaps(tool, loaded.geometry, tree)
 
     def function_cost(name):
         entries = [data for (_, _, function), data in stats.items() if function == name]
@@ -99,7 +94,7 @@ def worker(edges: int) -> dict:
 
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource is not None else None
     return {"status": "completed", "edges": edges, "nodes": edges + 1,
-            "spec_sha256": digest(spec), "tool_version": tool.TOOL_VERSION,
+            "spec_sha256": digest(spec), "tool_version": loaded.contracts.TOOL_VERSION,
             "build_seconds": built - started, "validation_seconds": finished - built,
             "elapsed_seconds": finished - started,
             "peak_rss_bytes": None if rss is None else int(rss if sys.platform == "darwin" else rss * 1024),

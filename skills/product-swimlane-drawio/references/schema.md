@@ -188,7 +188,7 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 
 Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
 
-Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes requested lane/node/edge changes, lane order, dependent lane shifts, automatic reroutes, affected explicit-waypoint edges, and the inspected input integrity evidence. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
+Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes requested lane/node/edge changes, lane order, dependent lane shifts, automatic reroutes, affected explicit-waypoint edges, and the inspected input integrity evidence. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. In this runtime, raw `visual_review` is always `not_available`; a clean strict result, preview export, later Agent image inspection, or human review does not change that raw field. Report those later review layers separately.
 
 ## Artifact integrity
 
@@ -231,9 +231,22 @@ If a user intentionally changed semantic labels or relationships directly in Dra
 
 ## Compatibility
 
-- Specifications without `schema_version` are treated as legacy v1 inputs and remain buildable.
-- Version 2 specifications and generated files remain buildable, inspectable, patchable, and subject to the same structured quality checks as before.
-- Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles.
-- Compatible v0.1.x `.drawio` files remain inspectable and can be upgraded to current integrity metadata by a reviewed patch.
-- Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`.
-- Manually created Draw.io files without compatible semantic metadata require migration or a controlled rebuild.
+The five commands have different safety boundaries. Being inspectable does not make an input safe to patch.
+
+| Input or condition | build (spec input) | inspect / strict validate (`.drawio` input) | patch (`.drawio` input) | compare (`.drawio` pair) |
+|---|---|---|---|---|
+| Legacy v1 spec without `schema_version` | Builds with the legacy interpretation | Its resulting compatible file is inspectable and validated under existing rules | Uses the existing compatible-file path | Compares declared changes and preservation evidence |
+| v2 or v3 spec / resulting compatible managed file | Builds with the existing version rules | Reports state and applies normal strict rules | Permitted only with the inspected SHA-256 and existing authorization gates | Checks differences; it is not a patch-safety classifier |
+| Missing model hash on an otherwise compatible old file | — | Inspect reports `recoverable`; strict retains the existing failure | A reviewed patch can upgrade the hash | Reports actual differences |
+| Model-hash drift | — | Inspect reports `unsafe`; strict fails | Requires an equivalent reviewed patch and explicit `--accept-model-drift`; that flag cannot bypass other integrity failures | An identical pair may show no difference; that does not make the input safe |
+| Unknown schema/hash version | — | Reports the unsupported/integrity condition and strict rejects it | Rejected; do not guess or auto-upgrade | Can compare bytes/evidence but does not approve a patch |
+| Unknown vertex or manually redrawn edge without semantic ID | — | Preserves and reports the existing interoperability/unknown-content diagnostic; strict must not be treated as an automatic pass | Review and preserve deliberately; do not silently adopt a stable ID | Reports unmanaged-content and sibling-order differences |
+| Ordinary nonmanaged Draw.io file | — | Inspect exits 2; strict validate exits 1 | Patch exits 2 | Can show `preserved: true` for an identical pair, but this proves only no observed difference |
+| Supported old input → current patch → same-version compare | — | Inspect and strict validate use the normal input checks | Standard edit workflow, subject to all existing authorization and integrity gates | Valid declared changes can pass; real tampering must still fail |
+| Current compare reviewing a patch already completed by 0.5.1 | — | Inspectability and strict validity do not prove patch preservation | A read-only review does not authorize another patch | 0.6.0 may reject the old result solely because its producing-tool stamp differs |
+
+`compare --changes` replays the declared patch with the running tool version. When 0.6.0 reviews an `after` produced by 0.5.1, the replay may differ only in `data-tool-version`, producing `unexpected_attributes: ["pool:main"]`, `preserved: false`, and exit 1. This is an existing cross-version limitation, not proof of damaged geometry or semantics, and not a passing comparison. Use the same version for a new patch and its comparison; editing a supported old input with the current version is a different workflow from reviewing an old completed result.
+
+Do not ignore pool-level differences: the pool also holds protected semantic and other attributes. Inspect the actual evidence for other changes. Never rewrite the user's or historical `after` stamp to make comparison pass, and never automatically rebuild or patch during a read-only review. If needed, use a trusted original producing version in isolation for read-only verification, or obtain authorization to apply the intended patch from the correct input using the current version. Preserve the original files and audit records in either case.
+
+Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles. Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`. This runtime does not add a migrate command or compatibility aliases: manually created files without compatible semantic metadata require a controlled rebuild or a separately authorized migration workflow.

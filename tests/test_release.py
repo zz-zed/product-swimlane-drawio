@@ -19,6 +19,7 @@ TOOL = SKILL / "scripts" / "drawio_swimlane.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(ROOT / "tools"))
 from release_check import check_release, skill_inventory, EXPECTED_SKILL_FILES
+from swimlane_loader import load_skill_modules
 
 
 def run_tool(
@@ -39,7 +40,7 @@ def run_tool(
             ["--expected-input-sha256", hashlib.sha256(input_path.read_bytes()).hexdigest()]
         )
     result = subprocess.run(
-        [sys.executable, str(TOOL), *command_args],
+        [sys.executable, "-B", str(TOOL), *command_args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -55,16 +56,7 @@ def run_tool(
 
 
 def load_tool_module():
-    spec = importlib.util.spec_from_file_location("drawio_swimlane_under_test", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    previous_dont_write_bytecode = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous_dont_write_bytecode
-    return module
+    return load_skill_modules(TOOL, module_name="drawio_swimlane_under_test").tool
 
 
 def schema_matches(value, rule: dict, root: dict) -> bool:
@@ -393,7 +385,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.5.1")
+        self.assertEqual(codex_plugin["version"], "0.6.0")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -503,7 +495,12 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("A patch is bound to the exact inspected input bytes", architecture)
         self.assertIn("Strict validation and visual review are independent", architecture)
         self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
-        self.assertIn("currently live in one standard-library Python file", architecture)
+        self.assertIn("Four narrow private modules now own shared contracts, pure geometry, Draw.io document adaptation, and managed semantic metadata", architecture)
+        self.assertIn("complete Skill directory is its distribution unit", architecture)
+        self.assertIn("portable CLI retains compilation, routing, label strategy, validation, patch and compare orchestration", architecture)
+        self.assertIn("from swimlane_core import contracts, document, geometry as core_geometry, metadata", TOOL.read_text(encoding="utf-8"))
+        for module in ("contracts.py", "geometry.py", "document.py", "metadata.py"):
+            self.assertTrue((SKILL / "scripts" / "swimlane_core" / module).is_file())
         self.assertIn("single-page process view", architecture)
         self.assertIn("Stay narrow", principles)
         self.assertIn("does not attempt to become a general-purpose generator", principles)
@@ -548,7 +545,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(set(schema["$defs"]["node"]["properties"]), tool.NODE_FIELDS)
         self.assertEqual(set(schema["$defs"]["edge"]["properties"]), tool.EDGE_FIELDS)
         self.assertEqual(set(schema["$defs"]["phase"]["properties"]), tool.PHASE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["group"]["properties"]), tool.GROUP_FIELDS)
+        self.assertEqual(set(schema["$defs"]["group"]["properties"]), tool.contracts.GROUP_FIELDS)
         self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), tool.ANCHOR_FIELDS)
         self.assertEqual(set(schema["$defs"]["layout"]["properties"]), tool.LAYOUT_FIELDS)
         self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), tool.CANVAS_FIELDS)
@@ -657,7 +654,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.5.1")
+        self.assertEqual(report["tool_version"], "0.6.0")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -870,7 +867,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.5.1")
+            self.assertEqual(upgraded["tool_version"], "0.6.0")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -2013,7 +2010,7 @@ class DiagramWorkflowTests(unittest.TestCase):
                     spec.update(schema_version="3", behavior_pattern="linear",
                                 layout={"phase_presentation": presentation})
                     tree = tool.build_tree(spec)
-                    root = tool.graph_root(tree)
+                    root = tool.document.graph_root(tree)
                     container = next(cell for cell in root if cell.get("id") == container_id)
                     edge = next(cell for cell in root if cell.get("data-kind") == "edge")
                     edge.set("parent", container.get("parent"))

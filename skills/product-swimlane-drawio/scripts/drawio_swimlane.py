@@ -5,16 +5,15 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import math
-import os
 import re
 import sys
-import tempfile
 import unicodedata
 from pathlib import Path
 import xml.etree.ElementTree as ET
+
+from swimlane_core import contracts, document, geometry as core_geometry, metadata
 
 
 DEFAULTS = {
@@ -72,12 +71,6 @@ ROUTING_FIELDS = {
 ROUTE_CLEARANCE = 24.0
 LANE_BOUNDARY_CLEARANCE = 16.0
 POOL_EDGE_MARGIN = 8.0
-GEOMETRY_TOLERANCE = 0.75
-SCHEMA_VERSION = "2"
-V3_SCHEMA_VERSION = "3"
-STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
-TOOL_VERSION = "0.5.1"
-MODEL_HASH_VERSION = "1"
 
 SLOT_CLASSES = {"left", "main", "right"}
 SLOT_ORDER = {"left": 0, "main": 1, "right": 2}
@@ -96,7 +89,6 @@ BEHAVIOR_PATTERNS = {
     "lifecycle",
     "custom",
 }
-GROUP_KINDS = {"parallel", "branch", "merge", "exception", "support"}
 LAYOUT_PROFILES = {"compact", "review", "long-form"}
 PHASE_PRESENTATIONS = {"bands", "rail"}
 PHASE_RAIL_WIDTH = 76.0
@@ -123,7 +115,6 @@ CANVAS_FIELDS = {
     "top_padding", "bottom_padding",
 }
 PHASE_FIELDS = {"id", "label", "from_rank", "to_rank", "fill_color"}
-GROUP_FIELDS = {"id", "label", "lane", "kind", "nodes"}
 ANCHOR_FIELDS = {"node", "side"}
 LAYOUT_FIELDS = {"profile", "phase_presentation"}
 PATCH_FIELDS = {
@@ -137,106 +128,11 @@ LANE_UPDATE_FIELDS = LANE_FIELDS
 NODE_UPDATE_FIELDS = {"id", "label", "type", "x", "y", "width", "height"}
 EDGE_UPDATE_FIELDS = EDGE_FIELDS | {"reroute"}
 PHASE_UPDATE_FIELDS = PHASE_FIELDS
-GROUP_UPDATE_FIELDS = GROUP_FIELDS
-
-
-class DiagramError(ValueError):
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str = "input/invalid",
-        subject: dict | None = None,
-        evidence: dict | None = None,
-        supported_fixes: list[str] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.subject = subject
-        self.evidence = evidence or {}
-        self.supported_fixes = supported_fixes or []
-
-    def diagnostic(self) -> dict:
-        return make_diagnostic(
-            self.code,
-            "error",
-            str(self),
-            subject=self.subject,
-            evidence=self.evidence,
-            supported_fixes=self.supported_fixes,
-        )
-
-
-def make_diagnostic(
-    code: str,
-    severity: str,
-    message: str,
-    *,
-    subject: dict | None = None,
-    evidence: dict | None = None,
-    supported_fixes: list[str] | None = None,
-) -> dict:
-    diagnostic = {
-        "code": code,
-        "severity": severity,
-        "message": message,
-        "evidence": evidence or {},
-        "supported_fixes": supported_fixes or [],
-    }
-    if subject:
-        diagnostic["subject"] = subject
-    return diagnostic
-
-
-def reject_unknown_fields(value: dict, allowed: set[str], subject: str) -> None:
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise DiagramError(
-            f"Unknown field(s) in {subject}: {', '.join(unknown)}",
-            code="schema/unknown-field",
-            subject={"kind": subject},
-            evidence={"fields": unknown},
-            supported_fixes=["remove-unknown-fields"],
-        )
-
-
-def require_mapping(value, subject: str) -> dict:
-    if not isinstance(value, dict):
-        raise DiagramError(
-            f"{subject} must be an object",
-            code="schema/type",
-            subject={"kind": subject},
-            evidence={"expected": "object", "actual": type(value).__name__},
-        )
-    return value
-
-
-def require_list(value, subject: str) -> list:
-    if not isinstance(value, list):
-        raise DiagramError(
-            f"{subject} must be an array",
-            code="schema/type",
-            subject={"kind": subject},
-            evidence={"expected": "array", "actual": type(value).__name__},
-        )
-    return value
-
-
-def require_string(value, subject: str, *, allow_empty: bool = False) -> str:
-    if not isinstance(value, str) or (not allow_empty and not value):
-        qualifier = "a string" if allow_empty else "a non-empty string"
-        raise DiagramError(
-            f"{subject} must be {qualifier}",
-            code="schema/type",
-            subject={"kind": subject},
-            evidence={"expected": qualifier},
-        )
-    return value
 
 
 def validate_number(value, subject: str, *, minimum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject} must be a number",
             code="schema/type",
             subject={"kind": subject},
@@ -244,8 +140,8 @@ def validate_number(value, subject: str, *, minimum: float | None = None) -> flo
         )
     number_value = float(value)
     if minimum is not None and number_value < minimum:
-        raise DiagramError(
-            f"{subject} must be at least {number(minimum)}",
+        raise contracts.DiagramError(
+            f"{subject} must be at least {document.number(minimum)}",
             code="schema/range",
             subject={"kind": subject},
             evidence={"minimum": minimum, "actual": number_value},
@@ -261,7 +157,7 @@ def load_json(path: Path) -> dict:
 def clean_id(value: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-")
     if not cleaned:
-        raise DiagramError(f"Invalid empty semantic id derived from {value!r}")
+        raise contracts.DiagramError(f"Invalid empty semantic id derived from {value!r}")
     return cleaned
 
 
@@ -269,40 +165,15 @@ def mx_id(kind: str, semantic_id: str) -> str:
     return f"psd-{kind}-{clean_id(semantic_id)}"
 
 
-def number(value) -> str:
-    value = float(value)
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
-
-
-def geometry(parent: ET.Element, **attrs) -> ET.Element:
-    normalized = {key: number(value) for key, value in attrs.items() if value is not None}
-    normalized["as"] = "geometry"
-    return ET.SubElement(parent, "mxGeometry", normalized)
-
-
 def require_unique(items: list[dict], label: str) -> None:
     seen: set[str] = set()
     for item in items:
         semantic_id = item.get("id")
         if not semantic_id:
-            raise DiagramError(f"Every {label} must have an id")
+            raise contracts.DiagramError(f"Every {label} must have an id")
         if semantic_id in seen:
-            raise DiagramError(f"Duplicate {label} id: {semantic_id}")
+            raise contracts.DiagramError(f"Duplicate {label} id: {semantic_id}")
         seen.add(semantic_id)
-
-
-def validate_semantic_id(value, subject: str) -> str:
-    value = require_string(value, subject)
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-        raise DiagramError(
-            f"{subject} must contain only ASCII letters, digits, underscores, or hyphens",
-            code="schema/id-format",
-            subject={"kind": subject, "id": value},
-            supported_fixes=["replace-semantic-id"],
-        )
-    return value
 
 
 def validate_lane_object(
@@ -313,69 +184,69 @@ def validate_lane_object(
     update: bool = False,
     minimum_width: float = 120,
 ) -> None:
-    require_mapping(lane, subject)
+    contracts.require_mapping(lane, subject)
     allowed = (
         LANE_UPDATE_FIELDS
         if update
         else LANE_PATCH_FIELDS if patch_addition else LANE_FIELDS
     )
-    reject_unknown_fields(lane, allowed, subject)
+    contracts.reject_unknown_fields(lane, allowed, subject)
     required = ("id",) if update else ("id", "label")
     for field in required:
         if field not in lane:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Missing required field in {subject}: {field}",
                 code="schema/required",
                 subject={"kind": subject},
                 evidence={"field": field},
             )
-    validate_semantic_id(lane["id"], f"{subject}.id")
+    contracts.validate_semantic_id(lane["id"], f"{subject}.id")
     if "label" in lane:
-        require_string(lane["label"], f"{subject}.label")
+        contracts.require_string(lane["label"], f"{subject}.label")
     if "width" in lane:
         validate_number(lane["width"], f"{subject}.width", minimum=minimum_width)
     if patch_addition:
         placements = [field for field in ("before", "after") if field in lane]
         if len(placements) != 1:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"{subject} must specify exactly one of before or after",
                 code="patch/lane-placement",
                 subject={"kind": "lane", "id": lane.get("id")},
                 supported_fixes=["set-before", "set-after"],
             )
-        validate_semantic_id(lane[placements[0]], f"{subject}.{placements[0]}")
+        contracts.validate_semantic_id(lane[placements[0]], f"{subject}.{placements[0]}")
 
 
 def validate_node_object(node: dict, subject: str) -> None:
-    require_mapping(node, subject)
-    reject_unknown_fields(node, NODE_FIELDS, subject)
+    contracts.require_mapping(node, subject)
+    contracts.reject_unknown_fields(node, NODE_FIELDS, subject)
     for field in ("id", "lane", "rank", "type", "label"):
         if field not in node:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Missing required field in {subject}: {field}",
                 code="schema/required",
                 subject={"kind": subject},
                 evidence={"field": field},
             )
-    validate_semantic_id(node["id"], f"{subject}.id")
-    validate_semantic_id(node["lane"], f"{subject}.lane")
+    contracts.validate_semantic_id(node["id"], f"{subject}.id")
+    contracts.validate_semantic_id(node["lane"], f"{subject}.lane")
     if isinstance(node["rank"], bool) or not isinstance(node["rank"], int) or node["rank"] < 1:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject}.rank must be an integer greater than or equal to 1",
             code="schema/range",
             subject={"kind": "node", "id": node.get("id")},
             evidence={"field": "rank", "actual": node.get("rank")},
         )
     if node["type"] not in NODE_STYLES:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Unsupported node type: {node['type']}",
             code="schema/enum",
             subject={"kind": "node", "id": node.get("id")},
             evidence={"field": "type", "allowed": sorted(NODE_STYLES)},
         )
-    require_string(node["label"], f"{subject}.label", allow_empty=True)
+    contracts.require_string(node["label"], f"{subject}.label", allow_empty=True)
     if node["type"] == "end" and node["label"].strip():
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject}.label must be empty for a solid end node",
             code="schema/end-label-not-empty",
             subject={"kind": "node", "id": node.get("id")},
@@ -389,36 +260,36 @@ def validate_node_object(node: dict, subject: str) -> None:
         if field in node:
             validate_number(node[field], f"{subject}.{field}")
     if "slot" in node:
-        slot = require_string(node["slot"], f"{subject}.slot")
+        slot = contracts.require_string(node["slot"], f"{subject}.slot")
         if slot not in SLOT_CLASSES:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Unsupported lane-local slot: {slot}",
                 code="schema/enum",
                 subject={"kind": "node", "id": node.get("id")},
                 evidence={"field": "slot", "allowed": sorted(SLOT_CLASSES)},
             )
     if "anchor" in node:
-        anchor = require_mapping(node["anchor"], f"{subject}.anchor")
-        reject_unknown_fields(anchor, ANCHOR_FIELDS, f"{subject}.anchor")
+        anchor = contracts.require_mapping(node["anchor"], f"{subject}.anchor")
+        contracts.reject_unknown_fields(anchor, ANCHOR_FIELDS, f"{subject}.anchor")
         for field in ("node", "side"):
             if field not in anchor:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Missing required field in {subject}.anchor: {field}",
                     code="schema/required",
                     subject={"kind": "node", "id": node.get("id")},
                     evidence={"field": field},
                 )
-        validate_semantic_id(anchor["node"], f"{subject}.anchor.node")
-        side = require_string(anchor["side"], f"{subject}.anchor.side")
+        contracts.validate_semantic_id(anchor["node"], f"{subject}.anchor.node")
+        side = contracts.require_string(anchor["side"], f"{subject}.anchor.side")
         if side not in ANCHOR_SIDES:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Unsupported note anchor side: {side}",
                 code="schema/enum",
                 subject={"kind": "node", "id": node.get("id")},
                 evidence={"field": "anchor.side", "allowed": sorted(ANCHOR_SIDES)},
             )
         if node["type"] != "note":
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"{subject}.anchor is supported only for note nodes",
                 code="semantic/anchor-node-type",
                 subject={"kind": "node", "id": node.get("id")},
@@ -428,9 +299,9 @@ def validate_node_object(node: dict, subject: str) -> None:
         node["type"] in FIXED_ASPECT_NODE_TYPES
         and "width" in node
         and "height" in node
-        and abs(float(node["width"]) - float(node["height"])) >= GEOMETRY_TOLERANCE
+        and abs(float(node["width"]) - float(node["height"])) >= core_geometry.GEOMETRY_TOLERANCE
     ):
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject} requires equal width and height for fixed-aspect node type {node['type']}",
             code="geometry/fixed-aspect-ratio",
             subject={"kind": "node", "id": node.get("id")},
@@ -440,51 +311,51 @@ def validate_node_object(node: dict, subject: str) -> None:
 
 
 def validate_edge_object(edge: dict, subject: str, *, update: bool = False) -> None:
-    require_mapping(edge, subject)
-    reject_unknown_fields(edge, EDGE_UPDATE_FIELDS if update else EDGE_FIELDS, subject)
+    contracts.require_mapping(edge, subject)
+    contracts.reject_unknown_fields(edge, EDGE_UPDATE_FIELDS if update else EDGE_FIELDS, subject)
     required = ("id",) if update else ("id", "from", "to")
     for field in required:
         if field not in edge:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Missing required field in {subject}: {field}",
                 code="schema/required",
                 subject={"kind": subject},
                 evidence={"field": field},
             )
-    validate_semantic_id(edge["id"], f"{subject}.id")
+    contracts.validate_semantic_id(edge["id"], f"{subject}.id")
     for field in ("from", "to"):
         if field in edge:
-            validate_semantic_id(edge[field], f"{subject}.{field}")
+            contracts.validate_semantic_id(edge[field], f"{subject}.{field}")
     if "type" in edge and edge["type"] not in EDGE_TYPES:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Unsupported edge type: {edge['type']}",
             code="schema/enum",
             subject={"kind": "edge", "id": edge.get("id")},
             evidence={"field": "type", "allowed": sorted(EDGE_TYPES)},
         )
     if "route" in edge and edge["route"] not in ROUTE_CLASSES:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Unsupported route class: {edge['route']}",
             code="schema/enum",
             subject={"kind": "edge", "id": edge.get("id")},
             evidence={"field": "route", "allowed": sorted(ROUTE_CLASSES)},
         )
     if "branch" in edge and edge["branch"] not in BRANCH_CLASSES:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Unsupported branch class: {edge['branch']}",
             code="schema/enum",
             subject={"kind": "edge", "id": edge.get("id")},
             evidence={"field": "branch", "allowed": sorted(BRANCH_CLASSES)},
         )
     if "flow_role" in edge and edge["flow_role"] not in FLOW_ROLES:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Unsupported flow role: {edge['flow_role']}",
             code="schema/enum",
             subject={"kind": "edge", "id": edge.get("id")},
             evidence={"field": "flow_role", "allowed": sorted(FLOW_ROLES)},
         )
     if "outcome" in edge:
-        validate_semantic_id(edge["outcome"], f"{subject}.outcome")
+        contracts.validate_semantic_id(edge["outcome"], f"{subject}.outcome")
     for field in ("exit_side", "entry_side"):
         if field in edge:
             validate_side(edge[field], field)
@@ -492,119 +363,71 @@ def validate_edge_object(edge: dict, subject: str, *, update: bool = False) -> N
         if field in edge:
             validate_offset(edge[field], field)
     if "label" in edge:
-        require_string(edge["label"], f"{subject}.label", allow_empty=True)
+        contracts.require_string(edge["label"], f"{subject}.label", allow_empty=True)
     if "allow_port_reuse" in edge and not isinstance(edge["allow_port_reuse"], bool):
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject}.allow_port_reuse must be a boolean",
             code="schema/type",
             subject={"kind": "edge", "id": edge.get("id")},
         )
     if "reroute" in edge and not isinstance(edge["reroute"], bool):
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject}.reroute must be a boolean",
             code="schema/type",
             subject={"kind": "edge", "id": edge.get("id")},
         )
     if "waypoints" in edge:
-        require_list(edge["waypoints"], f"{subject}.waypoints")
+        contracts.require_list(edge["waypoints"], f"{subject}.waypoints")
         normalize_waypoints(edge["waypoints"])
 
 
 def validate_phase_object(phase: dict, subject: str, *, update: bool = False) -> None:
-    require_mapping(phase, subject)
-    reject_unknown_fields(phase, PHASE_UPDATE_FIELDS, subject)
+    contracts.require_mapping(phase, subject)
+    contracts.reject_unknown_fields(phase, PHASE_UPDATE_FIELDS, subject)
     required = ("id",) if update else ("id", "label", "from_rank", "to_rank")
     for field in required:
         if field not in phase:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Missing required field in {subject}: {field}",
                 code="schema/required",
                 subject={"kind": subject},
                 evidence={"field": field},
             )
-    validate_semantic_id(phase["id"], f"{subject}.id")
+    contracts.validate_semantic_id(phase["id"], f"{subject}.id")
     if "label" in phase:
-        require_string(phase["label"], f"{subject}.label")
+        contracts.require_string(phase["label"], f"{subject}.label")
     for field in ("from_rank", "to_rank"):
         if field in phase:
             value = phase[field]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"{subject}.{field} must be an integer greater than or equal to 1",
                     code="schema/range",
                     subject={"kind": "phase", "id": phase.get("id")},
                     evidence={"field": field, "actual": value},
                 )
     if "from_rank" in phase and "to_rank" in phase and phase["to_rank"] < phase["from_rank"]:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"{subject}.to_rank must not be less than from_rank",
             code="schema/range",
             subject={"kind": "phase", "id": phase.get("id")},
         )
     if "fill_color" in phase:
-        color = require_string(phase["fill_color"], f"{subject}.fill_color")
+        color = contracts.require_string(phase["fill_color"], f"{subject}.fill_color")
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"{subject}.fill_color must use #RRGGBB format",
                 code="schema/format",
                 subject={"kind": "phase", "id": phase.get("id")},
             )
 
 
-def validate_group_object(group: dict, subject: str, *, update: bool = False) -> None:
-    require_mapping(group, subject)
-    reject_unknown_fields(group, GROUP_UPDATE_FIELDS if update else GROUP_FIELDS, subject)
-    required = ("id",) if update else ("id", "lane", "kind", "nodes")
-    for field in required:
-        if field not in group:
-            raise DiagramError(
-                f"Missing required field in {subject}: {field}",
-                code="schema/required",
-                subject={"kind": subject},
-                evidence={"field": field},
-            )
-    validate_semantic_id(group["id"], f"{subject}.id")
-    if "lane" in group:
-        validate_semantic_id(group["lane"], f"{subject}.lane")
-    if "label" in group:
-        require_string(group["label"], f"{subject}.label", allow_empty=True)
-    kind = require_string(group["kind"], f"{subject}.kind") if "kind" in group else None
-    if kind is not None and kind not in GROUP_KINDS:
-        raise DiagramError(
-            f"Unsupported group kind: {kind}",
-            code="schema/enum",
-            subject={"kind": "group", "id": group.get("id")},
-            evidence={"field": "kind", "allowed": sorted(GROUP_KINDS)},
-        )
-    nodes = validate_id_list(group["nodes"], f"{subject}.nodes") if "nodes" in group else None
-    if nodes is not None and not nodes:
-        raise DiagramError(
-            f"{subject}.nodes must contain at least one node",
-            code="schema/min-items",
-            subject={"kind": "group", "id": group.get("id")},
-        )
-
-
-def validate_id_list(values, subject: str) -> list[str]:
-    values = require_list(values, subject)
-    result: list[str] = []
-    for index, value in enumerate(values):
-        result.append(validate_semantic_id(value, f"{subject}[{index}]"))
-    if len(result) != len(set(result)):
-        raise DiagramError(
-            f"{subject} must not contain duplicate IDs",
-            code="schema/duplicate",
-            subject={"kind": subject},
-        )
-    return result
-
-
 def validate_build_spec(spec: dict) -> str:
-    require_mapping(spec, "spec")
-    reject_unknown_fields(spec, TOP_LEVEL_FIELDS, "spec")
+    contracts.require_mapping(spec, "spec")
+    contracts.reject_unknown_fields(spec, TOP_LEVEL_FIELDS, "spec")
     for field in ("title", "lanes", "nodes", "edges"):
         if field not in spec:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Missing required field: {field}",
                 code="schema/required",
                 subject={"kind": "spec"},
@@ -612,44 +435,44 @@ def validate_build_spec(spec: dict) -> str:
             )
 
     if "schema_version" in spec:
-        require_string(spec["schema_version"], "spec.schema_version")
+        contracts.require_string(spec["schema_version"], "spec.schema_version")
     schema_version = spec.get("schema_version", "1")
-    if schema_version not in {"1", *STRUCTURED_SCHEMA_VERSIONS}:
-        raise DiagramError(
+    if schema_version not in {"1", *contracts.STRUCTURED_SCHEMA_VERSIONS}:
+        raise contracts.DiagramError(
             f"Unsupported schema_version: {schema_version}",
             code="schema/version",
             subject={"kind": "spec"},
             evidence={
-                "supported": ["1", SCHEMA_VERSION, V3_SCHEMA_VERSION],
+                "supported": ["1", contracts.SCHEMA_VERSION, contracts.V3_SCHEMA_VERSION],
                 "actual": schema_version,
             },
             supported_fixes=["migrate-spec"],
         )
-    require_string(spec["title"], "spec.title")
-    lanes = require_list(spec["lanes"], "spec.lanes")
-    nodes = require_list(spec["nodes"], "spec.nodes")
-    edges = require_list(spec["edges"], "spec.edges")
+    contracts.require_string(spec["title"], "spec.title")
+    lanes = contracts.require_list(spec["lanes"], "spec.lanes")
+    nodes = contracts.require_list(spec["nodes"], "spec.nodes")
+    edges = contracts.require_list(spec["edges"], "spec.edges")
     if not lanes:
-        raise DiagramError("spec.lanes must contain at least one lane", code="schema/min-items")
-    if schema_version in STRUCTURED_SCHEMA_VERSIONS and len(nodes) < 2:
-        raise DiagramError(
+        raise contracts.DiagramError("spec.lanes must contain at least one lane", code="schema/min-items")
+    if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS and len(nodes) < 2:
+        raise contracts.DiagramError(
             f"schema version {schema_version} requires at least two nodes",
             code="schema/min-items",
         )
 
-    if schema_version == V3_SCHEMA_VERSION:
+    if schema_version == contracts.V3_SCHEMA_VERSION:
         if "behavior_pattern" not in spec:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "schema_version 3 requires behavior_pattern",
                 code="schema/required",
                 subject={"kind": "spec"},
                 evidence={"field": "behavior_pattern"},
             )
-        behavior_pattern = require_string(
+        behavior_pattern = contracts.require_string(
             spec["behavior_pattern"], "spec.behavior_pattern"
         )
         if behavior_pattern not in BEHAVIOR_PATTERNS:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Unsupported behavior pattern: {behavior_pattern}",
                 code="schema/enum",
                 subject={"kind": "spec"},
@@ -659,24 +482,24 @@ def validate_build_spec(spec: dict) -> str:
                 },
             )
         if "layout" in spec:
-            layout = require_mapping(spec["layout"], "spec.layout")
-            reject_unknown_fields(layout, LAYOUT_FIELDS, "spec.layout")
+            layout = contracts.require_mapping(spec["layout"], "spec.layout")
+            contracts.reject_unknown_fields(layout, LAYOUT_FIELDS, "spec.layout")
             if "profile" in layout:
-                profile = require_string(layout["profile"], "spec.layout.profile")
+                profile = contracts.require_string(layout["profile"], "spec.layout.profile")
                 if profile not in LAYOUT_PROFILES:
-                    raise DiagramError(
+                    raise contracts.DiagramError(
                         f"Unsupported layout profile: {profile}",
                         code="schema/enum",
                         subject={"kind": "layout"},
                         evidence={"field": "profile", "allowed": sorted(LAYOUT_PROFILES)},
                     )
             if "phase_presentation" in layout:
-                presentation = require_string(
+                presentation = contracts.require_string(
                     layout["phase_presentation"],
                     "spec.layout.phase_presentation",
                 )
                 if presentation not in PHASE_PRESENTATIONS:
-                    raise DiagramError(
+                    raise contracts.DiagramError(
                         f"Unsupported phase presentation: {presentation}",
                         code="schema/enum",
                         subject={"kind": "layout"},
@@ -692,7 +515,7 @@ def validate_build_spec(spec: dict) -> str:
             if field in spec
         )
         if v3_fields:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "v3 layout-intent fields require schema_version 3",
                 code="schema/version-field",
                 subject={"kind": "spec"},
@@ -704,14 +527,14 @@ def validate_build_spec(spec: dict) -> str:
         validate_lane_object(
             lane,
             f"lane[{index}]",
-            minimum_width=120 if schema_version in STRUCTURED_SCHEMA_VERSIONS else 1,
+            minimum_width=120 if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS else 1,
         )
 
     for index, node in enumerate(nodes):
         validate_node_object(node, f"node[{index}]")
     for index, edge in enumerate(edges):
         validate_edge_object(edge, f"edge[{index}]")
-    if schema_version != V3_SCHEMA_VERSION:
+    if schema_version != contracts.V3_SCHEMA_VERSION:
         v3_node_fields = [
             node["id"]
             for node in nodes
@@ -723,7 +546,7 @@ def validate_build_spec(spec: dict) -> str:
             if "flow_role" in edge or "outcome" in edge
         ]
         if v3_node_fields or v3_edge_fields:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "v3 node or edge fields require schema_version 3",
                 code="schema/version-field",
                 subject={"kind": "spec"},
@@ -739,7 +562,7 @@ def validate_build_spec(spec: dict) -> str:
     node_by_id = {node["id"]: node for node in nodes}
     for node in nodes:
         if node["lane"] not in lane_ids:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Node {node['id']} references an unknown lane",
                 code="semantic/unknown-lane",
                 subject={"kind": "node", "id": node["id"]},
@@ -748,7 +571,7 @@ def validate_build_spec(spec: dict) -> str:
     for edge in edges:
         missing = [field for field in ("from", "to") if edge[field] not in node_ids]
         if missing:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Edge {edge['id']} references a missing node",
                 code="semantic/missing-endpoint",
                 subject={"kind": "edge", "id": edge["id"]},
@@ -756,27 +579,27 @@ def validate_build_spec(spec: dict) -> str:
             )
 
     if "canvas" in spec:
-        canvas = require_mapping(spec["canvas"], "spec.canvas")
-        reject_unknown_fields(canvas, CANVAS_FIELDS, "spec.canvas")
+        canvas = contracts.require_mapping(spec["canvas"], "spec.canvas")
+        contracts.reject_unknown_fields(canvas, CANVAS_FIELDS, "spec.canvas")
         for field, value in canvas.items():
             minimum = 1 if field in {"title_height", "lane_header_height", "row_gap"} else None
             validate_number(value, f"spec.canvas.{field}", minimum=minimum)
 
     main_path = spec.get("main_path")
-    if schema_version in STRUCTURED_SCHEMA_VERSIONS and main_path is None:
-        raise DiagramError(
+    if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS and main_path is None:
+        raise contracts.DiagramError(
             f"schema_version {schema_version} requires main_path",
             code="schema/required",
             subject={"kind": "spec"},
             evidence={"field": "main_path"},
         )
     if main_path is not None:
-        main_path = validate_id_list(main_path, "spec.main_path")
+        main_path = contracts.validate_id_list(main_path, "spec.main_path")
         if len(main_path) < 2:
-            raise DiagramError("spec.main_path must contain at least two nodes", code="schema/min-items")
+            raise contracts.DiagramError("spec.main_path must contain at least two nodes", code="schema/min-items")
         missing = [node_id for node_id in main_path if node_id not in node_ids]
         if missing:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "main_path references missing nodes",
                 code="semantic/main-path-node",
                 subject={"kind": "main_path"},
@@ -785,7 +608,7 @@ def validate_build_spec(spec: dict) -> str:
         edge_pairs = {(edge["from"], edge["to"]) for edge in edges}
         for source_id, target_id in zip(main_path, main_path[1:]):
             if (source_id, target_id) not in edge_pairs:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"main_path has no edge from {source_id} to {target_id}",
                     code="semantic/main-path-edge",
                     subject={"kind": "main_path"},
@@ -793,7 +616,7 @@ def validate_build_spec(spec: dict) -> str:
                     supported_fixes=["add-main-path-edge", "correct-main-path"],
                 )
             if node_by_id[target_id]["rank"] < node_by_id[source_id]["rank"]:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"main_path moves backward from {source_id} to {target_id}",
                     code="semantic/main-path-rank",
                     subject={"kind": "main_path"},
@@ -801,7 +624,7 @@ def validate_build_spec(spec: dict) -> str:
                     supported_fixes=["correct-rank", "remove-return-from-main-path"],
                 )
         if node_by_id[main_path[0]]["type"] != "start":
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "main_path must begin with a start node",
                 code="semantic/main-path-start",
                 subject={"kind": "main_path"},
@@ -809,7 +632,7 @@ def validate_build_spec(spec: dict) -> str:
                 supported_fixes=["correct-main-path", "change-node-type"],
             )
         if node_by_id[main_path[-1]]["type"] != "end":
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "main_path must end with an end node",
                 code="semantic/main-path-end",
                 subject={"kind": "main_path"},
@@ -817,26 +640,26 @@ def validate_build_spec(spec: dict) -> str:
                 supported_fixes=["correct-main-path", "change-node-type"],
             )
 
-    phases = require_list(spec.get("phases", []), "spec.phases")
+    phases = contracts.require_list(spec.get("phases", []), "spec.phases")
     for index, phase in enumerate(phases):
         validate_phase_object(phase, f"phase[{index}]")
     require_unique(phases, "phase")
     max_rank = max((node["rank"] for node in nodes), default=1)
     for phase in phases:
         if phase["to_rank"] > max_rank:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Phase {phase['id']} extends beyond the maximum node rank",
                 code="semantic/phase-range",
                 subject={"kind": "phase", "id": phase["id"]},
                 evidence={"to_rank": phase["to_rank"], "max_rank": max_rank},
             )
 
-    groups = require_list(spec.get("groups", []), "spec.groups")
+    groups = contracts.require_list(spec.get("groups", []), "spec.groups")
     for index, group in enumerate(groups):
-        validate_group_object(group, f"group[{index}]")
+        contracts.validate_group_object(group, f"group[{index}]")
     require_unique(groups, "group")
-    if groups and schema_version != V3_SCHEMA_VERSION:
-        raise DiagramError(
+    if groups and schema_version != contracts.V3_SCHEMA_VERSION:
+        raise contracts.DiagramError(
             "groups require schema_version 3",
             code="schema/version-field",
             subject={"kind": "spec"},
@@ -845,7 +668,7 @@ def validate_build_spec(spec: dict) -> str:
     group_members: set[str] = set()
     for group in groups:
         if group["lane"] not in lane_ids:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Group {group['id']} references an unknown lane",
                 code="semantic/unknown-lane",
                 subject={"kind": "group", "id": group["id"]},
@@ -853,14 +676,14 @@ def validate_build_spec(spec: dict) -> str:
             )
         for node_id in group["nodes"]:
             if node_id not in node_ids:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Group {group['id']} references a missing node",
                     code="semantic/group-node",
                     subject={"kind": "group", "id": group["id"]},
                     evidence={"node": node_id},
                 )
             if node_by_id[node_id]["lane"] != group["lane"]:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Group {group['id']} contains a node from another lane",
                     code="semantic/group-lane",
                     subject={"kind": "group", "id": group["id"]},
@@ -871,7 +694,7 @@ def validate_build_spec(spec: dict) -> str:
                     },
                 )
             if node_id in group_members:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Node {node_id} belongs to more than one group",
                     code="semantic/group-membership",
                     subject={"kind": "node", "id": node_id},
@@ -879,21 +702,21 @@ def validate_build_spec(spec: dict) -> str:
                 )
             group_members.add(node_id)
 
-    if schema_version == V3_SCHEMA_VERSION:
+    if schema_version == contracts.V3_SCHEMA_VERSION:
         for node in nodes:
             anchor = node.get("anchor")
             if not anchor:
                 continue
             target = node_by_id.get(anchor["node"])
             if target is None:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Note {node['id']} anchors to a missing node",
                     code="semantic/anchor-target",
                     subject={"kind": "node", "id": node["id"]},
                     evidence={"anchor": anchor["node"]},
                 )
             if target["lane"] != node["lane"] or target["rank"] != node["rank"]:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Note {node['id']} must share lane and rank with its anchor in v3",
                     code="semantic/anchor-alignment",
                     subject={"kind": "node", "id": node["id"]},
@@ -907,7 +730,7 @@ def validate_build_spec(spec: dict) -> str:
                     supported_fixes=["align-note-with-anchor", "remove-anchor"],
                 )
             if "slot" in node and node["slot"] != anchor["side"]:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Note {node['id']} slot conflicts with its anchor side",
                     code="layout/anchor-slot-conflict",
                     subject={"kind": "node", "id": node["id"]},
@@ -922,7 +745,7 @@ def validate_build_spec(spec: dict) -> str:
             slot = effective_node_slot(node)
             key = (node["lane"], int(node["rank"]), slot)
             if key in occupied:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Nodes {occupied[key]} and {node['id']} occupy the same lane, rank, and slot",
                     code="layout/slot-conflict",
                     subject={"kind": "node", "id": node["id"]},
@@ -934,26 +757,26 @@ def validate_build_spec(spec: dict) -> str:
 
 
 def validate_patch_spec(changes: dict) -> None:
-    require_mapping(changes, "patch")
-    reject_unknown_fields(changes, PATCH_FIELDS, "patch")
+    contracts.require_mapping(changes, "patch")
+    contracts.reject_unknown_fields(changes, PATCH_FIELDS, "patch")
     for field in (
         "update_lanes", "lanes", "update_nodes", "update_edges", "nodes",
         "edges", "update_phases", "phases", "update_groups", "groups",
     ):
         if field in changes:
-            require_list(changes[field], f"patch.{field}")
+            contracts.require_list(changes[field], f"patch.{field}")
     for index, update in enumerate(changes.get("update_lanes", [])):
         validate_lane_object(update, f"update_lane[{index}]", update=True)
     for index, lane in enumerate(changes.get("lanes", [])):
         validate_lane_object(lane, f"new_lane[{index}]", patch_addition=True)
     for index, update in enumerate(changes.get("update_nodes", [])):
-        require_mapping(update, f"update_node[{index}]")
-        reject_unknown_fields(update, NODE_UPDATE_FIELDS, f"update_node[{index}]")
-        validate_semantic_id(update.get("id"), f"update_node[{index}].id")
+        contracts.require_mapping(update, f"update_node[{index}]")
+        contracts.reject_unknown_fields(update, NODE_UPDATE_FIELDS, f"update_node[{index}]")
+        contracts.validate_semantic_id(update.get("id"), f"update_node[{index}].id")
         if "type" in update and update["type"] not in NODE_STYLES:
-            raise DiagramError(f"Unsupported node type: {update['type']}", code="schema/enum")
+            raise contracts.DiagramError(f"Unsupported node type: {update['type']}", code="schema/enum")
         if "label" in update:
-            require_string(update["label"], f"update_node[{index}].label", allow_empty=True)
+            contracts.require_string(update["label"], f"update_node[{index}].label", allow_empty=True)
         for field in ("x", "y", "width", "height"):
             if field in update:
                 validate_number(update[field], f"update_node[{index}].{field}", minimum=1 if field in {"width", "height"} else None)
@@ -968,17 +791,17 @@ def validate_patch_spec(changes: dict) -> None:
     for index, phase in enumerate(changes.get("phases", [])):
         validate_phase_object(phase, f"new_phase[{index}]")
     for index, update in enumerate(changes.get("update_groups", [])):
-        validate_group_object(update, f"update_group[{index}]", update=True)
+        contracts.validate_group_object(update, f"update_group[{index}]", update=True)
     for index, group in enumerate(changes.get("groups", [])):
-        validate_group_object(group, f"new_group[{index}]")
+        contracts.validate_group_object(group, f"new_group[{index}]")
     for field in (
         "delete_lanes", "delete_nodes", "delete_edges", "delete_phases",
         "delete_groups",
     ):
         if field in changes:
-            validate_id_list(changes[field], f"patch.{field}")
+            contracts.validate_id_list(changes[field], f"patch.{field}")
     if "main_path" in changes:
-        validate_id_list(changes["main_path"], "patch.main_path")
+        contracts.validate_id_list(changes["main_path"], "patch.main_path")
     for field in (
         "update_lanes", "lanes", "update_nodes", "update_edges", "nodes",
         "edges", "update_phases", "phases", "update_groups", "groups",
@@ -994,7 +817,7 @@ def canvas_values(spec: dict) -> dict:
 
 
 def layout_profile(spec: dict) -> str:
-    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+    if spec.get("schema_version") != contracts.V3_SCHEMA_VERSION:
         return "legacy"
     return spec.get("layout", {}).get("profile", "review")
 
@@ -1016,7 +839,7 @@ def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
     def rank(node: dict) -> int:
         if "rank" in node:
             return int(node["rank"])
-        return int(node["cell"].attrib.get("data-rank", "0"))
+        return int(node["cell"].attrib.get(contracts.DATA_RANK, "0"))
 
     source_rank = rank(nodes[edge["from"]])
     target_rank = rank(nodes[edge["to"]])
@@ -1100,7 +923,7 @@ def v3_node_x_positions(
     lane_widths: dict[str, float],
 ) -> dict[str, float]:
     """Compile left/main/right slots into deterministic lane-local positions."""
-    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+    if spec.get("schema_version") != contracts.V3_SCHEMA_VERSION:
         return {}
     gap = profile_slot_gap(spec)
     lane_axes = v3_lane_main_axes(spec, lane_widths)
@@ -1143,7 +966,7 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
         for lane in spec["lanes"]
     }
     nodes = {node["id"]: node for node in spec["nodes"]}
-    required_gutter = LANE_BOUNDARY_CLEARANCE + 2 * GEOMETRY_TOLERANCE
+    required_gutter = LANE_BOUNDARY_CLEARANCE + 2 * core_geometry.GEOMETRY_TOLERANCE
 
     for node in spec["nodes"]:
         if "x" in node:
@@ -1154,7 +977,7 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
             math.ceil(node_width + 8.0),
         )
 
-    if spec.get("schema_version") == V3_SCHEMA_VERSION:
+    if spec.get("schema_version") == contracts.V3_SCHEMA_VERSION:
         gap = profile_slot_gap(spec)
         side_padding = profile_side_padding(spec)
         by_lane_rank: dict[tuple[str, int], list[dict]] = {}
@@ -1178,17 +1001,17 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
             continue
         target_width, _ = node_size(target)
         minimum_width = math.ceil(
-            target_width + 2 * required_gutter + GEOMETRY_TOLERANCE
+            target_width + 2 * required_gutter + core_geometry.GEOMETRY_TOLERANCE
         )
         widths[target["lane"]] = max(widths[target["lane"]], float(minimum_width))
 
-        if spec.get("schema_version") == V3_SCHEMA_VERSION:
+        if spec.get("schema_version") == contracts.V3_SCHEMA_VERSION:
             # Cross-lane returns need a safe escape gutter at the source as
             # well as an entry gutter at the historical target.  Otherwise a
             # centered node can leave only a few pixels between its jetty and
             # the lane boundary, forcing the route through another lane.
             required_side_space = (
-                LANE_BOUNDARY_CLEARANCE + ROUTE_CLEARANCE + GEOMETRY_TOLERANCE
+                LANE_BOUNDARY_CLEARANCE + ROUTE_CLEARANCE + core_geometry.GEOMETRY_TOLERANCE
             )
             for endpoint in (nodes[edge["from"]], target):
                 if "x" in endpoint:
@@ -1234,14 +1057,14 @@ def recommended_process_height(label: str, width: float) -> float:
 def node_size(node: dict) -> tuple[float, float]:
     kind = node.get("type", "process")
     if kind not in NODE_SIZES:
-        raise DiagramError(f"Unsupported node type: {kind}")
+        raise contracts.DiagramError(f"Unsupported node type: {kind}")
     default_width, default_height = NODE_SIZES[kind]
     explicit_width = node.get("width")
     explicit_height = node.get("height")
     if kind in FIXED_ASPECT_NODE_TYPES:
         if explicit_width is not None and explicit_height is not None:
-            if abs(float(explicit_width) - float(explicit_height)) >= GEOMETRY_TOLERANCE:
-                raise DiagramError(
+            if abs(float(explicit_width) - float(explicit_height)) >= core_geometry.GEOMETRY_TOLERANCE:
+                raise contracts.DiagramError(
                     f"Fixed-aspect node {node.get('id', '<unknown>')} requires equal width and height",
                     code="geometry/fixed-aspect-ratio",
                     subject={"kind": "node", "id": node.get("id")},
@@ -1285,7 +1108,7 @@ def adaptive_canvas_values(spec: dict) -> dict:
     values = canvas_values(spec)
     if "row_gap" in spec.get("canvas", {}):
         return values
-    if spec.get("schema_version") == V3_SCHEMA_VERSION:
+    if spec.get("schema_version") == contracts.V3_SCHEMA_VERSION:
         values["row_gap"] = PROFILE_ROW_GAPS[layout_profile(spec)]
 
     rank_heights: dict[int, float] = {}
@@ -1350,15 +1173,15 @@ def create_lane_cell(
             "value": lane["label"],
             "style": (
                 "swimlane;html=1;"
-                f"startSize={number(values['lane_header_height'])};"
+                f"startSize={document.number(values['lane_header_height'])};"
                 "horizontal=1;rounded=0;strokeWidth=1;fontSize=13;fontStyle=1;"
                 "fillColor=#dae8fc;swimlaneFillColor=#ffffff;"
             ),
-            "data-kind": "lane",
-            "data-semantic-id": lane["id"],
+            contracts.DATA_KIND: "lane",
+            contracts.DATA_SEMANTIC_ID: lane["id"],
         },
     )
-    geometry(
+    document.geometry(
         cell,
         x=x,
         y=values["title_height"],
@@ -1396,22 +1219,22 @@ def create_node_cell(
             "style": NODE_STYLES[kind],
             "value": str(node.get("label", "")),
             "vertex": "1",
-            "data-kind": "node",
-            "data-semantic-id": node["id"],
-            "data-node-type": kind,
-            "data-lane-id": node["lane"],
-            "data-rank": str(node["rank"]),
+            contracts.DATA_KIND: "node",
+            contracts.DATA_SEMANTIC_ID: node["id"],
+            contracts.DATA_NODE_TYPE: kind,
+            contracts.DATA_LANE_ID: node["lane"],
+            contracts.DATA_RANK: str(node["rank"]),
         },
     )
     if "slot" in node or automatic_x is not None:
-        cell.attrib["data-slot"] = effective_node_slot(node)
+        cell.attrib[contracts.DATA_SLOT] = effective_node_slot(node)
     if node.get("anchor"):
-        cell.attrib["data-anchor"] = json.dumps(
+        cell.attrib[contracts.DATA_ANCHOR] = json.dumps(
             node["anchor"], ensure_ascii=True, separators=(",", ":")
         )
     if group_id:
-        cell.attrib["data-group-id"] = group_id
-    geometry(cell, x=x, y=y, width=width, height=height)
+        cell.attrib[contracts.DATA_GROUP_ID] = group_id
+    document.geometry(cell, x=x, y=y, width=width, height=height)
     return cell
 
 
@@ -1449,8 +1272,8 @@ def create_phase_cell(
     pool_width: float,
 ) -> ET.Element:
     fill_color = phase.get("fill_color", "#f5f5f5")
-    presentation = pool.attrib.get("data-phase-presentation", "bands")
-    rail_width = float(pool.attrib.get("data-phase-rail-width", PHASE_RAIL_WIDTH))
+    presentation = pool.attrib.get(contracts.DATA_PHASE_PRESENTATION, "bands")
+    rail_width = float(pool.attrib.get(contracts.DATA_PHASE_RAIL_WIDTH, PHASE_RAIL_WIDTH))
     if presentation == "rail":
         phase_style = (
             "rounded=0;whiteSpace=wrap;html=1;verticalAlign=middle;align=center;"
@@ -1474,16 +1297,16 @@ def create_phase_cell(
             "connectable": "0",
             "value": str(phase["label"]),
             "style": phase_style,
-            "data-kind": "phase",
-            "data-semantic-id": phase["id"],
-            "data-from-rank": str(phase["from_rank"]),
-            "data-to-rank": str(phase["to_rank"]),
-            "data-fill-color": fill_color,
+            contracts.DATA_KIND: "phase",
+            contracts.DATA_SEMANTIC_ID: phase["id"],
+            contracts.DATA_FROM_RANK: str(phase["from_rank"]),
+            contracts.DATA_TO_RANK: str(phase["to_rank"]),
+            contracts.DATA_FILL_COLOR: fill_color,
         },
     )
-    if pool.attrib.get("data-schema-version") == V3_SCHEMA_VERSION:
-        cell.attrib["data-presentation"] = presentation
-    geometry(
+    if pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION:
+        cell.attrib[contracts.DATA_PRESENTATION] = presentation
+    document.geometry(
         cell,
         **phase_geometry_values(
             phase,
@@ -1496,29 +1319,6 @@ def create_phase_cell(
     return cell
 
 
-def set_style_option(cell: ET.Element, key: str, value: str) -> None:
-    """Set one mxGraph style option without disturbing unrelated options."""
-    parts = [part for part in cell.attrib.get("style", "").split(";") if part]
-    replacement = f"{key}={value}"
-    updated: list[str] = []
-    replaced = False
-    for part in parts:
-        if part.split("=", 1)[0] == key:
-            if not replaced:
-                updated.append(replacement)
-                replaced = True
-            continue
-        updated.append(part)
-    if not replaced:
-        updated.append(replacement)
-    cell.attrib["style"] = ";".join(updated) + ";"
-
-
-def native_cell(element: ET.Element) -> ET.Element | None:
-    """A root entry may be a cell or a native object/UserObject wrapper."""
-    return element if element.tag == "mxCell" else element.find("mxCell")
-
-
 def normalize_phase_layering(
     root: ET.Element,
     pool: ET.Element,
@@ -1529,19 +1329,19 @@ def normalize_phase_layering(
     phases = [
         cell
         for cell in list(root)
-        if cell.attrib.get("data-kind") == "phase"
+        if cell.attrib.get(contracts.DATA_KIND) == "phase"
         and cell.attrib.get("parent") == pool.attrib["id"]
     ]
     lanes = [
         cell
         for cell in list(root)
-        if cell.attrib.get("data-kind") == "lane"
+        if cell.attrib.get(contracts.DATA_KIND) == "lane"
         and cell.attrib.get("parent") == pool.attrib["id"]
     ]
-    presentation = pool.attrib.get("data-phase-presentation", "bands")
+    presentation = pool.attrib.get(contracts.DATA_PHASE_PRESENTATION, "bands")
     if phases or restore_lane_fill_without_phases:
         for lane in lanes:
-            set_style_option(
+            document.set_style_option(
                 lane,
                 "swimlaneFillColor",
                 "none" if phases and presentation == "bands" else "#ffffff",
@@ -1554,8 +1354,8 @@ def normalize_phase_layering(
     # preserve their paint order when other parents' descendants move past it.
     layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
     def is_drawing_cell(cell):
-        return (cell.tag == "mxCell" and cell.get("data-kind") in layer_order
-                and bool(cell.get("data-semantic-id")))
+        return (cell.tag == "mxCell" and cell.get(contracts.DATA_KIND) in layer_order
+                and bool(cell.get(contracts.DATA_SEMANTIC_ID)))
 
     children = list(root)
     semantic_positions = [
@@ -1564,12 +1364,12 @@ def normalize_phase_layering(
         if is_drawing_cell(cell)
     ]
     semantic_cells = [children[index] for index in semantic_positions]
-    semantic_cells.sort(key=lambda cell: layer_order[cell.attrib["data-kind"]])
+    semantic_cells.sort(key=lambda cell: layer_order[cell.attrib[contracts.DATA_KIND]])
     for index, cell in zip(semantic_positions, semantic_cells):
         children[index] = cell
     # A wrapped cell and its metadata are one drawing unit. The parent lives
     # on the nested mxCell; the identity usually lives on the wrapper.
-    natives = {element: native_cell(element) for element in root}
+    natives = {element: document.native_cell(element) for element in root}
     original_siblings: dict[str | None, list[ET.Element]] = {}
     for element, cell in natives.items():
         if cell is not None:
@@ -1591,121 +1391,26 @@ def normalize_phase_layering(
             if is_drawing_cell(cell):
                 run.append(cell)
             else:
-                ordered.extend(sorted(run, key=lambda c: layer_order[c.get("data-kind")]))
+                ordered.extend(sorted(run, key=lambda c: layer_order[c.get(contracts.DATA_KIND)]))
                 run.clear()
                 ordered.append(cell)
-        ordered.extend(sorted(run, key=lambda c: layer_order[c.get("data-kind")]))
+        ordered.extend(sorted(run, key=lambda c: layer_order[c.get(contracts.DATA_KIND)]))
         for index, cell in zip(positions_by_parent[parent], ordered):
             children[index] = cell
     root[:] = children
 
 
-def parse_geometry(cell: ET.Element) -> dict[str, float]:
-    geom = cell.find("mxGeometry")
-    if geom is None:
-        raise DiagramError(f"Cell {cell.attrib.get('id')} has no geometry")
-    result: dict[str, float] = {}
-    for key in ("x", "y", "width", "height"):
-        result[key] = float(geom.attrib.get(key, "0"))
-    return result
-
-
-def lane_node_records(root: ET.Element, pool: ET.Element) -> tuple[dict[str, dict], dict[str, dict]]:
-    lanes: dict[str, dict] = {}
-    nodes: dict[str, dict] = {}
-    for child in list(root):
-        if (
-            child.tag != "mxCell"
-            or child.attrib.get("data-kind") != "lane"
-            or child.attrib.get("parent") != pool.attrib["id"]
-        ):
-            continue
-        semantic_id = child.attrib["data-semantic-id"]
-        lanes[semantic_id] = {"cell": child, "geometry": parse_geometry(child)}
-    lane_by_cell_id = {record["cell"].attrib["id"]: semantic_id for semantic_id, record in lanes.items()}
-    for child in list(root):
-        if child.tag != "mxCell" or child.attrib.get("data-kind") != "node":
-            continue
-        lane_semantic_id = lane_by_cell_id.get(child.attrib.get("parent"))
-        if lane_semantic_id:
-            nodes[child.attrib["data-semantic-id"]] = {
-                "cell": child,
-                "geometry": parse_geometry(child),
-                "lane": lane_semantic_id,
-            }
-    return lanes, nodes
-
-
-def phase_records(root: ET.Element, pool: ET.Element) -> dict[str, ET.Element]:
-    return {
-        child.attrib["data-semantic-id"]: child
-        for child in list(root)
-        if child.tag == "mxCell"
-        and child.attrib.get("data-kind") == "phase"
-        and child.attrib.get("parent") == pool.attrib["id"]
-        and child.attrib.get("data-semantic-id")
-    }
-
-
-def node_center_in_pool(node_record: dict, lane_record: dict) -> tuple[float, float]:
-    node_geom = node_record["geometry"]
-    lane_geom = lane_record["geometry"]
-    return (
-        lane_geom["x"] + node_geom["x"] + node_geom["width"] / 2,
-        lane_geom["y"] + node_geom["y"] + node_geom["height"] / 2,
-    )
-
-
-def node_bounds_in_pool(node_record: dict, lane_record: dict) -> dict[str, float]:
-    node_geom = node_record["geometry"]
-    lane_geom = lane_record["geometry"]
-    left = lane_geom["x"] + node_geom["x"]
-    top = lane_geom["y"] + node_geom["y"]
-    return {
-        "left": left,
-        "top": top,
-        "right": left + node_geom["width"],
-        "bottom": top + node_geom["height"],
-        "width": node_geom["width"],
-        "height": node_geom["height"],
-    }
-
-
 def validate_side(side: str, field: str) -> str:
     if side not in PORT_SIDES:
-        raise DiagramError(f"Unsupported {field}: {side}")
+        raise contracts.DiagramError(f"Unsupported {field}: {side}")
     return side
 
 
 def validate_offset(offset, field: str) -> float:
     value = float(offset)
     if not 0.05 <= value <= 0.95:
-        raise DiagramError(f"{field} must be between 0.05 and 0.95")
+        raise contracts.DiagramError(f"{field} must be between 0.05 and 0.95")
     return value
-
-
-def port_xy(side: str, offset: float) -> tuple[float, float]:
-    if side == "top":
-        return offset, 0.0
-    if side == "bottom":
-        return offset, 1.0
-    if side == "left":
-        return 0.0, offset
-    if side == "right":
-        return 1.0, offset
-    raise DiagramError(f"Unsupported port side: {side}")
-
-
-def port_point(bounds: dict[str, float], side: str, offset: float) -> tuple[float, float]:
-    if side == "top":
-        return bounds["left"] + bounds["width"] * offset, bounds["top"]
-    if side == "bottom":
-        return bounds["left"] + bounds["width"] * offset, bounds["bottom"]
-    if side == "left":
-        return bounds["left"], bounds["top"] + bounds["height"] * offset
-    if side == "right":
-        return bounds["right"], bounds["top"] + bounds["height"] * offset
-    raise DiagramError(f"Unsupported port side: {side}")
 
 
 class PortAllocator:
@@ -1731,8 +1436,8 @@ class PortAllocator:
         key = self.key(node_id, side, offset)
         if key in self.occupied and not allow_reuse and fail_on_conflict:
             used_by = ", ".join(self.occupied[key])
-            raise DiagramError(
-                f"Port {node_id}:{side}@{number(offset)} is already used by {used_by}; "
+            raise contracts.DiagramError(
+                f"Port {node_id}:{side}@{document.number(offset)} is already used by {used_by}; "
                 "choose another port or set allow_port_reuse"
             )
         self.occupied.setdefault(key, []).append(edge_id)
@@ -1757,7 +1462,7 @@ class PortAllocator:
                 return self.reserve(
                     node_id, side, offset, edge_id, allow_reuse=allow_reuse
                 )
-        raise DiagramError(f"No free {side} port remains on node {node_id}")
+        raise contracts.DiagramError(f"No free {side} port remains on node {node_id}")
 
     def available(
         self,
@@ -1823,8 +1528,8 @@ def allocate_port_pair(
     def allowed(endpoint: str, offset: float) -> bool:
         endpoint_limits = limits.get(endpoint, {})
         return (
-            offset >= endpoint_limits.get("min", 0.0) - GEOMETRY_TOLERANCE / 100
-            and offset <= endpoint_limits.get("max", 1.0) + GEOMETRY_TOLERANCE / 100
+            offset >= endpoint_limits.get("min", 0.0) - core_geometry.GEOMETRY_TOLERANCE / 100
+            and offset <= endpoint_limits.get("max", 1.0) + core_geometry.GEOMETRY_TOLERANCE / 100
         )
 
     if requested_exit is not None and requested_entry is not None:
@@ -1871,7 +1576,7 @@ def allocate_port_pair(
             minimum_offset_gap=exit_gap,
         ):
             continue
-        source_point = port_point(source_bounds, exit_side, exit_offset)
+        source_point = core_geometry.port_point(source_bounds, exit_side, exit_offset)
         matched_entry = None
         if requested_entry is None:
             if exit_side in {"left", "right"} and entry_side in {"left", "right"}:
@@ -1903,7 +1608,7 @@ def allocate_port_pair(
                 minimum_offset_gap=entry_gap,
             ):
                 continue
-            target_point = port_point(target_bounds, entry_side, entry_offset)
+            target_point = core_geometry.port_point(target_bounds, entry_side, entry_offset)
             if exit_side in {"left", "right"} and entry_side in {"left", "right"}:
                 alignment = abs(source_point[1] - target_point[1])
             elif exit_side in {"top", "bottom"} and entry_side in {"top", "bottom"}:
@@ -1922,7 +1627,7 @@ def allocate_port_pair(
                 pair_cost = alignment * 100.0 + center_cost
             pairs.append((pair_cost, exit_offset, entry_offset))
     if not pairs:
-        raise DiagramError(f"No compatible free port pair remains for edge {edge['id']}")
+        raise contracts.DiagramError(f"No compatible free port pair remains for edge {edge['id']}")
     _, exit_offset, entry_offset = min(pairs)
     allocator.reserve(
         edge["from"], exit_side, exit_offset, edge["id"], allow_reuse=allow_reuse
@@ -1940,25 +1645,25 @@ def edge_style(
     exit_offset: float,
     entry_offset: float,
 ) -> str:
-    exit_x, exit_y = port_xy(exit_side, exit_offset)
-    entry_x, entry_y = port_xy(entry_side, entry_offset)
+    exit_x, exit_y = core_geometry.port_xy(exit_side, exit_offset)
+    entry_x, entry_y = core_geometry.port_xy(entry_side, entry_offset)
     extra = "dashed=1;" if edge_type == "async" else ""
     return (
         "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;"
         "endArrow=block;endFill=1;labelBackgroundColor=#ffffff;fontSize=11;"
-        f"exitX={number(exit_x)};exitY={number(exit_y)};exitDx=0;exitDy=0;"
-        f"entryX={number(entry_x)};entryY={number(entry_y)};entryDx=0;entryDy=0;{extra}"
+        f"exitX={document.number(exit_x)};exitY={document.number(exit_y)};exitDx=0;exitDy=0;"
+        f"entryX={document.number(entry_x)};entryY={document.number(entry_y)};entryDx=0;entryDy=0;{extra}"
     )
 
 
 def infer_route_class(edge: dict, source: dict, target: dict) -> str:
     requested = edge.get("route", "auto")
     if requested not in ROUTE_CLASSES:
-        raise DiagramError(f"Unsupported route class: {requested}")
+        raise contracts.DiagramError(f"Unsupported route class: {requested}")
     if requested != "auto":
         return requested
-    source_rank = int(source["cell"].attrib.get("data-rank", "0"))
-    target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+    source_rank = int(source["cell"].attrib.get(contracts.DATA_RANK, "0"))
+    target_rank = int(target["cell"].attrib.get(contracts.DATA_RANK, "0"))
     if edge.get("type") == "retry" or target_rank < source_rank:
         return "back"
     if target_rank > source_rank:
@@ -1980,11 +1685,11 @@ def preferred_sides(
 ) -> tuple[str, str]:
     branch = edge.get("branch")
     if branch is not None and branch not in BRANCH_CLASSES:
-        raise DiagramError(f"Unsupported branch class: {branch}")
-    source_type = source["cell"].attrib.get("data-node-type", "process")
-    target_type = target["cell"].attrib.get("data-node-type", "process")
-    source_rank = int(source["cell"].attrib.get("data-rank", "0"))
-    target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+        raise contracts.DiagramError(f"Unsupported branch class: {branch}")
+    source_type = source["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
+    target_type = target["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
+    source_rank = int(source["cell"].attrib.get(contracts.DATA_RANK, "0"))
+    target_rank = int(target["cell"].attrib.get(contracts.DATA_RANK, "0"))
     is_main_path = (edge["from"], edge["to"]) in (main_path_pairs or set())
     same_lane_down = source["lane"] == target["lane"] and target_rank > source_rank
     actual_split = (outgoing_counts or {}).get(edge["from"], 0) > 1
@@ -2055,51 +1760,14 @@ def normalize_waypoints(values) -> list[tuple[float, float]]:
     for item in values or []:
         if isinstance(item, dict):
             if "x" not in item or "y" not in item:
-                raise DiagramError("Every waypoint object must contain x and y")
+                raise contracts.DiagramError("Every waypoint object must contain x and y")
             x, y = item["x"], item["y"]
         elif isinstance(item, (list, tuple)) and len(item) == 2:
             x, y = item
         else:
-            raise DiagramError("Waypoints must be {x, y} objects or [x, y] pairs")
+            raise contracts.DiagramError("Waypoints must be {x, y} objects or [x, y] pairs")
         points.append((float(x), float(y)))
     return points
-
-
-def compact_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    compacted: list[tuple[float, float]] = []
-    for point in points:
-        if not compacted or point != compacted[-1]:
-            compacted.append(point)
-    return compacted
-
-
-def remove_collinear_points(
-    points: list[tuple[float, float]],
-) -> list[tuple[float, float]]:
-    """Remove middle points that do not change an orthogonal path's direction."""
-    simplified: list[tuple[float, float]] = []
-    for point in compact_points(points):
-        simplified.append(point)
-        while len(simplified) >= 3:
-            first, middle, last = simplified[-3:]
-            same_x = (
-                abs(first[0] - middle[0]) < GEOMETRY_TOLERANCE
-                and abs(middle[0] - last[0]) < GEOMETRY_TOLERANCE
-                and min(first[1], last[1]) - GEOMETRY_TOLERANCE
-                <= middle[1]
-                <= max(first[1], last[1]) + GEOMETRY_TOLERANCE
-            )
-            same_y = (
-                abs(first[1] - middle[1]) < GEOMETRY_TOLERANCE
-                and abs(middle[1] - last[1]) < GEOMETRY_TOLERANCE
-                and min(first[0], last[0]) - GEOMETRY_TOLERANCE
-                <= middle[0]
-                <= max(first[0], last[0]) + GEOMETRY_TOLERANCE
-            )
-            if not (same_x or same_y):
-                break
-            simplified.pop(-2)
-    return simplified
 
 
 def internal_lane_boundaries(lanes: dict[str, dict]) -> list[float]:
@@ -2110,7 +1778,7 @@ def internal_lane_boundaries(lanes: dict[str, dict]) -> list[float]:
     if not right_edges:
         return []
     pool_right = max(right_edges)
-    return sorted(edge for edge in right_edges if edge < pool_right - GEOMETRY_TOLERANCE)
+    return sorted(edge for edge in right_edges if edge < pool_right - core_geometry.GEOMETRY_TOLERANCE)
 
 
 def safe_vertical_corridor(
@@ -2121,12 +1789,12 @@ def safe_vertical_corridor(
 ) -> float:
     """Move an automatic vertical corridor away from internal lane boundaries."""
     if direction not in {"left", "right"}:
-        raise DiagramError(f"Unsupported corridor direction: {direction}")
+        raise contracts.DiagramError(f"Unsupported corridor direction: {direction}")
 
     lower = POOL_EDGE_MARGIN
     upper = max(lower, pool_width - POOL_EDGE_MARGIN)
     candidate = min(max(candidate, lower), upper)
-    safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+    safe_gap = LANE_BOUNDARY_CLEARANCE + core_geometry.GEOMETRY_TOLERANCE
 
     for _ in range(len(boundaries) + 1):
         conflict = next(
@@ -2141,7 +1809,7 @@ def safe_vertical_corridor(
             break
         shifted = conflict - safe_gap if direction == "left" else conflict + safe_gap
         shifted = min(max(shifted, lower), upper)
-        if abs(shifted - candidate) < GEOMETRY_TOLERANCE:
+        if abs(shifted - candidate) < core_geometry.GEOMETRY_TOLERANCE:
             break
         candidate = shifted
 
@@ -2163,18 +1831,18 @@ def automatic_waypoints(
     tx, ty = target_point
 
     if route_class == "forward":
-        if exit_side == "bottom" and entry_side == "top" and abs(sx - tx) < GEOMETRY_TOLERANCE:
+        if exit_side == "bottom" and entry_side == "top" and abs(sx - tx) < core_geometry.GEOMETRY_TOLERANCE:
             return []
         corridor_y = (sy + ty) / 2
         if exit_side == "bottom":
-            return compact_points([(sx, corridor_y), (tx, corridor_y)])
+            return core_geometry.compact_points([(sx, corridor_y), (tx, corridor_y)])
         if exit_side in {"left", "right"}:
             escape_x = sx + (ROUTE_CLEARANCE if exit_side == "right" else -ROUTE_CLEARANCE)
             escape_x = safe_vertical_corridor(
                 escape_x, lane_boundaries, exit_side, pool_width
             )
-            return compact_points([(escape_x, sy), (escape_x, corridor_y), (tx, corridor_y)])
-        return compact_points([(sx, corridor_y), (tx, corridor_y)])
+            return core_geometry.compact_points([(escape_x, sy), (escape_x, corridor_y), (tx, corridor_y)])
+        return core_geometry.compact_points([(sx, corridor_y), (tx, corridor_y)])
 
     if route_class == "back":
         if exit_side == entry_side == "left":
@@ -2184,7 +1852,7 @@ def automatic_waypoints(
                 "left",
                 pool_width,
             )
-            return compact_points([(route_x, sy), (route_x, ty)])
+            return core_geometry.compact_points([(route_x, sy), (route_x, ty)])
         if exit_side == entry_side == "right":
             route_x = safe_vertical_corridor(
                 max(source_bounds["right"], target_bounds["right"]) + ROUTE_CLEARANCE,
@@ -2192,11 +1860,11 @@ def automatic_waypoints(
                 "right",
                 pool_width,
             )
-            return compact_points([(route_x, sy), (route_x, ty)])
+            return core_geometry.compact_points([(route_x, sy), (route_x, ty)])
         corridor_y = (sy + ty) / 2
-        return compact_points([(sx, corridor_y), (tx, corridor_y)])
+        return core_geometry.compact_points([(sx, corridor_y), (tx, corridor_y)])
 
-    if abs(sy - ty) < GEOMETRY_TOLERANCE:
+    if abs(sy - ty) < core_geometry.GEOMETRY_TOLERANCE:
         return []
     if exit_side == "right":
         route_x = safe_vertical_corridor(
@@ -2214,7 +1882,7 @@ def automatic_waypoints(
         )
     else:
         route_x = (sx + tx) / 2
-    return compact_points([(route_x, sy), (route_x, ty)])
+    return core_geometry.compact_points([(route_x, sy), (route_x, ty)])
 
 
 def automatic_polyline_is_safe(
@@ -2227,12 +1895,12 @@ def automatic_polyline_is_safe(
     """Check geometry constraints before accepting an automatic simplification."""
     lane_boundaries = internal_lane_boundaries(lanes)
     obstacle_bounds = {
-        node_id: node_bounds_in_pool(record, lanes[record["lane"]])
+        node_id: document.node_bounds_in_pool(record, lanes[record["lane"]])
         for node_id, record in nodes.items()
     }
     segments = list(zip(points, points[1:]))
     for index, segment in enumerate(segments):
-        axis = segment_axis(segment)
+        axis = core_geometry.segment_axis(segment)
         if axis == "diagonal":
             return False
         if axis == "vertical":
@@ -2247,7 +1915,7 @@ def automatic_polyline_is_safe(
                 continue
             if node_id == target_id and index == len(segments) - 1:
                 continue
-            if segment_crosses_bounds(segment, bounds):
+            if core_geometry.segment_crosses_bounds(segment, bounds):
                 return False
     return True
 
@@ -2265,18 +1933,18 @@ def simplify_automatic_waypoints(
     target_id: str,
 ) -> list[tuple[float, float]]:
     """Prefer the fewest safe bends for automatically generated orthogonal routes."""
-    full_path = remove_collinear_points([source_point, *points, target_point])
+    full_path = core_geometry.remove_collinear_points([source_point, *points, target_point])
 
     if route_class == "forward" and entry_side == "top":
         sx, sy = source_point
         tx, _ = target_point
         exits_toward_target = (
-            exit_side == "right" and tx > sx + GEOMETRY_TOLERANCE
+            exit_side == "right" and tx > sx + core_geometry.GEOMETRY_TOLERANCE
         ) or (
-            exit_side == "left" and tx < sx - GEOMETRY_TOLERANCE
+            exit_side == "left" and tx < sx - core_geometry.GEOMETRY_TOLERANCE
         )
         if exits_toward_target:
-            direct_elbow = remove_collinear_points(
+            direct_elbow = core_geometry.remove_collinear_points(
                 [source_point, (tx, sy), target_point]
             )
             if automatic_polyline_is_safe(
@@ -2291,18 +1959,18 @@ def simplify_automatic_waypoints(
     if route_class == "back" and exit_side == entry_side and entry_side in {"left", "right"}:
         target = nodes[target_id]
         target_lane = lanes[target["lane"]]["geometry"]
-        target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
-        safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+        target_bounds = document.node_bounds_in_pool(target, lanes[target["lane"]])
+        safe_gap = LANE_BOUNDARY_CLEARANCE + core_geometry.GEOMETRY_TOLERANCE
         if entry_side == "left":
             corridor_x = target_lane["x"] + safe_gap
-            has_internal_space = corridor_x < target_bounds["left"] - GEOMETRY_TOLERANCE
+            has_internal_space = corridor_x < target_bounds["left"] - core_geometry.GEOMETRY_TOLERANCE
         else:
             corridor_x = target_lane["x"] + target_lane["width"] - safe_gap
-            has_internal_space = corridor_x > target_bounds["right"] + GEOMETRY_TOLERANCE
+            has_internal_space = corridor_x > target_bounds["right"] + core_geometry.GEOMETRY_TOLERANCE
         if has_internal_space:
             _, sy = source_point
             _, ty = target_point
-            target_lane_path = remove_collinear_points(
+            target_lane_path = core_geometry.remove_collinear_points(
                 [source_point, (corridor_x, sy), (corridor_x, ty), target_point]
             )
             if automatic_polyline_is_safe(
@@ -2317,20 +1985,6 @@ def simplify_automatic_waypoints(
     return full_path[1:-1]
 
 
-def segment_length(segment: tuple[tuple[float, float], tuple[float, float]]) -> float:
-    return abs(segment[1][0] - segment[0][0]) + abs(segment[1][1] - segment[0][1])
-
-
-def polyline_length(points: list[tuple[float, float]]) -> float:
-    return sum(segment_length(segment) for segment in zip(points, points[1:]))
-
-
-def bend_count(points: list[tuple[float, float]]) -> int:
-    axes = [segment_axis(segment) for segment in zip(points, points[1:])]
-    axes = [axis for axis in axes if axis != "point"]
-    return sum(first != second for first, second in zip(axes, axes[1:]))
-
-
 def endpoint_direction_is_valid(
     points: list[tuple[float, float]],
     exit_side: str,
@@ -2340,23 +1994,23 @@ def endpoint_direction_is_valid(
         return False
     (sx, sy), (nx, ny) = points[0], points[1]
     (px, py), (tx, ty) = points[-2], points[-1]
-    first_axis = segment_axis((points[0], points[1]))
-    last_axis = segment_axis((points[-2], points[-1]))
+    first_axis = core_geometry.segment_axis((points[0], points[1]))
+    last_axis = core_geometry.segment_axis((points[-2], points[-1]))
     if first_axis != ("vertical" if exit_side in {"top", "bottom"} else "horizontal"):
         return False
     if last_axis != ("vertical" if entry_side in {"top", "bottom"} else "horizontal"):
         return False
     source_ok = {
-        "top": ny <= sy + GEOMETRY_TOLERANCE,
-        "bottom": ny >= sy - GEOMETRY_TOLERANCE,
-        "left": nx <= sx + GEOMETRY_TOLERANCE,
-        "right": nx >= sx - GEOMETRY_TOLERANCE,
+        "top": ny <= sy + core_geometry.GEOMETRY_TOLERANCE,
+        "bottom": ny >= sy - core_geometry.GEOMETRY_TOLERANCE,
+        "left": nx <= sx + core_geometry.GEOMETRY_TOLERANCE,
+        "right": nx >= sx - core_geometry.GEOMETRY_TOLERANCE,
     }[exit_side]
     target_ok = {
-        "top": py <= ty + GEOMETRY_TOLERANCE,
-        "bottom": py >= ty - GEOMETRY_TOLERANCE,
-        "left": px <= tx + GEOMETRY_TOLERANCE,
-        "right": px >= tx - GEOMETRY_TOLERANCE,
+        "top": py <= ty + core_geometry.GEOMETRY_TOLERANCE,
+        "bottom": py >= ty - core_geometry.GEOMETRY_TOLERANCE,
+        "left": px <= tx + core_geometry.GEOMETRY_TOLERANCE,
+        "right": px >= tx - core_geometry.GEOMETRY_TOLERANCE,
     }[entry_side]
     return source_ok and target_ok
 
@@ -2369,40 +2023,6 @@ def offset_point(point: tuple[float, float], side: str, distance: float) -> tupl
         "left": (x - distance, y),
         "right": (x + distance, y),
     }[side]
-
-
-def bounds_overlap(first: dict[str, float], second: dict[str, float], *, gap: float = 0.0) -> bool:
-    return not (
-        first["right"] + gap <= second["left"]
-        or second["right"] + gap <= first["left"]
-        or first["bottom"] + gap <= second["top"]
-        or second["bottom"] + gap <= first["top"]
-    )
-
-
-def segment_intersects_box(
-    segment: tuple[tuple[float, float], tuple[float, float]],
-    box: dict[str, float],
-    *,
-    gap: float = 0.0,
-) -> bool:
-    expanded = {
-        "left": box["left"] - gap,
-        "right": box["right"] + gap,
-        "top": box["top"] - gap,
-        "bottom": box["bottom"] + gap,
-    }
-    (x1, y1), (x2, y2) = segment
-    axis = segment_axis(segment)
-    if axis == "horizontal":
-        return expanded["top"] <= y1 <= expanded["bottom"] and max(
-            min(x1, x2), expanded["left"]
-        ) <= min(max(x1, x2), expanded["right"])
-    if axis == "vertical":
-        return expanded["left"] <= x1 <= expanded["right"] and max(
-            min(y1, y2), expanded["top"]
-        ) <= min(max(y1, y2), expanded["bottom"])
-    return False
 
 
 def edge_label_size(label: str) -> tuple[float, float]:
@@ -2428,8 +2048,8 @@ def label_box_candidates(
     width, height = edge_label_size(label)
     candidates: list[tuple[int, dict[str, float], float]] = []
     for index, segment in enumerate(zip(points, points[1:])):
-        length = segment_length(segment)
-        axis = segment_axis(segment)
+        length = core_geometry.segment_length(segment)
+        axis = core_geometry.segment_axis(segment)
         (x1, y1), (x2, y2) = segment
         if axis == "horizontal" and length >= width + EDGE_LABEL_PADDING:
             low_x, high_x = sorted((x1, x2))
@@ -2495,7 +2115,7 @@ def choose_label_box(
             return 0
         segment_index, box, _ = item
         segment = list(zip(points, points[1:]))[segment_index]
-        if segment_axis(segment) != "vertical":
+        if core_geometry.segment_axis(segment) != "vertical":
             return 1
         box_center = box["left"] + box["width"] / 2
         is_preferred = (
@@ -2529,15 +2149,15 @@ def choose_label_box(
             and box["bottom"] <= container_bounds["bottom"]
         ):
             continue
-        if any(bounds_overlap(box, node_box, gap=2.0) for node_box in node_boxes):
+        if any(core_geometry.bounds_overlap(box, node_box, gap=2.0) for node_box in node_boxes):
             continue
-        if any(bounds_overlap(box, other, gap=2.0) for other in other_labels):
+        if any(core_geometry.bounds_overlap(box, other, gap=2.0) for other in other_labels):
             continue
-        if any(segment_intersects_box(segment, box, gap=2.0) for segment in other_segments):
+        if any(core_geometry.segment_intersects_box(segment, box, gap=2.0) for segment in other_segments):
             continue
         own_segments = list(zip(points, points[1:]))
         if any(
-            index != segment_index and segment_intersects_box(segment, box, gap=2.0)
+            index != segment_index and core_geometry.segment_intersects_box(segment, box, gap=2.0)
             for index, segment in enumerate(own_segments)
         ):
             continue
@@ -2551,8 +2171,8 @@ def segments_near_parallel(
     *,
     clearance: float = NEAR_PARALLEL_CLEARANCE,
 ) -> bool:
-    axis = segment_axis(first)
-    if axis != segment_axis(second) or axis not in {"horizontal", "vertical"}:
+    axis = core_geometry.segment_axis(first)
+    if axis != core_geometry.segment_axis(second) or axis not in {"horizontal", "vertical"}:
         return False
     if axis == "horizontal":
         distance = abs(first[0][1] - second[0][1])
@@ -2564,14 +2184,14 @@ def segments_near_parallel(
         overlap = min(max(first[0][1], first[1][1]), max(second[0][1], second[1][1])) - max(
             min(first[0][1], first[1][1]), min(second[0][1], second[1][1])
         )
-    return GEOMETRY_TOLERANCE < distance < clearance and overlap >= MIN_INTERNAL_SEGMENT
+    return core_geometry.GEOMETRY_TOLERANCE < distance < clearance and overlap >= MIN_INTERNAL_SEGMENT
 
 
 def path_has_hairpin(points: list[tuple[float, float]]) -> bool:
     segments = list(zip(points, points[1:]))
     for first, second in zip(segments, segments[1:]):
-        axis = segment_axis(first)
-        if axis != segment_axis(second) or axis not in {"horizontal", "vertical"}:
+        axis = core_geometry.segment_axis(first)
+        if axis != core_geometry.segment_axis(second) or axis not in {"horizontal", "vertical"}:
             continue
         first_delta = (
             first[1][0] - first[0][0]
@@ -2586,8 +2206,8 @@ def path_has_hairpin(points: list[tuple[float, float]]) -> bool:
         if first_delta * second_delta < 0:
             return True
     for first, middle, last in zip(segments, segments[1:], segments[2:]):
-        first_axis = segment_axis(first)
-        if first_axis != segment_axis(last) or first_axis == segment_axis(middle):
+        first_axis = core_geometry.segment_axis(first)
+        if first_axis != core_geometry.segment_axis(last) or first_axis == core_geometry.segment_axis(middle):
             continue
         first_delta = (
             first[1][0] - first[0][0]
@@ -2599,7 +2219,7 @@ def path_has_hairpin(points: list[tuple[float, float]]) -> bool:
             if first_axis == "horizontal"
             else last[1][1] - last[0][1]
         )
-        if first_delta * last_delta < 0 and segment_length(middle) < MIN_INTERNAL_SEGMENT:
+        if first_delta * last_delta < 0 and core_geometry.segment_length(middle) < MIN_INTERNAL_SEGMENT:
             return True
     return False
 
@@ -2624,14 +2244,14 @@ def route_candidates(
     candidates: list[list[tuple[float, float]]] = []
 
     def add(full_path: list[tuple[float, float]]) -> None:
-        simplified = remove_collinear_points(full_path)
+        simplified = core_geometry.remove_collinear_points(full_path)
         if simplified not in candidates and endpoint_direction_is_valid(
             simplified, exit_side, entry_side
         ):
             candidates.append(simplified)
 
     add([source_point, *base_waypoints, target_point])
-    if abs(sx - tx) < GEOMETRY_TOLERANCE or abs(sy - ty) < GEOMETRY_TOLERANCE:
+    if abs(sx - tx) < core_geometry.GEOMETRY_TOLERANCE or abs(sy - ty) < core_geometry.GEOMETRY_TOLERANCE:
         add([source_point, target_point])
     add([source_point, (tx, sy), target_point])
     add([source_point, (sx, ty), target_point])
@@ -2652,7 +2272,7 @@ def route_candidates(
         )
         source_escape = offset_point(source_point, exit_side, jetty)
         target_escape = offset_point(target_point, entry_side, jetty)
-    safe_gap = LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+    safe_gap = LANE_BOUNDARY_CLEARANCE + core_geometry.GEOMETRY_TOLERANCE
     target_columns = [
         target_lane["x"] + safe_gap,
         target_lane["x"] + target_lane["width"] - safe_gap,
@@ -2737,11 +2357,11 @@ def candidate_score(
     has_label: bool,
 ) -> float:
     segments = list(zip(points, points[1:]))
-    bends = bend_count(points)
-    score = polyline_length(points) + bends * ROUTE_BEND_PENALTY
+    bends = core_geometry.bend_count(points)
+    score = core_geometry.polyline_length(points) + bends * ROUTE_BEND_PENALTY
     internal = segments[1:-1]
     score += sum(
-        5000.0 for segment in internal if segment_length(segment) < MIN_INTERNAL_SEGMENT
+        5000.0 for segment in internal if core_geometry.segment_length(segment) < MIN_INTERNAL_SEGMENT
     )
     if path_has_hairpin(points):
         score += 8000.0
@@ -2751,35 +2371,35 @@ def candidate_score(
         score += 5000.0 * (bends - 2)
     for segment in segments:
         for other in existing_segments:
-            if segments_conflict(segment, other):
+            if core_geometry.segments_conflict(segment, other):
                 score += ROUTE_CONFLICT_PENALTY
             elif segments_near_parallel(segment, other):
                 score += ROUTE_CONFLICT_PENALTY / 2
         for other in reciprocal_segments:
-            if segments_conflict(segment, other) or segments_near_parallel(segment, other):
+            if core_geometry.segments_conflict(segment, other) or segments_near_parallel(segment, other):
                 score += ROUTE_CONFLICT_PENALTY * 2
     if route_class == "back":
         vertical_x = [
             segment[0][0]
             for segment in segments[1:-1]
-            if segment_axis(segment) == "vertical"
+            if core_geometry.segment_axis(segment) == "vertical"
         ]
-        lane_left = target_lane["x"] + LANE_BOUNDARY_CLEARANCE + GEOMETRY_TOLERANCE
+        lane_left = target_lane["x"] + LANE_BOUNDARY_CLEARANCE + core_geometry.GEOMETRY_TOLERANCE
         lane_right = (
             target_lane["x"]
             + target_lane["width"]
             - LANE_BOUNDARY_CLEARANCE
-            - GEOMETRY_TOLERANCE
+            - core_geometry.GEOMETRY_TOLERANCE
         )
         left_slots = [
             value
             for value in vertical_x
-            if lane_left <= value < target_bounds["left"] - GEOMETRY_TOLERANCE
+            if lane_left <= value < target_bounds["left"] - core_geometry.GEOMETRY_TOLERANCE
         ]
         right_slots = [
             value
             for value in vertical_x
-            if target_bounds["right"] + GEOMETRY_TOLERANCE < value <= lane_right
+            if target_bounds["right"] + core_geometry.GEOMETRY_TOLERANCE < value <= lane_right
         ]
         has_target_lane_slot = bool(left_slots if entry_side == "left" else right_slots)
         if entry_side in {"top", "bottom"}:
@@ -2800,7 +2420,7 @@ def route_edge(
 ) -> dict:
     context = routing_context or {}
     if edge["from"] not in nodes or edge["to"] not in nodes:
-        raise DiagramError(f"Edge {edge.get('id')} references a missing node")
+        raise contracts.DiagramError(f"Edge {edge.get('id')} references a missing node")
     source = nodes[edge["from"]]
     target = nodes[edge["to"]]
     source_lane = lanes[source["lane"]]
@@ -2819,8 +2439,8 @@ def route_edge(
         bottom_reserved_sources=context.get("bottom_reserved_sources", set()),
         v3_semantics=bool(context.get("v3_semantics", False)),
     )
-    source_bounds = node_bounds_in_pool(source, source_lane)
-    target_bounds = node_bounds_in_pool(target, target_lane)
+    source_bounds = document.node_bounds_in_pool(source, source_lane)
+    target_bounds = document.node_bounds_in_pool(target, target_lane)
     exit_offset, entry_offset = allocate_port_pair(
         allocator,
         edge,
@@ -2834,7 +2454,7 @@ def route_edge(
                 bool(context.get("v3_semantics", False))
                 and (
                     route_class == "back"
-                    or source["cell"].attrib.get("data-node-type") == "decision"
+                    or source["cell"].attrib.get(contracts.DATA_NODE_TYPE) == "decision"
                 )
             )
             or (
@@ -2845,8 +2465,8 @@ def route_edge(
             )
         ),
     )
-    source_point = port_point(source_bounds, exit_side, exit_offset)
-    target_point = port_point(target_bounds, entry_side, entry_offset)
+    source_point = core_geometry.port_point(source_bounds, exit_side, exit_offset)
+    target_point = core_geometry.port_point(target_bounds, entry_side, entry_offset)
     pool_width = max(record["geometry"]["x"] + record["geometry"]["width"] for record in lanes.values())
     pool_height = max(
         record["geometry"]["y"] + record["geometry"]["height"]
@@ -2860,7 +2480,7 @@ def route_edge(
     }
     lane_boundaries = internal_lane_boundaries(lanes)
     node_boxes = [
-        node_bounds_in_pool(record, lanes[record["lane"]])
+        document.node_bounds_in_pool(record, lanes[record["lane"]])
         for record in nodes.values()
     ]
     existing_paths = context.get("paths", {})
@@ -2881,7 +2501,7 @@ def route_edge(
     label_choice: tuple[int, dict[str, float]] | None = None
     if "waypoints" in edge:
         points = normalize_waypoints(edge["waypoints"])
-        full_path = compact_points([source_point, *points, target_point])
+        full_path = core_geometry.compact_points([source_point, *points, target_point])
         label_choice = choose_label_box(
             full_path,
             label,
@@ -2944,10 +2564,10 @@ def route_edge(
             )
         ]
         if not safe_candidates:
-            safe_candidates = [compact_points([source_point, *base_points, target_point])]
+            safe_candidates = [core_geometry.compact_points([source_point, *base_points, target_point])]
         is_main_path = (edge["from"], edge["to"]) in main_path_pairs
-        source_rank = int(source["cell"].attrib.get("data-rank", "0"))
-        target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+        source_rank = int(source["cell"].attrib.get(contracts.DATA_RANK, "0"))
+        target_rank = int(target["cell"].attrib.get(contracts.DATA_RANK, "0"))
         same_lane_down = source["lane"] == target["lane"] and target_rank > source_rank
         ranked: list[tuple[float, list[tuple[float, float]], tuple[int, dict[str, float]] | None]] = []
         for candidate in safe_candidates:
@@ -2994,33 +2614,18 @@ def route_edge(
         "entry_side": entry_side,
         "exit_offset": exit_offset,
         "entry_offset": entry_offset,
-        "full_path": compact_points([source_point, *points, target_point]),
+        "full_path": core_geometry.compact_points([source_point, *points, target_point]),
         "label_choice": label_choice,
     }
 
 
-def set_edge_points(cell: ET.Element, points: list[tuple[float, float]]) -> None:
-    geom = cell.find("mxGeometry")
-    if geom is None:
-        geom = geometry(cell, relative=1)
-    else:
-        geom.attrib.clear()
-        geom.attrib.update({"relative": "1", "as": "geometry"})
-        for child in list(geom):
-            geom.remove(child)
-    if points:
-        array = ET.SubElement(geom, "Array", {"as": "points"})
-        for x, y in points:
-            ET.SubElement(array, "mxPoint", {"x": number(x), "y": number(y)})
-
-
 def polyline_midpoint(points: list[tuple[float, float]]) -> tuple[float, float]:
-    total = polyline_length(points)
-    if total <= GEOMETRY_TOLERANCE:
+    total = core_geometry.polyline_length(points)
+    if total <= core_geometry.GEOMETRY_TOLERANCE:
         return points[0] if points else (0.0, 0.0)
     remaining = total / 2
     for segment in zip(points, points[1:]):
-        length = segment_length(segment)
+        length = core_geometry.segment_length(segment)
         if remaining <= length:
             ratio = remaining / length if length else 0.0
             return (
@@ -3037,11 +2642,11 @@ def set_edge_label_position(
     label_choice: tuple[int, dict[str, float]] | None,
 ) -> None:
     for key in (
-        "data-label-left",
-        "data-label-top",
-        "data-label-width",
-        "data-label-height",
-        "data-label-segment",
+        contracts.DATA_LABEL_LEFT,
+        contracts.DATA_LABEL_TOP,
+        contracts.DATA_LABEL_WIDTH,
+        contracts.DATA_LABEL_HEIGHT,
+        contracts.DATA_LABEL_SEGMENT,
     ):
         cell.attrib.pop(key, None)
     geom = cell.find("mxGeometry")
@@ -3055,11 +2660,11 @@ def set_edge_label_position(
     segment_index, box = label_choice
     cell.attrib.update(
         {
-            "data-label-left": number(box["left"]),
-            "data-label-top": number(box["top"]),
-            "data-label-width": number(box["width"]),
-            "data-label-height": number(box["height"]),
-            "data-label-segment": str(segment_index),
+            contracts.DATA_LABEL_LEFT: document.number(box["left"]),
+            contracts.DATA_LABEL_TOP: document.number(box["top"]),
+            contracts.DATA_LABEL_WIDTH: document.number(box["width"]),
+            contracts.DATA_LABEL_HEIGHT: document.number(box["height"]),
+            contracts.DATA_LABEL_SEGMENT: str(segment_index),
         }
     )
     midpoint = polyline_midpoint(full_path)
@@ -3072,8 +2677,8 @@ def set_edge_label_position(
         "mxPoint",
         {
             "as": "offset",
-            "x": number(desired[0] - midpoint[0]),
-            "y": number(desired[1] - midpoint[1]),
+            "x": document.number(desired[0] - midpoint[0]),
+            "y": document.number(desired[1] - midpoint[1]),
         },
     )
 
@@ -3086,16 +2691,16 @@ def reflow_automatic_edge_labels(
     preferred_sides: dict[str, str] | None = None,
 ) -> None:
     """Place labels after all routes exist so later edges cannot invalidate them."""
-    records = edge_records(root)
+    records = document.edge_records(root)
     paths = {
-        edge_id: edge_polyline(cell, lanes, nodes)
+        edge_id: document.edge_polyline(cell, lanes, nodes)
         for edge_id, cell in records.items()
     }
     node_boxes = [
-        node_bounds_in_pool(record, lanes[record["lane"]])
+        document.node_bounds_in_pool(record, lanes[record["lane"]])
         for record in nodes.values()
     ]
-    pool_geometry = parse_geometry(pool)
+    pool_geometry = document.parse_geometry(pool)
     container = {
         "left": 0.0,
         "right": pool_geometry["width"],
@@ -3106,8 +2711,8 @@ def reflow_automatic_edge_labels(
 
     def order(item: tuple[str, ET.Element]) -> tuple[int, str]:
         edge_id, cell = item
-        pair = (cell.attrib.get("data-from"), cell.attrib.get("data-to"))
-        route = cell.attrib.get("data-route", "auto")
+        pair = (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO))
+        route = cell.attrib.get(contracts.DATA_ROUTE, "auto")
         return (0 if pair in main_pairs else 2 if route == "back" else 1, edge_id)
 
     assigned_labels: list[dict[str, float]] = []
@@ -3128,7 +2733,7 @@ def reflow_automatic_edge_labels(
             assigned_labels,
             (preferred_sides or {}).get(edge_id),
             container,
-            cell.attrib.get("data-route", "auto") == "back",
+            cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back",
         )
         set_edge_label_position(cell, path, choice)
         if choice is not None:
@@ -3150,35 +2755,35 @@ def apply_edge_route(
             "target": nodes[edge["to"]]["cell"].attrib["id"],
             "style": routed["style"],
             "value": str(edge.get("label", "")),
-            "data-edge-type": edge.get("type", "flow"),
-            "data-from": edge["from"],
-            "data-to": edge["to"],
-            "data-route": routed["route"],
-            "data-exit-side": routed["exit_side"],
-            "data-entry-side": routed["entry_side"],
-            "data-exit-offset": number(routed["exit_offset"]),
-            "data-entry-offset": number(routed["entry_offset"]),
-            "data-allow-port-reuse": "1" if edge.get("allow_port_reuse") else "0",
-            "data-waypoints-origin": "explicit" if "waypoints" in edge else "automatic",
-            "data-exit-side-explicit": "1" if "exit_side" in edge else "0",
-            "data-entry-side-explicit": "1" if "entry_side" in edge else "0",
-            "data-exit-offset-explicit": "1" if "exit_offset" in edge else "0",
-            "data-entry-offset-explicit": "1" if "entry_offset" in edge else "0",
+            contracts.DATA_EDGE_TYPE: edge.get("type", "flow"),
+            contracts.DATA_FROM: edge["from"],
+            contracts.DATA_TO: edge["to"],
+            contracts.DATA_ROUTE: routed["route"],
+            contracts.DATA_EXIT_SIDE: routed["exit_side"],
+            contracts.DATA_ENTRY_SIDE: routed["entry_side"],
+            contracts.DATA_EXIT_OFFSET: document.number(routed["exit_offset"]),
+            contracts.DATA_ENTRY_OFFSET: document.number(routed["entry_offset"]),
+            contracts.DATA_ALLOW_PORT_REUSE: "1" if edge.get("allow_port_reuse") else "0",
+            contracts.DATA_WAYPOINTS_ORIGIN: "explicit" if "waypoints" in edge else "automatic",
+            contracts.DATA_EXIT_SIDE_EXPLICIT: "1" if "exit_side" in edge else "0",
+            contracts.DATA_ENTRY_SIDE_EXPLICIT: "1" if "entry_side" in edge else "0",
+            contracts.DATA_EXIT_OFFSET_EXPLICIT: "1" if "exit_offset" in edge else "0",
+            contracts.DATA_ENTRY_OFFSET_EXPLICIT: "1" if "entry_offset" in edge else "0",
         }
     )
     if edge.get("branch"):
-        cell.attrib["data-branch"] = edge["branch"]
+        cell.attrib[contracts.DATA_BRANCH] = edge["branch"]
     else:
-        cell.attrib.pop("data-branch", None)
+        cell.attrib.pop(contracts.DATA_BRANCH, None)
     if edge.get("flow_role"):
-        cell.attrib["data-flow-role"] = edge["flow_role"]
+        cell.attrib[contracts.DATA_FLOW_ROLE] = edge["flow_role"]
     else:
-        cell.attrib.pop("data-flow-role", None)
+        cell.attrib.pop(contracts.DATA_FLOW_ROLE, None)
     if edge.get("outcome"):
-        cell.attrib["data-outcome"] = edge["outcome"]
+        cell.attrib[contracts.DATA_OUTCOME] = edge["outcome"]
     else:
-        cell.attrib.pop("data-outcome", None)
-    set_edge_points(cell, routed["points"])
+        cell.attrib.pop(contracts.DATA_OUTCOME, None)
+    document.set_edge_points(cell, routed["points"])
     set_edge_label_position(cell, routed["full_path"], routed["label_choice"])
     if routing_context is not None:
         routing_context.setdefault("paths", {})[edge["id"]] = routed["full_path"]
@@ -3204,11 +2809,11 @@ def create_edge_cell(
             "id": mx_id("edge", edge["id"]),
             "parent": pool.attrib["id"],
             "edge": "1",
-            "data-kind": "edge",
-            "data-semantic-id": edge["id"],
+            contracts.DATA_KIND: "edge",
+            contracts.DATA_SEMANTIC_ID: edge["id"],
         },
     )
-    geometry(cell, relative=1)
+    document.geometry(cell, relative=1)
     return apply_edge_route(cell, edge, lanes, nodes, allocator, routing_context)
 
 
@@ -3226,22 +2831,22 @@ def new_routing_context(
         source = nodes[edge["from"]]
         target = nodes[edge["to"]]
         source_type = (
-            source["cell"].attrib.get("data-node-type", "process")
+            source["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
             if "cell" in source
             else source.get("type", "process")
         )
         target_type = (
-            target["cell"].attrib.get("data-node-type", "process")
+            target["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
             if "cell" in target
             else target.get("type", "process")
         )
         source_rank = int(
-            source["cell"].attrib.get("data-rank", "0")
+            source["cell"].attrib.get(contracts.DATA_RANK, "0")
             if "cell" in source
             else source.get("rank", 0)
         )
         target_rank = int(
-            target["cell"].attrib.get("data-rank", "0")
+            target["cell"].attrib.get(contracts.DATA_RANK, "0")
             if "cell" in target
             else target.get("rank", 0)
         )
@@ -3300,8 +2905,8 @@ def derive_port_limits(
             continue
         back_side = validate_side(back_edge["exit_side"], "exit_side")
         back_offset = validate_offset(back_edge["exit_offset"], "exit_offset")
-        source_bounds = node_bounds_in_pool(source, lanes[source["lane"]])
-        target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
+        source_bounds = document.node_bounds_in_pool(source, lanes[source["lane"]])
+        target_bounds = document.node_bounds_in_pool(target, lanes[target["lane"]])
         span = source_bounds["height"] if back_side in {"left", "right"} else source_bounds["width"]
         normalized_clearance = NEAR_PARALLEL_CLEARANCE / max(span, 1.0)
 
@@ -3364,15 +2969,15 @@ def seed_routing_context(
     for edge_id, cell in edges.items():
         if edge_id in excluded:
             continue
-        path = edge_polyline(cell, lanes, nodes)
+        path = document.edge_polyline(cell, lanes, nodes)
         if len(path) < 2:
             continue
         context.setdefault("paths", {})[edge_id] = path
         context.setdefault("endpoints", {})[edge_id] = (
-            cell.attrib.get("data-from"),
-            cell.attrib.get("data-to"),
+            cell.attrib.get(contracts.DATA_FROM),
+            cell.attrib.get(contracts.DATA_TO),
         )
-        label_bounds = stored_label_bounds(cell)
+        label_bounds = document.stored_label_bounds(cell)
         if label_bounds is not None:
             context.setdefault("labels", {})[edge_id] = label_bounds
 
@@ -3391,7 +2996,7 @@ def edge_routing_order(edges: list[dict], main_path: list[str], nodes: dict[str,
         source = nodes[edge["from"]]
         source_rank = source.get("rank")
         if source_rank is None:
-            source_rank = source["cell"].attrib.get("data-rank", "0")
+            source_rank = source["cell"].attrib.get(contracts.DATA_RANK, "0")
         return priority, int(source_rank), edge["id"]
 
     return sorted(edges, key=key)
@@ -3399,7 +3004,7 @@ def edge_routing_order(edges: list[dict], main_path: list[str], nodes: dict[str,
 
 def compile_v3_edges(spec: dict) -> list[dict]:
     """Apply topology-aware routing defaults without mutating the source IR."""
-    if spec.get("schema_version") != V3_SCHEMA_VERSION:
+    if spec.get("schema_version") != contracts.V3_SCHEMA_VERSION:
         return spec["edges"]
 
     nodes = {node["id"]: node for node in spec["nodes"]}
@@ -3432,7 +3037,7 @@ def build_tree(spec: dict) -> ET.ElementTree:
     node_x_positions = v3_node_x_positions(spec, lane_widths)
     phase_presentation = (
         spec.get("layout", {}).get("phase_presentation", "bands")
-        if schema_version == V3_SCHEMA_VERSION
+        if schema_version == contracts.V3_SCHEMA_VERSION
         else "bands"
     )
     phase_rail_width = (
@@ -3467,30 +3072,30 @@ def build_tree(spec: dict) -> ET.ElementTree:
         {
             "id": "psd-pool-main", "parent": "1", "vertex": "1", "value": spec["title"],
             "style": "swimlane;html=1;startSize=36;horizontal=1;rounded=0;shadow=0;strokeWidth=1.5;fontSize=15;fontStyle=1;fillColor=#dae8fc;swimlaneFillColor=#ffffff;",
-            "data-kind": "pool", "data-semantic-id": "main", "data-title-height": number(values["title_height"]),
-            "data-lane-header-height": number(values["lane_header_height"]), "data-row-gap": number(values["row_gap"]),
-            "data-top-padding": number(values["top_padding"]), "data-bottom-padding": number(values["bottom_padding"]),
-            "data-max-rank": str(max_rank),
-            "data-schema-version": schema_version,
-            "data-tool-version": TOOL_VERSION,
-            "data-model-hash-version": MODEL_HASH_VERSION,
-            "data-lane-order": json.dumps(
+            contracts.DATA_KIND: "pool", contracts.DATA_SEMANTIC_ID: "main", contracts.DATA_TITLE_HEIGHT: document.number(values["title_height"]),
+            contracts.DATA_LANE_HEADER_HEIGHT: document.number(values["lane_header_height"]), contracts.DATA_ROW_GAP: document.number(values["row_gap"]),
+            contracts.DATA_TOP_PADDING: document.number(values["top_padding"]), contracts.DATA_BOTTOM_PADDING: document.number(values["bottom_padding"]),
+            contracts.DATA_MAX_RANK: str(max_rank),
+            contracts.DATA_SCHEMA_VERSION: schema_version,
+            contracts.DATA_TOOL_VERSION: contracts.TOOL_VERSION,
+            contracts.DATA_MODEL_HASH_VERSION: contracts.MODEL_HASH_VERSION,
+            contracts.DATA_LANE_ORDER: json.dumps(
                 [lane["id"] for lane in spec["lanes"]],
                 ensure_ascii=True,
                 separators=(",", ":"),
             ),
-            "data-main-path": json.dumps(spec.get("main_path", []), ensure_ascii=True, separators=(",", ":")),
+            contracts.DATA_MAIN_PATH: json.dumps(spec.get("main_path", []), ensure_ascii=True, separators=(",", ":")),
         },
     )
-    if schema_version == V3_SCHEMA_VERSION:
-        pool.attrib["data-behavior-pattern"] = spec["behavior_pattern"]
-        pool.attrib["data-layout-profile"] = spec.get("layout", {}).get("profile", "review")
-        pool.attrib["data-phase-presentation"] = phase_presentation
-        pool.attrib["data-phase-rail-width"] = number(phase_rail_width)
-        pool.attrib["data-groups"] = json.dumps(
+    if schema_version == contracts.V3_SCHEMA_VERSION:
+        pool.attrib[contracts.DATA_BEHAVIOR_PATTERN] = spec["behavior_pattern"]
+        pool.attrib[contracts.DATA_LAYOUT_PROFILE] = spec.get("layout", {}).get("profile", "review")
+        pool.attrib[contracts.DATA_PHASE_PRESENTATION] = phase_presentation
+        pool.attrib[contracts.DATA_PHASE_RAIL_WIDTH] = document.number(phase_rail_width)
+        pool.attrib[contracts.DATA_GROUPS] = json.dumps(
             spec.get("groups", []), ensure_ascii=True, separators=(",", ":")
         )
-    geometry(pool, x=values["x"], y=values["y"], width=pool_width, height=pool_height)
+    document.geometry(pool, x=values["x"], y=values["y"], width=pool_width, height=pool_height)
 
     lane_cells: dict[str, ET.Element] = {}
     offset_x = phase_rail_width
@@ -3518,7 +3123,7 @@ def build_tree(spec: dict) -> ET.ElementTree:
     }
     for node in spec["nodes"]:
         lane_cell = lane_cells[node["lane"]]
-        lane_width = parse_geometry(lane_cell)["width"]
+        lane_width = document.parse_geometry(lane_cell)["width"]
         create_node_cell(
             root,
             lane_cell,
@@ -3529,14 +3134,14 @@ def build_tree(spec: dict) -> ET.ElementTree:
             group_id=group_by_node.get(node["id"]),
         )
 
-    lanes, nodes = lane_node_records(root, pool)
+    lanes, nodes = document.lane_node_records(root, pool)
     compiled_edges = compile_v3_edges(spec)
     allocator = PortAllocator()
     routing_context = new_routing_context(
         spec.get("main_path", []),
         compiled_edges,
         nodes,
-        v3_semantics=schema_version == V3_SCHEMA_VERSION,
+        v3_semantics=schema_version == contracts.V3_SCHEMA_VERSION,
     )
     derive_port_limits(routing_context, compiled_edges, lanes, nodes)
     spec_nodes = {node["id"]: node for node in spec["nodes"]}
@@ -3551,70 +3156,8 @@ def build_tree(spec: dict) -> ET.ElementTree:
     )
     normalize_phase_layering(root, pool)
     tree = ET.ElementTree(mxfile)
-    refresh_managed_metadata(tree)
+    metadata.refresh_managed_metadata(tree)
     return tree
-
-
-def graph_root(tree: ET.ElementTree) -> ET.Element:
-    root = tree.find("./diagram/mxGraphModel/root")
-    if root is None:
-        raise DiagramError("Not a supported uncompressed Draw.io document")
-    return root
-
-
-def find_pool(tree: ET.ElementTree) -> ET.Element:
-    root = graph_root(tree)
-    for cell in list(root):
-        if cell.attrib.get("data-kind") == "pool":
-            return cell
-    raise DiagramError("Diagram is missing compatible swimlane semantic metadata")
-
-
-def values_from_pool(pool: ET.Element) -> dict:
-    return {
-        "title_height": float(pool.attrib.get("data-title-height", DEFAULTS["title_height"])),
-        "lane_header_height": float(pool.attrib.get("data-lane-header-height", DEFAULTS["lane_header_height"])),
-        "row_gap": float(pool.attrib.get("data-row-gap", DEFAULTS["row_gap"])),
-        "top_padding": float(pool.attrib.get("data-top-padding", DEFAULTS["top_padding"])),
-        "bottom_padding": float(pool.attrib.get("data-bottom-padding", DEFAULTS["bottom_padding"])),
-    }
-
-
-def style_values(style: str) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for part in style.split(";"):
-        if "=" in part:
-            key, value = part.split("=", 1)
-            result[key] = value
-    return result
-
-
-def port_from_style(cell: ET.Element, prefix: str) -> tuple[str, float] | None:
-    values = style_values(cell.attrib.get("style", ""))
-    try:
-        x = float(values[f"{prefix}X"])
-        y = float(values[f"{prefix}Y"])
-    except (KeyError, ValueError):
-        return None
-    if abs(y) < GEOMETRY_TOLERANCE / 10:
-        return "top", x
-    if abs(y - 1.0) < GEOMETRY_TOLERANCE / 10:
-        return "bottom", x
-    if abs(x) < GEOMETRY_TOLERANCE / 10:
-        return "left", y
-    if abs(x - 1.0) < GEOMETRY_TOLERANCE / 10:
-        return "right", y
-    return None
-
-
-def edge_records(root: ET.Element) -> dict[str, ET.Element]:
-    return {
-        child.attrib["data-semantic-id"]: child
-        for child in list(root)
-        if child.tag == "mxCell"
-        and child.attrib.get("data-kind") == "edge"
-        and child.attrib.get("data-semantic-id")
-    }
 
 
 def unmanaged_edge_specs(root: ET.Element, nodes: dict[str, dict]) -> list[dict]:
@@ -3629,7 +3172,7 @@ def unmanaged_edge_specs(root: ET.Element, nodes: dict[str, dict]) -> list[dict]
 
     recovered: list[dict] = []
     for cell in root.iter("mxCell"):
-        if cell.attrib.get("edge") != "1" or cell.attrib.get("data-kind") == "edge":
+        if cell.attrib.get("edge") != "1" or cell.attrib.get(contracts.DATA_KIND) == "edge":
             continue
         source = node_by_cell_id.get(cell.attrib.get("source"))
         target = node_by_cell_id.get(cell.attrib.get("target"))
@@ -3651,10 +3194,10 @@ def unmanaged_edge_specs(root: ET.Element, nodes: dict[str, dict]) -> list[dict]
                 "from": source,
                 "to": target,
                 "label": label,
-                "exit_port": port_from_style(cell, "exit"),
-                "entry_port": port_from_style(cell, "entry"),
+                "exit_port": document.port_from_style(cell, "exit"),
+                "entry_port": document.port_from_style(cell, "entry"),
                 "waypoints": [
-                    {"x": x, "y": y} for x, y in edge_waypoints(cell)
+                    {"x": x, "y": y} for x, y in document.edge_waypoints(cell)
                 ],
             }
         )
@@ -3668,24 +3211,24 @@ def reserve_existing_ports(
     exclude: set[str] | None = None,
 ) -> None:
     excluded = exclude or set()
-    for edge_id, cell in edge_records(root).items():
+    for edge_id, cell in document.edge_records(root).items():
         if edge_id in excluded:
             continue
-        allow_reuse = cell.attrib.get("data-allow-port-reuse") == "1"
-        exit_port = port_from_style(cell, "exit")
-        entry_port = port_from_style(cell, "entry")
-        if exit_port and cell.attrib.get("data-from"):
+        allow_reuse = cell.attrib.get(contracts.DATA_ALLOW_PORT_REUSE) == "1"
+        exit_port = document.port_from_style(cell, "exit")
+        entry_port = document.port_from_style(cell, "entry")
+        if exit_port and cell.attrib.get(contracts.DATA_FROM):
             allocator.reserve(
-                cell.attrib["data-from"],
+                cell.attrib[contracts.DATA_FROM],
                 exit_port[0],
                 exit_port[1],
                 edge_id,
                 allow_reuse=allow_reuse,
                 fail_on_conflict=False,
             )
-        if entry_port and cell.attrib.get("data-to"):
+        if entry_port and cell.attrib.get(contracts.DATA_TO):
             allocator.reserve(
-                cell.attrib["data-to"],
+                cell.attrib[contracts.DATA_TO],
                 entry_port[0],
                 entry_port[1],
                 edge_id,
@@ -3696,42 +3239,42 @@ def reserve_existing_ports(
 
 def existing_edge_spec(cell: ET.Element, *, for_reroute: bool = False) -> dict:
     spec = {
-        "id": cell.attrib["data-semantic-id"],
-        "from": cell.attrib.get("data-from"),
-        "to": cell.attrib.get("data-to"),
-        "type": cell.attrib.get("data-edge-type", "flow"),
+        "id": cell.attrib[contracts.DATA_SEMANTIC_ID],
+        "from": cell.attrib.get(contracts.DATA_FROM),
+        "to": cell.attrib.get(contracts.DATA_TO),
+        "type": cell.attrib.get(contracts.DATA_EDGE_TYPE, "flow"),
         "label": cell.attrib.get("value", ""),
-        "route": cell.attrib.get("data-route", "auto"),
-        "allow_port_reuse": cell.attrib.get("data-allow-port-reuse") == "1",
+        "route": cell.attrib.get(contracts.DATA_ROUTE, "auto"),
+        "allow_port_reuse": cell.attrib.get(contracts.DATA_ALLOW_PORT_REUSE) == "1",
     }
-    if cell.attrib.get("data-branch"):
-        spec["branch"] = cell.attrib["data-branch"]
-    if cell.attrib.get("data-flow-role"):
-        spec["flow_role"] = cell.attrib["data-flow-role"]
-    if cell.attrib.get("data-outcome"):
-        spec["outcome"] = cell.attrib["data-outcome"]
-    explicit_waypoints = cell.attrib.get("data-waypoints-origin") == "explicit"
-    exit_port = port_from_style(cell, "exit")
-    entry_port = port_from_style(cell, "entry")
+    if cell.attrib.get(contracts.DATA_BRANCH):
+        spec["branch"] = cell.attrib[contracts.DATA_BRANCH]
+    if cell.attrib.get(contracts.DATA_FLOW_ROLE):
+        spec["flow_role"] = cell.attrib[contracts.DATA_FLOW_ROLE]
+    if cell.attrib.get(contracts.DATA_OUTCOME):
+        spec["outcome"] = cell.attrib[contracts.DATA_OUTCOME]
+    explicit_waypoints = cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
+    exit_port = document.port_from_style(cell, "exit")
+    entry_port = document.port_from_style(cell, "entry")
     preserve_exit_side = (
         not for_reroute
         or explicit_waypoints
-        or cell.attrib.get("data-exit-side-explicit") == "1"
+        or cell.attrib.get(contracts.DATA_EXIT_SIDE_EXPLICIT) == "1"
     )
     preserve_entry_side = (
         not for_reroute
         or explicit_waypoints
-        or cell.attrib.get("data-entry-side-explicit") == "1"
+        or cell.attrib.get(contracts.DATA_ENTRY_SIDE_EXPLICIT) == "1"
     )
     preserve_exit_offset = (
         not for_reroute
         or explicit_waypoints
-        or cell.attrib.get("data-exit-offset-explicit") == "1"
+        or cell.attrib.get(contracts.DATA_EXIT_OFFSET_EXPLICIT) == "1"
     )
     preserve_entry_offset = (
         not for_reroute
         or explicit_waypoints
-        or cell.attrib.get("data-entry-offset-explicit") == "1"
+        or cell.attrib.get(contracts.DATA_ENTRY_OFFSET_EXPLICIT) == "1"
     )
     if exit_port and preserve_exit_side:
         spec["exit_side"] = exit_port[0]
@@ -3744,320 +3287,19 @@ def existing_edge_spec(cell: ET.Element, *, for_reroute: bool = False) -> dict:
     if explicit_waypoints:
         spec["waypoints"] = [
             {"x": x, "y": y}
-            for x, y in edge_waypoints(cell)
+            for x, y in document.edge_waypoints(cell)
         ]
     return spec
 
 
 def phase_cell_spec(cell: ET.Element) -> dict:
     return {
-        "id": cell.attrib["data-semantic-id"],
+        "id": cell.attrib[contracts.DATA_SEMANTIC_ID],
         "label": cell.attrib.get("value", ""),
-        "from_rank": int(cell.attrib.get("data-from-rank", "1")),
-        "to_rank": int(cell.attrib.get("data-to-rank", "1")),
-        "fill_color": cell.attrib.get("data-fill-color", "#f5f5f5"),
+        "from_rank": int(cell.attrib.get(contracts.DATA_FROM_RANK, "1")),
+        "to_rank": int(cell.attrib.get(contracts.DATA_TO_RANK, "1")),
+        "fill_color": cell.attrib.get(contracts.DATA_FILL_COLOR, "#f5f5f5"),
     }
-
-
-def json_attribute(
-    cell: ET.Element,
-    name: str,
-    expected_type: type,
-    default,
-):
-    raw = cell.attrib.get(name)
-    if raw is None:
-        return default
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise DiagramError(
-            f"Invalid managed metadata in {name}",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "pool", "id": "main"},
-            evidence={"attribute": name},
-            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-        ) from exc
-    if not isinstance(value, expected_type):
-        raise DiagramError(
-            f"Managed metadata in {name} has the wrong type",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "pool", "id": "main"},
-            evidence={"attribute": name, "expected_type": expected_type.__name__},
-            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-        )
-    return value
-
-
-def managed_metadata_error(
-    message: str,
-    *,
-    attribute: str,
-    evidence: dict | None = None,
-) -> DiagramError:
-    return DiagramError(
-        message,
-        code="integrity/schema-composition-mismatch",
-        subject={"kind": "pool", "id": "main"},
-        evidence={"attribute": attribute, **(evidence or {})},
-        supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-    )
-
-
-def managed_id_list_attribute(
-    cell: ET.Element,
-    name: str,
-    default,
-) -> list[str] | None:
-    value = json_attribute(cell, name, list, default)
-    if value is None:
-        return value
-    try:
-        return validate_id_list(value, f"managed metadata {name}")
-    except DiagramError as exc:
-        raise managed_metadata_error(
-            f"Managed metadata in {name} must contain semantic IDs",
-            attribute=name,
-            evidence={"cause": exc.code},
-        ) from exc
-
-
-def managed_groups_attribute(
-    pool: ET.Element,
-    lanes: dict[str, dict],
-    nodes: dict[str, dict],
-) -> list[dict]:
-    groups = json_attribute(pool, "data-groups", list, [])
-    group_ids: set[str] = set()
-    member_to_group: dict[str, str] = {}
-    for index, group in enumerate(groups):
-        try:
-            validate_group_object(group, f"managed group[{index}]")
-        except DiagramError as exc:
-            raise managed_metadata_error(
-                "Managed group metadata is invalid",
-                attribute="data-groups",
-                evidence={"index": index, "cause": exc.code},
-            ) from exc
-        group_id = group["id"]
-        if group_id in group_ids:
-            raise managed_metadata_error(
-                "Managed group IDs must be unique",
-                attribute="data-groups",
-                evidence={"group_id": group_id},
-            )
-        group_ids.add(group_id)
-        if group["lane"] not in lanes:
-            raise managed_metadata_error(
-                "Managed group references a missing lane",
-                attribute="data-groups",
-                evidence={"group_id": group_id, "lane": group["lane"]},
-            )
-        for node_id in group["nodes"]:
-            if node_id not in nodes:
-                raise managed_metadata_error(
-                    "Managed group references a missing node",
-                    attribute="data-groups",
-                    evidence={"group_id": group_id, "node": node_id},
-                )
-            if nodes[node_id]["lane"] != group["lane"]:
-                raise managed_metadata_error(
-                    "Managed group contains a node from another lane",
-                    attribute="data-groups",
-                    evidence={"group_id": group_id, "node": node_id},
-                )
-            if node_id in member_to_group:
-                raise managed_metadata_error(
-                    "Managed node belongs to more than one group",
-                    attribute="data-groups",
-                    evidence={
-                        "node": node_id,
-                        "groups": [member_to_group[node_id], group_id],
-                    },
-                )
-            member_to_group[node_id] = group_id
-
-    for node_id, record in nodes.items():
-        mirrored_group = record["cell"].attrib.get("data-group-id")
-        expected_group = member_to_group.get(node_id)
-        if mirrored_group != expected_group:
-            raise managed_metadata_error(
-                "Node group metadata does not match the managed group model",
-                attribute="data-group-id",
-                evidence={
-                    "node": node_id,
-                    "expected_group": expected_group,
-                    "actual_group": mirrored_group,
-                },
-            )
-    return groups
-
-
-def semantic_model_document(tree: ET.ElementTree) -> dict:
-    pool = find_pool(tree)
-    root = graph_root(tree)
-    lanes, nodes = lane_node_records(root, pool)
-    edges = edge_records(root)
-    phases = phase_records(root, pool)
-    schema_version = pool.attrib.get("data-schema-version", "1")
-
-    lane_order = managed_id_list_attribute(pool, "data-lane-order", None)
-    if lane_order is None:
-        lane_order = [
-            cell.attrib["data-semantic-id"]
-            for cell in list(root)
-            if cell.attrib.get("data-kind") == "lane"
-            and cell.attrib.get("data-semantic-id")
-        ]
-    if len(lane_order) != len(set(lane_order)) or set(lane_order) != set(lanes):
-        raise DiagramError(
-            "Managed lane order does not match the diagram lanes",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "pool", "id": "main"},
-            evidence={"lane_order": lane_order, "lane_ids": sorted(lanes)},
-            supported_fixes=["restore-lane-order", "controlled-rebuild"],
-        )
-
-    lane_model = [
-        {
-            "id": lane_id,
-            "label": lanes[lane_id]["cell"].attrib.get("value", ""),
-        }
-        for lane_id in lane_order
-    ]
-    node_model = []
-    for node_id, record in sorted(nodes.items()):
-        cell = record["cell"]
-        try:
-            rank = int(cell.attrib.get("data-rank", "0"))
-        except ValueError as exc:
-            raise DiagramError(
-                f"Node {node_id} has invalid rank metadata",
-                code="integrity/schema-composition-mismatch",
-                subject={"kind": "node", "id": node_id},
-                evidence={"rank": cell.attrib.get("data-rank")},
-                supported_fixes=["restore-node-metadata", "controlled-rebuild"],
-            ) from exc
-        item = {
-            "id": node_id,
-            "lane": record["lane"],
-            "rank": rank,
-            "type": cell.attrib.get("data-node-type", "process"),
-            "label": cell.attrib.get("value", ""),
-        }
-        if cell.attrib.get("data-slot"):
-            item["slot"] = cell.attrib["data-slot"]
-        if cell.attrib.get("data-anchor"):
-            item["anchor"] = json_attribute(cell, "data-anchor", dict, {})
-        node_model.append(item)
-
-    edge_model = []
-    for edge_id, cell in sorted(edges.items()):
-        item = {
-            "id": edge_id,
-            "from": cell.attrib.get("data-from", ""),
-            "to": cell.attrib.get("data-to", ""),
-            "type": cell.attrib.get("data-edge-type", "flow"),
-            "label": cell.attrib.get("value", ""),
-            "route": cell.attrib.get("data-route", "auto"),
-        }
-        for attribute, field in (
-            ("data-branch", "branch"),
-            ("data-flow-role", "flow_role"),
-            ("data-outcome", "outcome"),
-        ):
-            if cell.attrib.get(attribute):
-                item[field] = cell.attrib[attribute]
-        edge_model.append(item)
-
-    try:
-        phase_model = [
-            {
-                "id": phase_id,
-                "label": cell.attrib.get("value", ""),
-                "from_rank": int(cell.attrib.get("data-from-rank", "0")),
-                "to_rank": int(cell.attrib.get("data-to-rank", "0")),
-            }
-            for phase_id, cell in sorted(phases.items())
-        ]
-    except ValueError as exc:
-        raise DiagramError(
-            "Phase rank metadata is invalid",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "phase"},
-            supported_fixes=["restore-phase-metadata", "controlled-rebuild"],
-        ) from exc
-    model = {
-        "model_hash_version": MODEL_HASH_VERSION,
-        "schema_version": schema_version,
-        "title": pool.attrib.get("value", ""),
-        "lanes": lane_model,
-        "nodes": node_model,
-        "edges": edge_model,
-        "main_path": managed_id_list_attribute(pool, "data-main-path", []),
-        "phases": phase_model,
-    }
-    if schema_version == V3_SCHEMA_VERSION:
-        model["behavior_pattern"] = pool.attrib.get("data-behavior-pattern", "")
-        model["layout"] = {
-            "profile": pool.attrib.get("data-layout-profile", "review"),
-            "phase_presentation": pool.attrib.get("data-phase-presentation", "bands"),
-        }
-        groups = managed_groups_attribute(pool, lanes, nodes)
-        model["groups"] = sorted(
-            (
-                {
-                    **{key: value for key, value in group.items() if key != "nodes"},
-                    "nodes": sorted(group.get("nodes", [])),
-                }
-                for group in groups
-            ),
-            key=lambda group: group.get("id", ""),
-        )
-    return model
-
-
-def semantic_model_hash(tree: ET.ElementTree) -> str:
-    payload = json.dumps(
-        semantic_model_document(tree),
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def managed_artifact_summary(tree: ET.ElementTree) -> dict:
-    pool = find_pool(tree)
-    stored_hash = pool.attrib.get("data-model-hash")
-    computed_hash = semantic_model_hash(tree)
-    matches = stored_hash == computed_hash if stored_hash else None
-    return {
-        "tool_version": pool.attrib.get("data-tool-version"),
-        "model_hash_version": pool.attrib.get("data-model-hash-version"),
-        "stored_model_hash": stored_hash,
-        "computed_model_hash": computed_hash,
-        "model_hash_matches": matches,
-    }
-
-
-def refresh_managed_metadata(tree: ET.ElementTree) -> None:
-    pool = find_pool(tree)
-    root = graph_root(tree)
-    if "data-lane-order" not in pool.attrib:
-        pool.attrib["data-lane-order"] = json.dumps(
-            [
-                cell.attrib["data-semantic-id"]
-                for cell in list(root)
-                if cell.attrib.get("data-kind") == "lane"
-                and cell.attrib.get("data-semantic-id")
-            ],
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
-    pool.attrib["data-tool-version"] = TOOL_VERSION
-    pool.attrib["data-model-hash-version"] = MODEL_HASH_VERSION
-    pool.attrib["data-model-hash"] = semantic_model_hash(tree)
 
 
 def apply_phase_update(
@@ -4070,10 +3312,10 @@ def apply_phase_update(
     current.update(phase)
     validate_phase_object(current, f"phase[{current['id']}]")
     cell.attrib["value"] = str(current["label"])
-    cell.attrib["data-from-rank"] = str(current["from_rank"])
-    cell.attrib["data-to-rank"] = str(current["to_rank"])
-    cell.attrib["data-fill-color"] = current["fill_color"]
-    presentation = cell.attrib.get("data-presentation", "bands")
+    cell.attrib[contracts.DATA_FROM_RANK] = str(current["from_rank"])
+    cell.attrib[contracts.DATA_TO_RANK] = str(current["to_rank"])
+    cell.attrib[contracts.DATA_FILL_COLOR] = current["fill_color"]
+    presentation = cell.attrib.get(contracts.DATA_PRESENTATION, "bands")
     style = cell.attrib.get("style", "")
     if presentation == "bands":
         style = re.sub(
@@ -4084,15 +3326,15 @@ def apply_phase_update(
     cell.attrib["style"] = style
     geom = cell.find("mxGeometry")
     if geom is None:
-        geom = geometry(cell)
+        geom = document.geometry(cell)
     rail_width = (
-        parse_geometry(cell)["width"]
+        document.parse_geometry(cell)["width"]
         if presentation == "rail"
         else PHASE_RAIL_WIDTH
     )
     geom.attrib.update(
         {
-            key: number(value)
+            key: document.number(value)
             for key, value in phase_geometry_values(
                 current,
                 values,
@@ -4109,16 +3351,16 @@ def edge_route_is_locally_valid(
     lanes: dict[str, dict],
     nodes: dict[str, dict],
 ) -> bool:
-    points = edge_polyline(cell, lanes, nodes)
+    points = document.edge_polyline(cell, lanes, nodes)
     if len(points) < 2:
         return False
     boundaries = internal_lane_boundaries(lanes)
     node_bounds = {
-        semantic_id: node_bounds_in_pool(record, lanes[record["lane"]])
+        semantic_id: document.node_bounds_in_pool(record, lanes[record["lane"]])
         for semantic_id, record in nodes.items()
     }
     for segment in zip(points, points[1:]):
-        axis = segment_axis(segment)
+        axis = core_geometry.segment_axis(segment)
         if axis == "diagonal":
             return False
         if axis == "vertical" and any(
@@ -4127,15 +3369,15 @@ def edge_route_is_locally_valid(
         ):
             return False
         for node_id, bounds in node_bounds.items():
-            if node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}:
+            if node_id in {cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO)}:
                 continue
-            if segment_crosses_bounds(segment, bounds):
+            if core_geometry.segment_crosses_bounds(segment, bounds):
                 return False
     return True
 
 
 def read_main_path(pool: ET.Element) -> list[str]:
-    raw = pool.attrib.get("data-main-path", "[]")
+    raw = pool.attrib.get(contracts.DATA_MAIN_PATH, "[]")
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
@@ -4144,16 +3386,16 @@ def read_main_path(pool: ET.Element) -> list[str]:
 
 
 def read_lane_order(pool: ET.Element, root: ET.Element, lanes: dict[str, dict]) -> list[str]:
-    order = managed_id_list_attribute(pool, "data-lane-order", None)
+    order = metadata.managed_id_list_attribute(pool, contracts.DATA_LANE_ORDER, None)
     if order is None:
         order = [
-            cell.attrib["data-semantic-id"]
+            cell.attrib[contracts.DATA_SEMANTIC_ID]
             for cell in list(root)
-            if cell.attrib.get("data-kind") == "lane"
-            and cell.attrib.get("data-semantic-id") in lanes
+            if cell.attrib.get(contracts.DATA_KIND) == "lane"
+            and cell.attrib.get(contracts.DATA_SEMANTIC_ID) in lanes
         ]
     if len(order) != len(set(order)) or set(order) != set(lanes):
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Managed lane order does not match the diagram lanes",
             code="integrity/schema-composition-mismatch",
             evidence={"lane_order": order, "lane_ids": sorted(lanes)},
@@ -4169,8 +3411,8 @@ def reflow_lane_order_geometry(
     previous: dict[str, dict],
 ) -> list[dict]:
     phase_rail_width = (
-        float(pool.attrib.get("data-phase-rail-width", PHASE_RAIL_WIDTH))
-        if pool.attrib.get("data-phase-presentation") == "rail"
+        float(pool.attrib.get(contracts.DATA_PHASE_RAIL_WIDTH, PHASE_RAIL_WIDTH))
+        if pool.attrib.get(contracts.DATA_PHASE_PRESENTATION) == "rail"
         else 0.0
     )
     cursor = phase_rail_width
@@ -4181,11 +3423,11 @@ def reflow_lane_order_geometry(
         assert geom is not None
         width = float(geom.attrib.get("width", "0"))
         old = previous.get(lane_id)
-        geom.attrib["x"] = number(cursor)
-        record["geometry"] = parse_geometry(record["cell"])
+        geom.attrib["x"] = document.number(cursor)
+        record["geometry"] = document.parse_geometry(record["cell"])
         if old is not None and (
-            abs(old["x"] - cursor) >= GEOMETRY_TOLERANCE
-            or abs(old["width"] - width) >= GEOMETRY_TOLERANCE
+            abs(old["x"] - cursor) >= core_geometry.GEOMETRY_TOLERANCE
+            or abs(old["width"] - width) >= core_geometry.GEOMETRY_TOLERANCE
         ):
             shifts.append(
                 {
@@ -4200,8 +3442,8 @@ def reflow_lane_order_geometry(
 
     pool_geom = pool.find("mxGeometry")
     assert pool_geom is not None
-    pool_geom.attrib["width"] = number(cursor)
-    pool.attrib["data-lane-order"] = json.dumps(
+    pool_geom.attrib["width"] = document.number(cursor)
+    pool.attrib[contracts.DATA_LANE_ORDER] = json.dumps(
         order, ensure_ascii=True, separators=(",", ":")
     )
     return shifts
@@ -4223,12 +3465,12 @@ def apply_lane_operations(
     deleted = set(changes.get("delete_lanes", []))
     for lane_id in deleted:
         if lane_id not in lanes:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Cannot delete missing lane: {lane_id}",
                 code="patch/missing-lane",
             )
     if len(order) - len(deleted) + len(changes.get("lanes", [])) < 1:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "A diagram must retain at least one lane",
             code="patch/delete-last-lane",
             supported_fixes=["retain-one-lane", "add-replacement-lane"],
@@ -4237,12 +3479,12 @@ def apply_lane_operations(
     updates = {item["id"]: item for item in changes.get("update_lanes", [])}
     for lane_id in updates:
         if lane_id not in lanes:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Cannot update missing lane: {lane_id}",
                 code="patch/missing-lane",
             )
         if lane_id in deleted:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Lane {lane_id} cannot be updated and deleted in one patch",
                 code="patch/conflicting-operation",
                 subject={"kind": "lane", "id": lane_id},
@@ -4251,7 +3493,7 @@ def apply_lane_operations(
     added_ids = {item["id"] for item in changes.get("lanes", [])}
     duplicate_added = sorted(added_ids.intersection(lanes))
     if duplicate_added:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Lane already exists: {duplicate_added[0]}",
             code="patch/duplicate-lane",
         )
@@ -4270,13 +3512,13 @@ def apply_lane_operations(
 
     lane_height_value = next(
         (record["geometry"]["height"] for record in lanes.values()),
-        lane_height(int(pool.attrib.get("data-max-rank", "1")), values),
+        lane_height(int(pool.attrib.get(contracts.DATA_MAX_RANK, "1")), values),
     )
     for lane in changes.get("lanes", []):
         placement = "before" if "before" in lane else "after"
         reference = lane[placement]
         if reference not in order:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"New lane {lane['id']} references missing placement lane {reference}",
                 code="patch/lane-placement-target",
                 subject={"kind": "lane", "id": lane["id"]},
@@ -4295,7 +3537,7 @@ def apply_lane_operations(
             width=width,
             height=lane_height_value,
         )
-        lanes[lane["id"]] = {"cell": cell, "geometry": parse_geometry(cell)}
+        lanes[lane["id"]] = {"cell": cell, "geometry": document.parse_geometry(cell)}
 
     for lane_id, update in updates.items():
         cell = lanes[lane_id]["cell"]
@@ -4304,15 +3546,15 @@ def apply_lane_operations(
         if "width" in update:
             geom = cell.find("mxGeometry")
             assert geom is not None
-            geom.attrib["width"] = number(update["width"])
-            lanes[lane_id]["geometry"] = parse_geometry(cell)
+            geom.attrib["width"] = document.number(update["width"])
+            lanes[lane_id]["geometry"] = document.parse_geometry(cell)
 
     shifts = reflow_lane_order_geometry(pool, order, lanes, previous)
     return order, lanes, shifts
 
 
 def current_groups_for_patch(pool: ET.Element) -> list[dict]:
-    return copy.deepcopy(json_attribute(pool, "data-groups", list, []))
+    return copy.deepcopy(metadata.json_attribute(pool, contracts.DATA_GROUPS, list, []))
 
 
 def apply_group_operations(
@@ -4324,14 +3566,14 @@ def apply_group_operations(
     groups = current_groups_for_patch(pool)
     by_id = {group.get("id"): group for group in groups}
     if len(by_id) != len(groups) or None in by_id:
-        raise managed_metadata_error(
+        raise metadata.managed_metadata_error(
             "Managed group metadata is invalid",
-            attribute="data-groups",
+            attribute=contracts.DATA_GROUPS,
         )
     deleted = set(changes.get("delete_groups", []))
     for group_id in deleted:
         if group_id not in by_id:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Cannot delete missing group: {group_id}",
                 code="patch/missing-group",
             )
@@ -4342,12 +3584,12 @@ def apply_group_operations(
     for update in changes.get("update_groups", []):
         group_id = update["id"]
         if group_id not in by_id:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Cannot update missing group: {group_id}",
                 code="patch/missing-group",
             )
         if group_id in deleted:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Group {group_id} cannot be updated and deleted in one patch",
                 code="patch/conflicting-operation",
                 subject={"kind": "group", "id": group_id},
@@ -4358,7 +3600,7 @@ def apply_group_operations(
     added_ids: list[str] = []
     for group in changes.get("groups", []):
         if group["id"] in by_id:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Group already exists: {group['id']}",
                 code="patch/duplicate-group",
             )
@@ -4369,9 +3611,9 @@ def apply_group_operations(
 
     member_to_group: dict[str, str] = {}
     for group in groups:
-        validate_group_object(group, f"group[{group['id']}]")
+        contracts.validate_group_object(group, f"group[{group['id']}]")
         if group["lane"] not in lanes:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Group {group['id']} references a deleted or missing lane",
                 code="patch/group-lane-dependency",
                 subject={"kind": "group", "id": group["id"]},
@@ -4380,7 +3622,7 @@ def apply_group_operations(
             )
         for node_id in group["nodes"]:
             if node_id not in nodes:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Group {group['id']} references a deleted or missing node",
                     code="patch/group-node-dependency",
                     subject={"kind": "group", "id": group["id"]},
@@ -4388,14 +3630,14 @@ def apply_group_operations(
                     supported_fixes=["delete-group", "update-group-nodes"],
                 )
             if nodes[node_id]["lane"] != group["lane"]:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Group {group['id']} contains a node from another lane",
                     code="semantic/group-lane",
                     subject={"kind": "group", "id": group["id"]},
                     evidence={"node": node_id},
                 )
             if node_id in member_to_group:
-                raise DiagramError(
+                raise contracts.DiagramError(
                     f"Node {node_id} belongs to more than one group",
                     code="semantic/group-membership",
                     subject={"kind": "node", "id": node_id},
@@ -4406,10 +3648,10 @@ def apply_group_operations(
         cell = record["cell"]
         group_id = member_to_group.get(node_id)
         if group_id:
-            cell.attrib["data-group-id"] = group_id
+            cell.attrib[contracts.DATA_GROUP_ID] = group_id
         else:
-            cell.attrib.pop("data-group-id", None)
-    pool.attrib["data-groups"] = json.dumps(
+            cell.attrib.pop(contracts.DATA_GROUP_ID, None)
+    pool.attrib[contracts.DATA_GROUPS] = json.dumps(
         groups, ensure_ascii=True, separators=(",", ":")
     )
     return sorted(added_ids), sorted(updated_ids), sorted(deleted)
@@ -4429,14 +3671,14 @@ def patch_node_automatic_x(
         record
         for record in nodes.values()
         if record["lane"] == node["lane"]
-        and int(record["cell"].attrib.get("data-rank", "0")) == rank
+        and int(record["cell"].attrib.get(contracts.DATA_RANK, "0")) == rank
     ]
     occupied = {
-        record["cell"].attrib.get("data-slot", "main"): record
+        record["cell"].attrib.get(contracts.DATA_SLOT, "main"): record
         for record in row
     }
     if slot in occupied:
-        raise DiagramError(
+        raise contracts.DiagramError(
             f"Node {node['id']} conflicts with an occupied lane-local slot",
             code="layout/slot-conflict",
             subject={"kind": "node", "id": node["id"]},
@@ -4449,15 +3691,15 @@ def patch_node_automatic_x(
         target_id = node["anchor"]["node"]
         target = nodes.get(target_id)
         if target is None:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Note {node['id']} anchors to a missing node",
                 code="semantic/anchor-target",
                 subject={"kind": "node", "id": node["id"]},
                 evidence={"anchor": target_id},
             )
-        target_rank = int(target["cell"].attrib.get("data-rank", "0"))
+        target_rank = int(target["cell"].attrib.get(contracts.DATA_RANK, "0"))
         if target["lane"] != node["lane"] or target_rank != rank:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Note {node['id']} must share lane and rank with its anchor",
                 code="semantic/anchor-alignment",
                 subject={"kind": "node", "id": node["id"]},
@@ -4480,8 +3722,8 @@ def patch_node_automatic_x(
         layout_profile_name,
         PROFILE_SIDE_PADDING["review"],
     )
-    if x < side_padding - GEOMETRY_TOLERANCE:
-        raise DiagramError(
+    if x < side_padding - core_geometry.GEOMETRY_TOLERANCE:
+        raise contracts.DiagramError(
             f"Node {node['id']} does not fit in the requested left slot without moving existing geometry",
             code="layout/slot-space",
             subject={"kind": "node", "id": node["id"]},
@@ -4493,17 +3735,17 @@ def patch_node_automatic_x(
 
 def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool) -> dict:
     validate_patch_spec(changes)
-    pool = find_pool(tree)
-    root = graph_root(tree)
-    values = values_from_pool(pool)
-    lanes, nodes = lane_node_records(root, pool)
-    existing_edges = edge_records(root)
+    pool = document.find_pool(tree)
+    root = document.graph_root(tree)
+    values = document.values_from_pool(pool, DEFAULTS)
+    lanes, nodes = document.lane_node_records(root, pool)
+    existing_edges = document.edge_records(root)
     explicit_waypoints_before = {
-        edge_id: edge_waypoints(cell)
+        edge_id: document.edge_waypoints(cell)
         for edge_id, cell in existing_edges.items()
-        if cell.attrib.get("data-waypoints-origin") == "explicit"
+        if cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
     }
-    phases = phase_records(root, pool)
+    phases = document.phase_records(root, pool)
     had_phases_before_patch = bool(phases)
     pool_width = max(
         record["geometry"]["x"] + record["geometry"]["width"]
@@ -4527,7 +3769,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         if any(node_id not in deleted_node_ids for node_id in node_ids)
     }
     if undeclared_lane_nodes:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Deleting a lane requires explicitly deleting every node in that lane",
             code="semantic/lane-not-empty",
             evidence={"lanes": undeclared_lane_nodes},
@@ -4535,25 +3777,25 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
     for edge_id in deleted_edge_ids:
         if edge_id not in existing_edges:
-            raise DiagramError(f"Cannot delete missing edge: {edge_id}", code="patch/missing-edge")
+            raise contracts.DiagramError(f"Cannot delete missing edge: {edge_id}", code="patch/missing-edge")
     for node_id in deleted_node_ids:
         if node_id not in nodes:
-            raise DiagramError(f"Cannot delete missing node: {node_id}", code="patch/missing-node")
+            raise contracts.DiagramError(f"Cannot delete missing node: {node_id}", code="patch/missing-node")
     for phase_id in deleted_phase_ids:
         if phase_id not in phases:
-            raise DiagramError(f"Cannot delete missing phase: {phase_id}", code="patch/missing-phase")
+            raise contracts.DiagramError(f"Cannot delete missing phase: {phase_id}", code="patch/missing-phase")
 
     undeclared_incident = sorted(
         edge_id
         for edge_id, cell in existing_edges.items()
         if edge_id not in deleted_edge_ids
         and (
-            cell.attrib.get("data-from") in deleted_node_ids
-            or cell.attrib.get("data-to") in deleted_node_ids
+            cell.attrib.get(contracts.DATA_FROM) in deleted_node_ids
+            or cell.attrib.get(contracts.DATA_TO) in deleted_node_ids
         )
     )
     if undeclared_incident:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Deleting a node requires explicitly deleting every incident edge",
             code="patch/incident-edge",
             evidence={"edges": undeclared_incident},
@@ -4562,7 +3804,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
 
     deleted_main_path_nodes = deleted_node_ids.intersection(read_main_path(pool))
     if deleted_main_path_nodes and "main_path" not in changes:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Deleting a main_path node requires supplying the replacement main_path",
             code="patch/main-path",
             evidence={"deleted_nodes": sorted(deleted_main_path_nodes)},
@@ -4580,18 +3822,18 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         node_id = update["id"]
         if node_id not in nodes or "type" not in update:
             continue
-        current_type = nodes[node_id]["cell"].attrib.get("data-node-type", "process")
+        current_type = nodes[node_id]["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
         if current_type == update["type"]:
             continue
         incident = sorted(
             edge_id
             for edge_id, cell in existing_edges.items()
             if edge_id not in deleted_edge_ids
-            and node_id in {cell.attrib.get("data-from"), cell.attrib.get("data-to")}
+            and node_id in {cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO)}
             and edge_id not in explicit_type_reroutes
         )
         if incident:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "Changing a node type requires explicit rerouting of every incident edge",
                 code="patch/node-type-incident-edge",
                 subject={"kind": "node", "id": node_id},
@@ -4606,43 +3848,43 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     for phase_id in deleted_phase_ids:
         root.remove(phases[phase_id])
 
-    lanes, nodes = lane_node_records(root, pool)
+    lanes, nodes = document.lane_node_records(root, pool)
     lane_order, lanes, lane_shifts = apply_lane_operations(
         root, pool, lanes, values, changes
     )
-    pool_width = parse_geometry(pool)["width"]
-    existing_edges = edge_records(root)
-    phases = phase_records(root, pool)
+    pool_width = document.parse_geometry(pool)["width"]
+    existing_edges = document.edge_records(root)
+    phases = document.phase_records(root, pool)
     moved_node_ids: set[str] = set()
 
     for update in changes.get("update_nodes", []):
         semantic_id = update.get("id")
         if semantic_id not in nodes:
-            raise DiagramError(f"Cannot update missing node: {semantic_id}")
+            raise contracts.DiagramError(f"Cannot update missing node: {semantic_id}")
         cell = nodes[semantic_id]["cell"]
         if "label" in update:
             cell.attrib["value"] = str(update["label"])
         if "type" in update:
             kind = update["type"]
             if kind not in NODE_STYLES:
-                raise DiagramError(f"Unsupported node type: {kind}")
+                raise contracts.DiagramError(f"Unsupported node type: {kind}")
             cell.attrib["style"] = NODE_STYLES[kind]
-            cell.attrib["data-node-type"] = kind
+            cell.attrib[contracts.DATA_NODE_TYPE] = kind
         requested_geometry = any(key in update for key in ("x", "y", "width", "height"))
         if requested_geometry and not allow_geometry_updates:
-            raise DiagramError("Existing geometry update requires --allow-geometry-updates")
+            raise contracts.DiagramError("Existing geometry update requires --allow-geometry-updates")
         if requested_geometry:
             moved_node_ids.add(semantic_id)
             geom = cell.find("mxGeometry")
             assert geom is not None
-            kind = cell.attrib.get("data-node-type", "process")
+            kind = cell.attrib.get(contracts.DATA_NODE_TYPE, "process")
             geometry_update = dict(update)
             if kind in FIXED_ASPECT_NODE_TYPES:
                 update_width = geometry_update.get("width")
                 update_height = geometry_update.get("height")
                 if update_width is not None and update_height is not None:
-                    if abs(float(update_width) - float(update_height)) >= GEOMETRY_TOLERANCE:
-                        raise DiagramError(
+                    if abs(float(update_width) - float(update_height)) >= core_geometry.GEOMETRY_TOLERANCE:
+                        raise contracts.DiagramError(
                             f"Fixed-aspect node {semantic_id} requires equal width and height",
                             code="geometry/fixed-aspect-ratio",
                             subject={"kind": "node", "id": semantic_id},
@@ -4655,17 +3897,17 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                     geometry_update["width"] = update_height
             for key in ("x", "y", "width", "height"):
                 if key in geometry_update:
-                    geom.attrib[key] = number(geometry_update[key])
-            nodes[semantic_id]["geometry"] = parse_geometry(cell)
+                    geom.attrib[key] = document.number(geometry_update[key])
+            nodes[semantic_id]["geometry"] = document.parse_geometry(cell)
 
     new_nodes = changes.get("nodes", [])
-    schema_version = pool.attrib.get("data-schema-version", "1")
-    if schema_version != V3_SCHEMA_VERSION:
+    schema_version = pool.attrib.get(contracts.DATA_SCHEMA_VERSION, "1")
+    if schema_version != contracts.V3_SCHEMA_VERSION:
         v3_new_nodes = [
             node["id"] for node in new_nodes if "slot" in node or "anchor" in node
         ]
         if v3_new_nodes:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 "slot and anchor intent require a schema version 3 diagram",
                 code="schema/version-field",
                 evidence={"nodes": v3_new_nodes, "schema_version": schema_version},
@@ -4676,12 +3918,12 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     all_target_ids = set(nodes) | new_node_ids
     for node in new_nodes:
         if node["id"] in nodes:
-            raise DiagramError(f"Node already exists: {node['id']}")
+            raise contracts.DiagramError(f"Node already exists: {node['id']}")
         if node.get("lane") not in lanes:
-            raise DiagramError(f"Unknown lane for node {node.get('id')}: {node.get('lane')}")
+            raise contracts.DiagramError(f"Unknown lane for node {node.get('id')}: {node.get('lane')}")
         anchor = node.get("anchor")
         if anchor and anchor["node"] not in all_target_ids:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Note {node['id']} anchors to a missing node",
                 code="semantic/anchor-target",
                 subject={"kind": "node", "id": node["id"]},
@@ -4692,13 +3934,13 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         target_id = anchor["node"]
         if target_id in nodes:
             target_lane = nodes[target_id]["lane"]
-            target_rank = int(nodes[target_id]["cell"].attrib.get("data-rank", "0"))
+            target_rank = int(nodes[target_id]["cell"].attrib.get(contracts.DATA_RANK, "0"))
         else:
             target = new_node_by_id[target_id]
             target_lane = target["lane"]
             target_rank = int(target["rank"])
         if target_lane != node["lane"] or target_rank != int(node["rank"]):
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Note {node['id']} must share lane and rank with its anchor",
                 code="semantic/anchor-alignment",
                 subject={"kind": "node", "id": node["id"]},
@@ -4712,7 +3954,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 supported_fixes=["align-note-with-anchor", "remove-anchor"],
             )
         if "slot" in node and node["slot"] != anchor["side"]:
-            raise DiagramError(
+            raise contracts.DiagramError(
                 f"Note {node['id']} slot conflicts with its anchor side",
                 code="layout/anchor-slot-conflict",
                 subject={"kind": "node", "id": node["id"]},
@@ -4720,13 +3962,13 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 supported_fixes=["match-slot-to-anchor", "remove-explicit-slot"],
             )
 
-    layout_profile_name = pool.attrib.get("data-layout-profile", "review")
+    layout_profile_name = pool.attrib.get(contracts.DATA_LAYOUT_PROFILE, "review")
     ordered_new_nodes = sorted(new_nodes, key=lambda node: bool(node.get("anchor")))
     for node in ordered_new_nodes:
         lane_cell = lanes[node["lane"]]["cell"]
         lane_width = lanes[node["lane"]]["geometry"]["width"]
         automatic_x = None
-        if schema_version == V3_SCHEMA_VERSION and "x" not in node:
+        if schema_version == contracts.V3_SCHEMA_VERSION and "x" not in node:
             automatic_x = patch_node_automatic_x(
                 node,
                 lanes[node["lane"]],
@@ -4739,15 +3981,15 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 PROFILE_SIDE_PADDING["review"],
             )
             required_width = automatic_x + width + side_padding
-            if required_width > lane_width + GEOMETRY_TOLERANCE:
+            if required_width > lane_width + core_geometry.GEOMETRY_TOLERANCE:
                 before_reflow = {
                     lane_id: dict(record["geometry"])
                     for lane_id, record in lanes.items()
                 }
                 lane_geom = lane_cell.find("mxGeometry")
                 assert lane_geom is not None
-                lane_geom.attrib["width"] = number(math.ceil(required_width))
-                lanes[node["lane"]]["geometry"] = parse_geometry(lane_cell)
+                lane_geom.attrib["width"] = document.number(math.ceil(required_width))
+                lanes[node["lane"]]["geometry"] = document.parse_geometry(lane_cell)
                 expansion_shifts = reflow_lane_order_geometry(
                     pool,
                     lane_order,
@@ -4764,7 +4006,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                         lane_shifts.append(item)
                         by_lane[item["id"]] = item
                 lane_width = lanes[node["lane"]]["geometry"]["width"]
-                pool_width = parse_geometry(pool)["width"]
+                pool_width = document.parse_geometry(pool)["width"]
         created = create_node_cell(
             root,
             lane_cell,
@@ -4775,20 +4017,20 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
         nodes[node["id"]] = {
             "cell": created,
-            "geometry": parse_geometry(created),
+            "geometry": document.parse_geometry(created),
             "lane": node["lane"],
         }
 
-    lanes, nodes = lane_node_records(root, pool)
+    lanes, nodes = document.lane_node_records(root, pool)
     group_patch_requested = any(
         field in changes for field in ("update_groups", "groups", "delete_groups")
     )
-    if schema_version == V3_SCHEMA_VERSION:
+    if schema_version == contracts.V3_SCHEMA_VERSION:
         added_group_ids, updated_group_ids, deleted_group_ids = apply_group_operations(
             pool, lanes, nodes, changes
         )
     elif group_patch_requested:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Group patch operations require a schema version 3 diagram",
             code="schema/version-field",
             evidence={"schema_version": schema_version},
@@ -4796,10 +4038,10 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
     else:
         added_group_ids, updated_group_ids, deleted_group_ids = [], [], []
-    existing_edges = edge_records(root)
+    existing_edges = document.edge_records(root)
     for update in edge_updates:
         if update["id"] not in existing_edges:
-            raise DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
+            raise contracts.DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
         if "label" in update:
             existing_edges[update["id"]].attrib["value"] = str(update["label"])
 
@@ -4815,26 +4057,26 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         edge_id
         for edge_id, cell in existing_edges.items()
         if (
-            nodes.get(cell.attrib.get("data-from", ""), {}).get("lane")
+            nodes.get(cell.attrib.get(contracts.DATA_FROM, ""), {}).get("lane")
             in changed_lane_ids
-            or nodes.get(cell.attrib.get("data-to", ""), {}).get("lane")
+            or nodes.get(cell.attrib.get(contracts.DATA_TO, ""), {}).get("lane")
             in changed_lane_ids
         )
     }
     manual_waypoint_edges_affected_by_lane_changes = sorted(
         edge_id
         for edge_id in lane_impacted_edge_ids
-        if existing_edges[edge_id].attrib.get("data-waypoints-origin") == "explicit"
+        if existing_edges[edge_id].attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
     )
     auto_reroute_ids = {
         edge_id
         for edge_id, cell in existing_edges.items()
-        if cell.attrib.get("data-waypoints-origin") != "explicit"
+        if cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) != "explicit"
         and (
             edge_id in lane_impacted_edge_ids
             or (
-                cell.attrib.get("data-from") in moved_node_ids
-                or cell.attrib.get("data-to") in moved_node_ids
+                cell.attrib.get(contracts.DATA_FROM) in moved_node_ids
+                or cell.attrib.get(contracts.DATA_TO) in moved_node_ids
             )
             and not edge_route_is_locally_valid(cell, lanes, nodes)
         )
@@ -4861,7 +4103,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         effective_main_path,
         [*updated_specs.values(), *new_edges],
         nodes,
-        v3_semantics=pool.attrib.get("data-schema-version") == V3_SCHEMA_VERSION,
+        v3_semantics=pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION,
     )
     derive_port_limits(
         routing_context,
@@ -4889,7 +4131,7 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
 
     for edge in new_edges:
         if edge["id"] in existing_edges:
-            raise DiagramError(f"Edge already exists: {edge['id']}")
+            raise contracts.DiagramError(f"Edge already exists: {edge['id']}")
     for edge in edge_routing_order(new_edges, effective_main_path, nodes):
         create_edge_cell(
             root,
@@ -4901,25 +4143,25 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             routing_context,
         )
 
-    phases = phase_records(root, pool)
+    phases = document.phase_records(root, pool)
     for update in changes.get("update_phases", []):
         phase_id = update["id"]
         if phase_id not in phases:
-            raise DiagramError(f"Cannot update missing phase: {phase_id}", code="patch/missing-phase")
+            raise contracts.DiagramError(f"Cannot update missing phase: {phase_id}", code="patch/missing-phase")
         apply_phase_update(phases[phase_id], update, values, pool_width)
     for phase in changes.get("phases", []):
         if phase["id"] in phases:
-            raise DiagramError(f"Phase already exists: {phase['id']}", code="patch/duplicate-phase")
+            raise contracts.DiagramError(f"Phase already exists: {phase['id']}", code="patch/duplicate-phase")
         create_phase_cell(root, pool, phase, values, pool_width)
 
     if "main_path" in changes:
-        pool.attrib["data-main-path"] = json.dumps(
+        pool.attrib[contracts.DATA_MAIN_PATH] = json.dumps(
             changes["main_path"], ensure_ascii=True, separators=(",", ":")
         )
-        if pool.attrib.get("data-schema-version") not in STRUCTURED_SCHEMA_VERSIONS:
-            pool.attrib["data-schema-version"] = SCHEMA_VERSION
+        if pool.attrib.get(contracts.DATA_SCHEMA_VERSION) not in contracts.STRUCTURED_SCHEMA_VERSIONS:
+            pool.attrib[contracts.DATA_SCHEMA_VERSION] = contracts.SCHEMA_VERSION
     elif deleted_node_ids.intersection(read_main_path(pool)):
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Deleting a main_path node requires supplying the replacement main_path",
             code="patch/main-path",
             evidence={"deleted_nodes": sorted(deleted_node_ids.intersection(read_main_path(pool)))},
@@ -4927,19 +4169,19 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
 
     requested_max_rank = max(
-        [int(pool.attrib.get("data-max-rank", "1"))]
+        [int(pool.attrib.get(contracts.DATA_MAX_RANK, "1"))]
         + [int(node["rank"]) for node in new_nodes]
     )
-    if requested_max_rank > int(pool.attrib.get("data-max-rank", "1")):
+    if requested_max_rank > int(pool.attrib.get(contracts.DATA_MAX_RANK, "1")):
         new_lane_height = lane_height(requested_max_rank, values)
         for lane in lanes.values():
-            lane["cell"].find("mxGeometry").attrib["height"] = number(new_lane_height)
+            lane["cell"].find("mxGeometry").attrib["height"] = document.number(new_lane_height)
         pool_geom = pool.find("mxGeometry")
         assert pool_geom is not None
-        pool_geom.attrib["height"] = number(values["title_height"] + new_lane_height)
-        pool.attrib["data-max-rank"] = str(requested_max_rank)
+        pool_geom.attrib["height"] = document.number(values["title_height"] + new_lane_height)
+        pool.attrib[contracts.DATA_MAX_RANK] = str(requested_max_rank)
 
-    phases = phase_records(root, pool)
+    phases = document.phase_records(root, pool)
     for cell in phases.values():
         apply_phase_update(cell, phase_cell_spec(cell), values, pool_width)
 
@@ -4948,19 +4190,19 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         pool,
         restore_lane_fill_without_phases=had_phases_before_patch,
     )
-    refresh_managed_metadata(tree)
+    metadata.refresh_managed_metadata(tree)
 
     remaining_explicit_waypoints = {
         edge_id: points
         for edge_id, points in explicit_waypoints_before.items()
         if edge_id not in deleted_edge_ids
     }
-    final_edges = edge_records(root)
+    final_edges = document.edge_records(root)
     manual_waypoints_preserved = (
         all(
             edge_id in final_edges
-            and final_edges[edge_id].attrib.get("data-waypoints-origin") == "explicit"
-            and edge_waypoints(final_edges[edge_id]) == points
+            and final_edges[edge_id].attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
+            and document.edge_waypoints(final_edges[edge_id]) == points
             for edge_id, points in remaining_explicit_waypoints.items()
         )
         if remaining_explicit_waypoints
@@ -5025,74 +4267,14 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     }
 
 
-def edge_waypoints(cell: ET.Element) -> list[tuple[float, float]]:
-    geom = cell.find("mxGeometry")
-    if geom is None:
-        return []
-    array = geom.find("./Array[@as='points']")
-    if array is None:
-        return []
-    points: list[tuple[float, float]] = []
-    for point in array.findall("mxPoint"):
-        try:
-            points.append((float(point.attrib["x"]), float(point.attrib["y"])))
-        except (KeyError, ValueError):
-            continue
-    return points
-
-
-def edge_polyline(
-    cell: ET.Element,
-    lanes: dict[str, dict],
-    nodes: dict[str, dict],
-) -> list[tuple[float, float]]:
-    source_id = cell.attrib.get("data-from")
-    target_id = cell.attrib.get("data-to")
-    if source_id not in nodes or target_id not in nodes:
-        return []
-    exit_port = port_from_style(cell, "exit")
-    entry_port = port_from_style(cell, "entry")
-    if exit_port is None or entry_port is None:
-        return []
-    source = nodes[source_id]
-    target = nodes[target_id]
-    source_bounds = node_bounds_in_pool(source, lanes[source["lane"]])
-    target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
-    return compact_points(
-        [
-            port_point(source_bounds, exit_port[0], exit_port[1]),
-            *edge_waypoints(cell),
-            port_point(target_bounds, entry_port[0], entry_port[1]),
-        ]
-    )
-
-
-def stored_label_bounds(cell: ET.Element) -> dict[str, float] | None:
-    try:
-        left = float(cell.attrib["data-label-left"])
-        top = float(cell.attrib["data-label-top"])
-        width = float(cell.attrib["data-label-width"])
-        height = float(cell.attrib["data-label-height"])
-    except (KeyError, ValueError):
-        return None
-    return {
-        "left": left,
-        "right": left + width,
-        "top": top,
-        "bottom": top + height,
-        "width": width,
-        "height": height,
-    }
-
-
 def effective_label_bounds(
     cell: ET.Element,
     points: list[tuple[float, float]],
 ) -> tuple[int, dict[str, float]] | None:
-    stored = stored_label_bounds(cell)
+    stored = document.stored_label_bounds(cell)
     if stored is not None:
         try:
-            segment_index = int(cell.attrib.get("data-label-segment", "0"))
+            segment_index = int(cell.attrib.get(contracts.DATA_LABEL_SEGMENT, "0"))
         except ValueError:
             segment_index = 0
         return segment_index, stored
@@ -5101,69 +4283,6 @@ def effective_label_bounds(
         return None
     segment_index, box, _ = candidates[0]
     return segment_index, box
-
-
-def segment_axis(segment: tuple[tuple[float, float], tuple[float, float]]) -> str:
-    (x1, y1), (x2, y2) = segment
-    if abs(x1 - x2) < GEOMETRY_TOLERANCE:
-        return "vertical"
-    if abs(y1 - y2) < GEOMETRY_TOLERANCE:
-        return "horizontal"
-    return "diagonal"
-
-
-def value_between(value: float, start: float, end: float, *, strict: bool = False) -> bool:
-    low, high = sorted((start, end))
-    margin = GEOMETRY_TOLERANCE if strict else -GEOMETRY_TOLERANCE
-    return low + margin < value < high - margin if strict else low + margin <= value <= high - margin
-
-
-def segment_crosses_bounds(
-    segment: tuple[tuple[float, float], tuple[float, float]],
-    bounds: dict[str, float],
-) -> bool:
-    (x1, y1), (x2, y2) = segment
-    axis = segment_axis(segment)
-    if axis == "vertical":
-        return (
-            bounds["left"] + GEOMETRY_TOLERANCE < x1 < bounds["right"] - GEOMETRY_TOLERANCE
-            and max(min(y1, y2), bounds["top"]) < min(max(y1, y2), bounds["bottom"])
-        )
-    if axis == "horizontal":
-        return (
-            bounds["top"] + GEOMETRY_TOLERANCE < y1 < bounds["bottom"] - GEOMETRY_TOLERANCE
-            and max(min(x1, x2), bounds["left"]) < min(max(x1, x2), bounds["right"])
-        )
-    return False
-
-
-def segments_conflict(
-    first: tuple[tuple[float, float], tuple[float, float]],
-    second: tuple[tuple[float, float], tuple[float, float]],
-) -> bool:
-    first_axis = segment_axis(first)
-    second_axis = segment_axis(second)
-    if "diagonal" in {first_axis, second_axis}:
-        return False
-
-    (ax1, ay1), (ax2, ay2) = first
-    (bx1, by1), (bx2, by2) = second
-    if first_axis != second_axis:
-        vertical = first if first_axis == "vertical" else second
-        horizontal = second if first_axis == "vertical" else first
-        vx = vertical[0][0]
-        hy = horizontal[0][1]
-        return value_between(vx, horizontal[0][0], horizontal[1][0], strict=True) and value_between(
-            hy, vertical[0][1], vertical[1][1], strict=True
-        )
-
-    if first_axis == "vertical" and abs(ax1 - bx1) < GEOMETRY_TOLERANCE:
-        overlap = min(max(ay1, ay2), max(by1, by2)) - max(min(ay1, ay2), min(by1, by2))
-        return overlap > GEOMETRY_TOLERANCE
-    if first_axis == "horizontal" and abs(ay1 - by1) < GEOMETRY_TOLERANCE:
-        overlap = min(max(ax1, ax2), max(bx1, bx2)) - max(min(ax1, ax2), min(bx1, bx2))
-        return overlap > GEOMETRY_TOLERANCE
-    return False
 
 
 def validate_tree(tree: ET.ElementTree) -> dict:
@@ -5179,7 +4298,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         supported_fixes: list[str] | None = None,
     ) -> None:
         diagnostics.append(
-            make_diagnostic(
+            contracts.make_diagnostic(
                 code,
                 severity,
                 message,
@@ -5190,10 +4309,10 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         )
 
     try:
-        pool = find_pool(tree)
-        root = graph_root(tree)
-        lanes, nodes = lane_node_records(root, pool)
-    except DiagramError as exc:
+        pool = document.find_pool(tree)
+        root = document.graph_root(tree)
+        lanes, nodes = document.lane_node_records(root, pool)
+    except contracts.DiagramError as exc:
         diagnostic = exc.diagnostic()
         return {
             "valid": False,
@@ -5202,9 +4321,9 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             "diagnostics": [diagnostic],
         }
 
-    schema_version = pool.attrib.get("data-schema-version", "1")
+    schema_version = pool.attrib.get(contracts.DATA_SCHEMA_VERSION, "1")
 
-    if schema_version not in {"1", *STRUCTURED_SCHEMA_VERSIONS}:
+    if schema_version not in {"1", *contracts.STRUCTURED_SCHEMA_VERSIONS}:
         add(
             "integrity/schema-composition-mismatch",
             "error",
@@ -5213,14 +4332,14 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             evidence={"schema_version": schema_version},
             supported_fixes=["controlled-rebuild"],
         )
-    if schema_version == V3_SCHEMA_VERSION:
+    if schema_version == contracts.V3_SCHEMA_VERSION:
         missing_v3_metadata = [
             attribute
             for attribute in (
-                "data-behavior-pattern",
-                "data-layout-profile",
-                "data-phase-presentation",
-                "data-groups",
+                contracts.DATA_BEHAVIOR_PATTERN,
+                contracts.DATA_LAYOUT_PROFILE,
+                contracts.DATA_PHASE_PRESENTATION,
+                contracts.DATA_GROUPS,
             )
             if attribute not in pool.attrib
         ]
@@ -5233,27 +4352,27 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 evidence={"missing_attributes": missing_v3_metadata},
                 supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
             )
-    elif schema_version == SCHEMA_VERSION:
+    elif schema_version == contracts.SCHEMA_VERSION:
         unexpected_v3_metadata = [
             attribute
             for attribute in (
-                "data-behavior-pattern",
-                "data-layout-profile",
-                "data-phase-presentation",
-                "data-groups",
+                contracts.DATA_BEHAVIOR_PATTERN,
+                contracts.DATA_LAYOUT_PROFILE,
+                contracts.DATA_PHASE_PRESENTATION,
+                contracts.DATA_GROUPS,
             )
             if attribute in pool.attrib
         ]
         unexpected_v3_cells = [
-            cell.attrib.get("data-semantic-id", cell.attrib.get("id", ""))
+            cell.attrib.get(contracts.DATA_SEMANTIC_ID, cell.attrib.get("id", ""))
             for cell in root.iter("mxCell")
             if any(
                 attribute in cell.attrib
                 for attribute in (
-                    "data-slot",
-                    "data-anchor",
-                    "data-flow-role",
-                    "data-outcome",
+                    contracts.DATA_SLOT,
+                    contracts.DATA_ANCHOR,
+                    contracts.DATA_FLOW_ROLE,
+                    contracts.DATA_OUTCOME,
                 )
             )
         ]
@@ -5280,7 +4399,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     for cell in root.iter("mxCell"):
         if cell.attrib.get("vertex") != "1":
             continue
-        if cell.attrib.get("data-kind") in known_vertex_kinds:
+        if cell.attrib.get(contracts.DATA_KIND) in known_vertex_kinds:
             continue
         if (
             "edgeLabel" in cell.attrib.get("style", "")
@@ -5317,9 +4436,9 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         node_id: record["cell"].attrib.get("id")
         for node_id, record in nodes.items()
     }
-    for edge_id, cell in edge_records(root).items():
-        source_id = cell.attrib.get("data-from")
-        target_id = cell.attrib.get("data-to")
+    for edge_id, cell in document.edge_records(root).items():
+        source_id = cell.attrib.get(contracts.DATA_FROM)
+        target_id = cell.attrib.get(contracts.DATA_TO)
         if (
             cell.attrib.get("source") != node_cell_ids.get(source_id)
             or cell.attrib.get("target") != node_cell_ids.get(target_id)
@@ -5334,17 +4453,17 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             )
 
     try:
-        integrity = managed_artifact_summary(tree)
-    except DiagramError as exc:
+        integrity = metadata.managed_artifact_summary(tree)
+    except contracts.DiagramError as exc:
         diagnostics.append(exc.diagnostic())
         integrity = {
-            "tool_version": pool.attrib.get("data-tool-version"),
-            "model_hash_version": pool.attrib.get("data-model-hash-version"),
-            "stored_model_hash": pool.attrib.get("data-model-hash"),
+            "tool_version": pool.attrib.get(contracts.DATA_TOOL_VERSION),
+            "model_hash_version": pool.attrib.get(contracts.DATA_MODEL_HASH_VERSION),
+            "stored_model_hash": pool.attrib.get(contracts.DATA_MODEL_HASH),
             "computed_model_hash": None,
             "model_hash_matches": False,
         }
-    if integrity["model_hash_version"] not in {None, MODEL_HASH_VERSION}:
+    if integrity["model_hash_version"] not in {None, contracts.MODEL_HASH_VERSION}:
         add(
             "integrity/schema-composition-mismatch",
             "error",
@@ -5376,8 +4495,8 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     semantic_ids: set[str] = set()
     for cell in root.iter("mxCell"):
-        semantic_id = cell.attrib.get("data-semantic-id")
-        kind = cell.attrib.get("data-kind")
+        semantic_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID)
+        kind = cell.attrib.get(contracts.DATA_KIND)
         if semantic_id and kind:
             composite = f"{kind}:{semantic_id}"
             if composite in semantic_ids:
@@ -5392,7 +4511,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     cell_ids = {cell.attrib.get("id") for cell in tree.iter("mxCell")}
     edge_cells = [
-        cell for cell in root.iter("mxCell") if cell.attrib.get("data-kind") == "edge"
+        cell for cell in root.iter("mxCell") if cell.attrib.get(contracts.DATA_KIND) == "edge"
     ]
     unmanaged_edges = unmanaged_edge_specs(root, nodes)
     if unmanaged_edges:
@@ -5416,17 +4535,17 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             supported_fixes=["restore-edge-semantic-metadata", "redraw-with-patch"],
         )
 
-    phases = phase_records(root, pool)
+    phases = document.phase_records(root, pool)
     if phases:
         layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
         semantic_layers = [
             {
                 "index": index,
-                "kind": cell.attrib.get("data-kind"),
-                "id": cell.attrib.get("data-semantic-id"),
+                "kind": cell.attrib.get(contracts.DATA_KIND),
+                "id": cell.attrib.get(contracts.DATA_SEMANTIC_ID),
             }
             for index, cell in enumerate(list(root))
-            if cell.attrib.get("data-kind") in layer_order
+            if cell.attrib.get(contracts.DATA_KIND) in layer_order
         ]
         # Draw.io serializes descendants immediately after their parent. XML
         # order across different parents is not sibling paint order: a node in
@@ -5444,7 +4563,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             container = cells_by_id.get(container.attrib.get("parent"))
         sibling_ranks: dict[str | None, list[int]] = {}
         for cell in list(root):
-            kind = cell.attrib.get("data-kind")
+            kind = cell.attrib.get(contracts.DATA_KIND)
             rank = (
                 -1 if cell.attrib.get("id") in background_containers
                 else layer_order.get(kind)
@@ -5471,11 +4590,11 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 supported_fixes=["normalize-phase-layering"],
             )
 
-        phase_presentation = pool.attrib.get("data-phase-presentation", "bands")
+        phase_presentation = pool.attrib.get(contracts.DATA_PHASE_PRESENTATION, "bands")
         opaque_lanes = [
             lane_id
             for lane_id, record in lanes.items()
-            if style_values(record["cell"].attrib.get("style", "")).get(
+            if document.style_values(record["cell"].attrib.get("style", "")).get(
                 "swimlaneFillColor"
             )
             != "none"
@@ -5505,7 +4624,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             phase_id
             for phase_id, cell in phases.items()
             if cell.attrib.get("connectable") != "0"
-            or style_values(cell.attrib.get("style", "")).get("pointerEvents") != "0"
+            or document.style_values(cell.attrib.get("style", "")).get("pointerEvents") != "0"
         ]
         if interactive_phases:
             add(
@@ -5518,7 +4637,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             )
     for cell in edge_cells:
         if cell.attrib.get("source") not in cell_ids or cell.attrib.get("target") not in cell_ids:
-            edge_id = cell.attrib.get("data-semantic-id")
+            edge_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID)
             add(
                 "structure/broken-endpoint",
                 "error",
@@ -5547,12 +4666,12 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 subject={"kind": "node", "id": semantic_id},
                 supported_fixes=["move-node-inside-lane", "increase-lane-height"],
             )
-        if schema_version in STRUCTURED_SCHEMA_VERSIONS:
+        if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS:
             label = record["cell"].attrib.get("value", "")
-            node_type = record["cell"].attrib.get("data-node-type", "process")
+            node_type = record["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process")
             if (
                 node_type in FIXED_ASPECT_NODE_TYPES
-                and abs(node_geom["width"] - node_geom["height"]) >= GEOMETRY_TOLERANCE
+                and abs(node_geom["width"] - node_geom["height"]) >= core_geometry.GEOMETRY_TOLERANCE
             ):
                 add(
                     "geometry/fixed-aspect-ratio",
@@ -5610,12 +4729,12 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     port_usage: dict[tuple[str, str, float], list[str]] = {}
     for cell in edge_cells:
-        if cell.attrib.get("data-allow-port-reuse") == "1":
+        if cell.attrib.get(contracts.DATA_ALLOW_PORT_REUSE) == "1":
             continue
-        edge_id = cell.attrib.get("data-semantic-id", cell.attrib.get("id", "unknown"))
-        for prefix, endpoint_field in (("exit", "data-from"), ("entry", "data-to")):
+        edge_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID, cell.attrib.get("id", "unknown"))
+        for prefix, endpoint_field in (("exit", contracts.DATA_FROM), ("entry", contracts.DATA_TO)):
             endpoint = cell.attrib.get(endpoint_field)
-            port = port_from_style(cell, prefix)
+            port = document.port_from_style(cell, prefix)
             if endpoint and port:
                 key = endpoint, port[0], round(port[1], 4)
                 port_usage.setdefault(key, []).append(edge_id)
@@ -5624,7 +4743,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             add(
                 "routing/port-reuse",
                 "warning",
-                f"Port reused at node {node_id} ({side}@{number(offset)}): {', '.join(sorted(used_by))}",
+                f"Port reused at node {node_id} ({side}@{document.number(offset)}): {', '.join(sorted(used_by))}",
                 subject={"kind": "node", "id": node_id},
                 evidence={"side": side, "offset": offset, "edges": sorted(used_by)},
                 supported_fixes=["allocate-distinct-port"],
@@ -5632,13 +4751,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
     internal_boundaries = internal_lane_boundaries(lanes)
     node_bounds = {
-        semantic_id: node_bounds_in_pool(record, lanes[record["lane"]])
+        semantic_id: document.node_bounds_in_pool(record, lanes[record["lane"]])
         for semantic_id, record in nodes.items()
     }
     node_ids = sorted(node_bounds)
     for index, first_id in enumerate(node_ids):
         for second_id in node_ids[index + 1 :]:
-            if bounds_overlap(node_bounds[first_id], node_bounds[second_id]):
+            if core_geometry.bounds_overlap(node_bounds[first_id], node_bounds[second_id]):
                 add(
                     "layout/node-overlap",
                     "error",
@@ -5652,23 +4771,23 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     edge_label_bounds: dict[str, tuple[int, dict[str, float]]] = {}
     edge_cells_by_id: dict[str, ET.Element] = {}
     for cell in edge_cells:
-        edge_id = cell.attrib.get("data-semantic-id", cell.attrib.get("id", "unknown"))
-        points = edge_polyline(cell, lanes, nodes)
+        edge_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID, cell.attrib.get("id", "unknown"))
+        points = document.edge_polyline(cell, lanes, nodes)
         edge_points[edge_id] = points
         edge_cells_by_id[edge_id] = cell
         segments = list(zip(points, points[1:]))
         edge_segments[edge_id] = segments
         short_segments = [
-            (index, segment_length(segment))
+            (index, core_geometry.segment_length(segment))
             for index, segment in enumerate(segments[1:-1], start=1)
-            if segment_length(segment) < MIN_INTERNAL_SEGMENT - GEOMETRY_TOLERANCE
+            if core_geometry.segment_length(segment) < MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
         ]
         if short_segments:
-            waypoint_origin = cell.attrib.get("data-waypoints-origin", "unknown")
+            waypoint_origin = cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN, "unknown")
             add(
                 "routing/short-segment",
                 "warning",
-                f"Connector contains an internal segment shorter than {number(MIN_INTERNAL_SEGMENT)} px: {edge_id}",
+                f"Connector contains an internal segment shorter than {document.number(MIN_INTERNAL_SEGMENT)} px: {edge_id}",
                 subject={"kind": "edge", "id": edge_id},
                 evidence={
                     "segments": [
@@ -5684,16 +4803,16 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     else ["reroute-edge", "increase-rank-spacing"]
                 ),
             )
-        bends = bend_count(points)
+        bends = core_geometry.bend_count(points)
         simpler_forward_route = False
         if (
-            cell.attrib.get("data-route") == "forward"
+            cell.attrib.get(contracts.DATA_ROUTE) == "forward"
             and bends > 2
         ):
-            source_id = cell.attrib.get("data-from")
-            target_id = cell.attrib.get("data-to")
-            exit_port = port_from_style(cell, "exit")
-            entry_port = port_from_style(cell, "entry")
+            source_id = cell.attrib.get(contracts.DATA_FROM)
+            target_id = cell.attrib.get(contracts.DATA_TO)
+            exit_port = document.port_from_style(cell, "exit")
+            entry_port = document.port_from_style(cell, "entry")
             if source_id in nodes and target_id in nodes and exit_port and entry_port:
                 source_bounds = node_bounds[source_id]
                 target_bounds = node_bounds[target_id]
@@ -5720,11 +4839,11 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     [],
                 )
                 simpler_forward_route = any(
-                    bend_count(candidate) <= 2
+                    core_geometry.bend_count(candidate) <= 2
                     and not path_has_hairpin(candidate)
                     and all(
-                        segment_length(segment)
-                        >= MIN_INTERNAL_SEGMENT - GEOMETRY_TOLERANCE
+                        core_geometry.segment_length(segment)
+                        >= MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
                         for segment in list(zip(candidate, candidate[1:]))[1:-1]
                     )
                     and automatic_polyline_is_safe(
@@ -5771,7 +4890,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             overlapping_nodes = sorted(
                 node_id
                 for node_id, bounds in node_bounds.items()
-                if bounds_overlap(label_box, bounds, gap=1.0)
+                if core_geometry.bounds_overlap(label_box, bounds, gap=1.0)
             )
             if overlapping_nodes:
                 add(
@@ -5783,7 +4902,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     supported_fixes=["move-edge-label", "reroute-edge", "increase-rank-spacing"],
                 )
         for segment_index, segment in enumerate(segments):
-            axis = segment_axis(segment)
+            axis = core_geometry.segment_axis(segment)
             if axis == "diagonal":
                 add(
                     "routing/non-orthogonal",
@@ -5795,7 +4914,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 continue
             if axis == "vertical":
                 x = segment[0][0]
-                if any(abs(x - boundary) < GEOMETRY_TOLERANCE for boundary in internal_boundaries):
+                if any(abs(x - boundary) < core_geometry.GEOMETRY_TOLERANCE for boundary in internal_boundaries):
                     add(
                         "routing/lane-boundary-overlap",
                         "warning",
@@ -5813,23 +4932,23 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                         "routing/lane-boundary-clearance",
                         "warning",
                         "Connector is too close to a lane boundary "
-                        f"(< {number(LANE_BOUNDARY_CLEARANCE)} px): {edge_id}",
+                        f"(< {document.number(LANE_BOUNDARY_CLEARANCE)} px): {edge_id}",
                         subject={"kind": "edge", "id": edge_id},
                         evidence={"distance": nearest, "minimum": LANE_BOUNDARY_CLEARANCE},
                         supported_fixes=["reroute-edge", "change-routing-zone"],
                     )
             for node_id, bounds in node_bounds.items():
                 if (
-                    node_id == cell.attrib.get("data-from")
+                    node_id == cell.attrib.get(contracts.DATA_FROM)
                     and segment_index == 0
                 ):
                     continue
                 if (
-                    node_id == cell.attrib.get("data-to")
+                    node_id == cell.attrib.get(contracts.DATA_TO)
                     and segment_index == len(segments) - 1
                 ):
                     continue
-                if segment_crosses_bounds(segment, bounds):
+                if core_geometry.segment_crosses_bounds(segment, bounds):
                     add(
                         "routing/node-crossing",
                         "warning",
@@ -5840,20 +4959,20 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     )
 
         if (
-            cell.attrib.get("data-route") == "back"
-            and cell.attrib.get("data-waypoints-origin") == "automatic"
+            cell.attrib.get(contracts.DATA_ROUTE) == "back"
+            and cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "automatic"
         ):
-            target_id = cell.attrib.get("data-to")
-            entry_port = port_from_style(cell, "entry")
+            target_id = cell.attrib.get(contracts.DATA_TO)
+            entry_port = document.port_from_style(cell, "entry")
             if target_id in nodes and entry_port and entry_port[0] in {"left", "right"}:
                 target = nodes[target_id]
                 target_lane = lanes[target["lane"]]["geometry"]
                 target_bounds = node_bounds[target_id]
-                safe_gap = LANE_BOUNDARY_CLEARANCE - GEOMETRY_TOLERANCE
+                safe_gap = LANE_BOUNDARY_CLEARANCE - core_geometry.GEOMETRY_TOLERANCE
                 vertical_x_values = [
                     segment[0][0]
                     for segment in segments
-                    if segment_axis(segment) == "vertical"
+                    if core_geometry.segment_axis(segment) == "vertical"
                 ]
                 if entry_port[0] == "left":
                     internal_corridor = any(
@@ -5884,7 +5003,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     for index, first_id in enumerate(edge_ids):
         for second_id in edge_ids[index + 1 :]:
             if any(
-                segments_conflict(first_segment, second_segment)
+                core_geometry.segments_conflict(first_segment, second_segment)
                 for first_segment in edge_segments[first_id]
                 for second_segment in edge_segments[second_id]
             ):
@@ -5913,13 +5032,13 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     supported_fixes=["separate-routing-corridors", "reroute-edge"],
                 )
             reciprocal = (
-                first_cell.attrib.get("data-from") == second_cell.attrib.get("data-to")
-                and first_cell.attrib.get("data-to") == second_cell.attrib.get("data-from")
+                first_cell.attrib.get(contracts.DATA_FROM) == second_cell.attrib.get(contracts.DATA_TO)
+                and first_cell.attrib.get(contracts.DATA_TO) == second_cell.attrib.get(contracts.DATA_FROM)
             )
             if reciprocal and (
                 near_parallel
                 or any(
-                    segments_conflict(first_segment, second_segment)
+                    core_geometry.segments_conflict(first_segment, second_segment)
                     for first_segment in edge_segments[first_id]
                     for second_segment in edge_segments[second_id]
                 )
@@ -5939,7 +5058,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             for index, segment in enumerate(segments):
                 if other_id == edge_id and index == carrier_index:
                     continue
-                if segment_intersects_box(segment, label_box, gap=1.0):
+                if core_geometry.segment_intersects_box(segment, label_box, gap=1.0):
                     overlaps.append(other_id)
                     break
         if overlaps:
@@ -5955,7 +5074,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     label_ids = sorted(edge_label_bounds)
     for index, first_id in enumerate(label_ids):
         for second_id in label_ids[index + 1:]:
-            if bounds_overlap(edge_label_bounds[first_id][1], edge_label_bounds[second_id][1], gap=2.0):
+            if core_geometry.bounds_overlap(edge_label_bounds[first_id][1], edge_label_bounds[second_id][1], gap=2.0):
                 add(
                     "text/edge-label-edge-overlap",
                     "warning",
@@ -5965,9 +5084,9 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     supported_fixes=["move-edge-label", "reroute-edge", "increase-rank-spacing"],
                 )
 
-    if schema_version in STRUCTURED_SCHEMA_VERSIONS:
+    if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS:
         node_ranks = {
-            node_id: int(record["cell"].attrib.get("data-rank", "0"))
+            node_id: int(record["cell"].attrib.get(contracts.DATA_RANK, "0"))
             for node_id, record in nodes.items()
         }
         main_path = read_main_path(pool)
@@ -5987,7 +5106,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 subject={"kind": "main_path"},
                 supported_fixes=["correct-main-path"],
             )
-        if main_path and main_path[0] in nodes and nodes[main_path[0]]["cell"].attrib.get("data-node-type") != "start":
+        if main_path and main_path[0] in nodes and nodes[main_path[0]]["cell"].attrib.get(contracts.DATA_NODE_TYPE) != "start":
             add(
                 "semantic/main-path-start",
                 "error",
@@ -5996,7 +5115,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 evidence={"node": main_path[0]},
                 supported_fixes=["correct-main-path", "change-node-type"],
             )
-        if main_path and main_path[-1] in nodes and nodes[main_path[-1]]["cell"].attrib.get("data-node-type") != "end":
+        if main_path and main_path[-1] in nodes and nodes[main_path[-1]]["cell"].attrib.get(contracts.DATA_NODE_TYPE) != "end":
             add(
                 "semantic/main-path-end",
                 "error",
@@ -6006,7 +5125,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 supported_fixes=["correct-main-path", "change-node-type"],
             )
         edge_pairs = {
-            (cell.attrib.get("data-from"), cell.attrib.get("data-to")): cell
+            (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO)): cell
             for cell in edge_cells
         }
         unmanaged_pairs = {(edge["from"], edge["to"]) for edge in unmanaged_edges}
@@ -6032,7 +5151,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     supported_fixes=["add-main-path-edge", "correct-main-path"],
                 )
             elif edge is not None and (
-                edge.attrib.get("data-route") == "back"
+                edge.attrib.get(contracts.DATA_ROUTE) == "back"
                 or node_ranks[target_id] < node_ranks[source_id]
             ):
                 add(
@@ -6047,11 +5166,11 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 nodes[source_id]["lane"] == nodes[target_id]["lane"]
                 and node_ranks[target_id] > node_ranks[source_id]
                 and edge is not None
-                and nodes[source_id]["cell"].attrib.get("data-slot", "main") == "main"
-                and nodes[target_id]["cell"].attrib.get("data-slot", "main") == "main"
+                and nodes[source_id]["cell"].attrib.get(contracts.DATA_SLOT, "main") == "main"
+                and nodes[target_id]["cell"].attrib.get(contracts.DATA_SLOT, "main") == "main"
             ):
-                edge_id = edge.attrib.get("data-semantic-id", "unknown")
-                bends = bend_count(edge_points.get(edge_id, []))
+                edge_id = edge.attrib.get(contracts.DATA_SEMANTIC_ID, "unknown")
+                bends = core_geometry.bend_count(edge_points.get(edge_id, []))
                 if bends:
                     add(
                         "layout/main-path-zigzag",
@@ -6064,12 +5183,12 @@ def validate_tree(tree: ET.ElementTree) -> dict:
 
         outgoing: dict[str, list[ET.Element]] = {}
         for cell in edge_cells:
-            outgoing.setdefault(cell.attrib.get("data-from", ""), []).append(cell)
-            if cell.attrib.get("data-edge-type") == "retry":
-                source_id = cell.attrib.get("data-from")
-                target_id = cell.attrib.get("data-to")
+            outgoing.setdefault(cell.attrib.get(contracts.DATA_FROM, ""), []).append(cell)
+            if cell.attrib.get(contracts.DATA_EDGE_TYPE) == "retry":
+                source_id = cell.attrib.get(contracts.DATA_FROM)
+                target_id = cell.attrib.get(contracts.DATA_TO)
                 if source_id in node_ranks and target_id in node_ranks and node_ranks[target_id] >= node_ranks[source_id]:
-                    edge_id = cell.attrib.get("data-semantic-id")
+                    edge_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID)
                     add(
                         "semantic/retry-direction",
                         "warning",
@@ -6083,7 +5202,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             unmanaged_outgoing[edge["from"]] = unmanaged_outgoing.get(edge["from"], 0) + 1
 
         for node_id, record in nodes.items():
-            if record["cell"].attrib.get("data-node-type") != "decision":
+            if record["cell"].attrib.get(contracts.DATA_NODE_TYPE) != "decision":
                 continue
             decision_edges = outgoing.get(node_id, [])
             total_decision_edges = len(decision_edges) + unmanaged_outgoing.get(node_id, 0)
@@ -6098,10 +5217,10 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                 continue
             if unmanaged_outgoing.get(node_id, 0):
                 continue
-            branches = [edge.attrib.get("data-branch") for edge in decision_edges]
-            outcomes = [edge.attrib.get("data-outcome") for edge in decision_edges]
+            branches = [edge.attrib.get(contracts.DATA_BRANCH) for edge in decision_edges]
+            outcomes = [edge.attrib.get(contracts.DATA_OUTCOME) for edge in decision_edges]
             has_distinct_v3_outcomes = (
-                schema_version == V3_SCHEMA_VERSION
+                schema_version == contracts.V3_SCHEMA_VERSION
                 and all(outcomes)
                 and len(set(outcomes)) >= 2
             )
@@ -6123,7 +5242,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         starts = [
             node_id
             for node_id, record in nodes.items()
-            if record["cell"].attrib.get("data-node-type") == "start"
+            if record["cell"].attrib.get(contracts.DATA_NODE_TYPE) == "start"
         ]
         if not starts:
             add(
@@ -6137,7 +5256,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             frontier = list(starts)
             adjacency: dict[str, list[str]] = {}
             for cell in edge_cells:
-                adjacency.setdefault(cell.attrib.get("data-from", ""), []).append(cell.attrib.get("data-to", ""))
+                adjacency.setdefault(cell.attrib.get(contracts.DATA_FROM, ""), []).append(cell.attrib.get(contracts.DATA_TO, ""))
             for edge in unmanaged_edges:
                 adjacency.setdefault(edge["from"], []).append(edge["to"])
             while frontier:
@@ -6147,7 +5266,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                         reachable.add(target)
                         frontier.append(target)
             for node_id, record in nodes.items():
-                if node_id not in reachable and record["cell"].attrib.get("data-node-type") != "note":
+                if node_id not in reachable and record["cell"].attrib.get(contracts.DATA_NODE_TYPE) != "note":
                     add(
                         "semantic/unreachable-node",
                         "warning",
@@ -6157,10 +5276,10 @@ def validate_tree(tree: ET.ElementTree) -> dict:
                     )
 
         max_rank = max(node_ranks.values(), default=1)
-        for phase_id, cell in phase_records(root, pool).items():
+        for phase_id, cell in document.phase_records(root, pool).items():
             try:
-                from_rank = int(cell.attrib.get("data-from-rank", "0"))
-                to_rank = int(cell.attrib.get("data-to-rank", "0"))
+                from_rank = int(cell.attrib.get(contracts.DATA_FROM_RANK, "0"))
+                to_rank = int(cell.attrib.get(contracts.DATA_TO_RANK, "0"))
             except ValueError:
                 from_rank = to_rank = 0
             if from_rank < 1 or to_rank < from_rank or to_rank > max_rank:
@@ -6209,11 +5328,11 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     else:
         managed_state = "managed"
     main_path_bends = 0
-    if schema_version in STRUCTURED_SCHEMA_VERSIONS:
+    if schema_version in contracts.STRUCTURED_SCHEMA_VERSIONS:
         main_pairs = set(zip(read_main_path(pool), read_main_path(pool)[1:]))
         for edge_id, cell in edge_cells_by_id.items():
-            if (cell.attrib.get("data-from"), cell.attrib.get("data-to")) in main_pairs:
-                main_path_bends += bend_count(edge_points.get(edge_id, []))
+            if (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO)) in main_pairs:
+                main_path_bends += core_geometry.bend_count(edge_points.get(edge_id, []))
 
     return {
         "valid": not errors,
@@ -6243,105 +5362,6 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     }
 
 
-def semantic_cells(tree: ET.ElementTree) -> dict[str, ET.Element]:
-    cells: dict[str, ET.Element] = {}
-    for cell in graph_root(tree).iter("mxCell"):
-        kind = cell.attrib.get("data-kind")
-        semantic_id = cell.attrib.get("data-semantic-id")
-        if kind and semantic_id:
-            cells[f"{kind}:{semantic_id}"] = cell
-    return cells
-
-
-def element_signature(element: ET.Element | None):
-    if element is None:
-        return None
-    return (
-        element.tag,
-        tuple(sorted(element.attrib.items())),
-        (element.text or "").strip(),
-        tuple(element_signature(child) for child in list(element)),
-    )
-
-
-def comparison_attributes(cell: ET.Element) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted(cell.attrib.items()))
-
-
-def sibling_order_changes(before: ET.ElementTree, after: ET.ElementTree) -> list[dict]:
-    """Compare paint order, not flat serialization across different parents.
-
-    Only shared siblings participate. Additions, removals and reparenting are
-    checked separately; a declared new cell still participates when comparing
-    the replayed expected output to the actual output.
-    """
-    def groups(tree):
-        result: dict[str | None, list[str | None]] = {}
-        for element in graph_root(tree):
-            cell = native_cell(element)
-            if cell is not None:
-                result.setdefault(cell.get("parent"), []).append(element.get("id") or cell.get("id"))
-        return result
-
-    left, right = groups(before), groups(after)
-    changes = []
-    for parent in sorted(left.keys() & right.keys(), key=lambda value: value or ""):
-        common = set(left[parent]) & set(right[parent])
-        old = [cell_id for cell_id in left[parent] if cell_id in common]
-        new = [cell_id for cell_id in right[parent] if cell_id in common]
-        if old != new:
-            changes.append({"parent": parent, "before": old, "after": new})
-    return changes
-
-
-def unmanaged_root_entries(tree: ET.ElementTree) -> list[ET.Element]:
-    """Return opaque drawing units and extensions, including native wrappers."""
-    entries = []
-    for element in graph_root(tree):
-        if not (element.tag == "mxCell"
-                and element.get("data-kind") in {"pool", "lane", "node", "phase", "edge"}
-                and element.get("data-semantic-id")):
-            entries.append(element)
-    return entries
-
-
-def graph_root_preserves_space(tree: ET.ElementTree) -> bool:
-    """Resolve inherited xml:space for tails between drawing-root entries."""
-    target = graph_root(tree)
-    pending = [(tree.getroot(), False)]
-    while pending:
-        element, preserve = pending.pop()
-        setting = element.get("{http://www.w3.org/XML/1998/namespace}space")
-        if setting in {"default", "preserve"}:
-            preserve = setting == "preserve"
-        if element is target:
-            return preserve
-        pending.extend((child, preserve) for child in element)
-    return False
-
-
-def unmanaged_cell_signatures(tree: ET.ElementTree) -> dict:
-    """Retain opaque subtrees exactly, including whitespace and duplicate IDs."""
-    preserve_outer_space = graph_root_preserves_space(tree)
-
-    def signature(element, outer=False):
-        # Unknown payloads are opaque: even whitespace-only mixed content can
-        # be meaningful. Only an entry's outer tail is root-level formatting.
-        tail = element.tail or ""
-        if outer and not preserve_outer_space and not tail.strip():
-            tail = ""
-        return (element.tag, tuple(sorted(element.attrib.items())),
-                element.text or "", tail,
-                tuple(signature(child) for child in element))
-
-    result: dict[str | None, list] = {}
-    for element in unmanaged_root_entries(tree):
-        cell = native_cell(element)
-        cell_id = element.get("id") or (cell.get("id") if cell is not None else None)
-        result.setdefault(cell_id, []).append(signature(element, outer=True))
-    return result
-
-
 def allowed_missing_from_patch(changes: dict | None) -> set[str]:
     if not changes:
         return set()
@@ -6360,8 +5380,8 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     reroute, addition, and deletion explicit. This prevents an unrelated edit
     from being hidden behind a broadly authorized semantic cell.
     """
-    before_cells = semantic_cells(before)
-    after_cells = semantic_cells(after)
+    before_cells = document.semantic_cells(before)
+    after_cells = document.semantic_cells(after)
     missing = sorted(set(before_cells) - set(after_cells))
     added = sorted(set(after_cells) - set(before_cells))
     changed_geometry: list[str] = []
@@ -6370,10 +5390,10 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     for key in sorted(set(before_cells) & set(after_cells)):
         before_cell = before_cells[key]
         after_cell = after_cells[key]
-        if element_signature(before_cell.find("mxGeometry")) != element_signature(after_cell.find("mxGeometry")):
+        if document.element_signature(before_cell.find("mxGeometry")) != document.element_signature(after_cell.find("mxGeometry")):
             changed_geometry.append(key)
-        before_attributes = comparison_attributes(before_cell)
-        after_attributes = comparison_attributes(after_cell)
+        before_attributes = document.comparison_attributes(before_cell)
+        after_attributes = document.comparison_attributes(after_cell)
         if before_attributes != after_attributes:
             changed_attributes.append(key)
 
@@ -6385,7 +5405,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     else:
         expected_tree = copy.deepcopy(before)
         patch_tree(expected_tree, changes, allow_geometry_updates=True)
-        expected_cells = semantic_cells(expected_tree)
+        expected_cells = document.semantic_cells(expected_tree)
         expected_added = set(expected_cells) - set(before_cells)
         expected_missing = set(before_cells) - set(expected_cells)
 
@@ -6397,21 +5417,21 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     for key in sorted(common_expected_actual):
         expected_cell = expected_cells[key]
         actual_cell = after_cells[key]
-        if element_signature(expected_cell.find("mxGeometry")) != element_signature(
+        if document.element_signature(expected_cell.find("mxGeometry")) != document.element_signature(
             actual_cell.find("mxGeometry")
         ):
             unexpected_geometry.append(key)
-        expected_cell_attributes = comparison_attributes(expected_cell)
-        actual_attributes = comparison_attributes(actual_cell)
+        expected_cell_attributes = document.comparison_attributes(expected_cell)
+        actual_attributes = document.comparison_attributes(actual_cell)
         if expected_cell_attributes != actual_attributes:
             unexpected_attributes.append(key)
         if key in before_cells:
             before_cell = before_cells[key]
-            if element_signature(before_cell.find("mxGeometry")) != element_signature(
+            if document.element_signature(before_cell.find("mxGeometry")) != document.element_signature(
                 expected_cell.find("mxGeometry")
             ):
                 expected_geometry.append(key)
-            if comparison_attributes(before_cell) != expected_cell_attributes:
+            if document.comparison_attributes(before_cell) != expected_cell_attributes:
                 expected_attributes.append(key)
 
     actual_keys = set(after_cells)
@@ -6428,10 +5448,10 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         | expected_added
         | expected_missing
     )
-    changed_order = sibling_order_changes(before, after)
-    unexpected_order = sibling_order_changes(expected_tree, after)
-    expected_unmanaged = unmanaged_cell_signatures(expected_tree)
-    actual_unmanaged = unmanaged_cell_signatures(after)
+    changed_order = document.sibling_order_changes(before, after)
+    unexpected_order = document.sibling_order_changes(expected_tree, after)
+    expected_unmanaged = document.unmanaged_cell_signatures(expected_tree)
+    actual_unmanaged = document.unmanaged_cell_signatures(after)
     unexpected_unmanaged = []
     for cell_id in sorted(expected_unmanaged.keys() | actual_unmanaged.keys(),
                           key=lambda value: value or ""):
@@ -6473,10 +5493,10 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
 
 
 def inspect_tree(tree: ET.ElementTree) -> dict:
-    pool = find_pool(tree)
-    root = graph_root(tree)
-    lanes, nodes = lane_node_records(root, pool)
-    phases = phase_records(root, pool)
+    pool = document.find_pool(tree)
+    root = document.graph_root(tree)
+    lanes, nodes = document.lane_node_records(root, pool)
+    phases = document.phase_records(root, pool)
     lane_items = sorted(lanes.items(), key=lambda item: item[1]["geometry"]["x"])
     lane_index = {lane_id: index for index, (lane_id, _) in enumerate(lane_items)}
 
@@ -6493,7 +5513,7 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
     for node_id, record in sorted(
         nodes.items(),
         key=lambda item: (
-            int(item[1]["cell"].attrib.get("data-rank", "0")),
+            int(item[1]["cell"].attrib.get(contracts.DATA_RANK, "0")),
             lane_index.get(item[1]["lane"], 999),
             item[0],
         ),
@@ -6501,23 +5521,23 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         node_spec = {
             "id": node_id,
             "lane": record["lane"],
-            "rank": int(record["cell"].attrib.get("data-rank", "0")),
-            "type": record["cell"].attrib.get("data-node-type", "process"),
+            "rank": int(record["cell"].attrib.get(contracts.DATA_RANK, "0")),
+            "type": record["cell"].attrib.get(contracts.DATA_NODE_TYPE, "process"),
             "label": record["cell"].attrib.get("value", ""),
             **record["geometry"],
         }
-        if record["cell"].attrib.get("data-slot"):
-            node_spec["slot"] = record["cell"].attrib["data-slot"]
-        if record["cell"].attrib.get("data-anchor"):
-            node_spec["anchor"] = json.loads(record["cell"].attrib["data-anchor"])
-        if record["cell"].attrib.get("data-group-id"):
-            node_spec["group_id"] = record["cell"].attrib["data-group-id"]
+        if record["cell"].attrib.get(contracts.DATA_SLOT):
+            node_spec["slot"] = record["cell"].attrib[contracts.DATA_SLOT]
+        if record["cell"].attrib.get(contracts.DATA_ANCHOR):
+            node_spec["anchor"] = json.loads(record["cell"].attrib[contracts.DATA_ANCHOR])
+        if record["cell"].attrib.get(contracts.DATA_GROUP_ID):
+            node_spec["group_id"] = record["cell"].attrib[contracts.DATA_GROUP_ID]
         node_specs.append(node_spec)
 
     edge_specs = []
-    for edge_id, cell in sorted(edge_records(root).items()):
+    for edge_id, cell in sorted(document.edge_records(root).items()):
         edge = existing_edge_spec(cell)
-        points = edge_waypoints(cell)
+        points = document.edge_waypoints(cell)
         if points:
             edge["waypoints"] = [{"x": x, "y": y} for x, y in points]
         edge_specs.append(edge)
@@ -6533,7 +5553,7 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         "stored_model_hash": validation.get("stored_model_hash"),
         "computed_model_hash": validation.get("computed_model_hash"),
         "model_hash_matches": validation.get("model_hash_matches"),
-        "schema_version": pool.attrib.get("data-schema-version", "1"),
+        "schema_version": pool.attrib.get(contracts.DATA_SCHEMA_VERSION, "1"),
         "title": pool.attrib.get("value", ""),
         "main_path": read_main_path(pool),
         "lanes": lane_specs,
@@ -6543,86 +5563,24 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         "unmanaged_edges": unmanaged_edge_specs(root, nodes),
         "validation": validation,
     }
-    if result["schema_version"] == V3_SCHEMA_VERSION:
-        result["behavior_pattern"] = pool.attrib.get("data-behavior-pattern", "custom")
+    if result["schema_version"] == contracts.V3_SCHEMA_VERSION:
+        result["behavior_pattern"] = pool.attrib.get(contracts.DATA_BEHAVIOR_PATTERN, "custom")
         result["layout"] = {
-            "profile": pool.attrib.get("data-layout-profile", "review"),
-            "phase_presentation": pool.attrib.get("data-phase-presentation", "bands"),
+            "profile": pool.attrib.get(contracts.DATA_LAYOUT_PROFILE, "review"),
+            "phase_presentation": pool.attrib.get(contracts.DATA_PHASE_PRESENTATION, "bands"),
         }
-        result["groups"] = json.loads(pool.attrib.get("data-groups", "[]"))
+        result["groups"] = json.loads(pool.attrib.get(contracts.DATA_GROUPS, "[]"))
     return result
 
 
-def ensure_output_available(output: Path, force: bool) -> None:
-    if output.exists() and not force:
-        raise DiagramError(
-            f"Output already exists: {output}; use --force to replace it",
-            code="delivery/output-exists",
-            evidence={"output": str(output)},
-            supported_fixes=["choose-new-output", "use-force"],
-        )
-
-
-def write_tree(tree: ET.ElementTree, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # Pretty-print managed XML without interpreting or rewriting opaque text.
-    # ET.indent alone would destroy xml:space and whitespace word separators.
-    preserve_outer_space = graph_root_preserves_space(tree)
-    opaque_text = []
-    for entry in unmanaged_root_entries(tree):
-        for element in entry.iter():
-            keep_tail = (element is not entry or preserve_outer_space
-                         or bool((element.tail or "").strip()))
-            opaque_text.append((element, element.text, element.tail, keep_tail))
-    ET.indent(tree, space="  ")
-    for element, text, tail, keep_tail in opaque_text:
-        element.text = text
-        if keep_tail:
-            element.tail = tail
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output.name}.", suffix=".candidate", dir=output.parent
-    )
-    os.close(file_descriptor)
-    temporary_path = Path(temporary_name)
-    try:
-        tree.write(
-            temporary_path,
-            encoding="utf-8",
-            xml_declaration=False,
-            short_empty_elements=True,
-        )
-        with temporary_path.open("ab") as handle:
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, output)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
-def file_receipt(path: Path) -> dict:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-            size += len(chunk)
-    return {"path": str(path), "bytes": size, "sha256": digest.hexdigest()}
-
-
-def ensure_different(input_path: Path, output_path: Path) -> None:
-    if input_path.resolve() == output_path.resolve():
-        raise DiagramError("Input and output must differ; review the new file before replacing the original")
-
-
 def command_build(args: argparse.Namespace) -> None:
-    ensure_output_available(args.output, args.force)
+    document.ensure_output_available(args.output, args.force)
     spec = load_json(args.spec)
     tree = build_tree(spec)
     result = validate_tree(tree)
     strict_failed = bool(args.strict and result["warnings"])
     if not result["valid"] or strict_failed:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Generated diagram failed strict validation"
             if strict_failed
             else "Generated diagram failed validation",
@@ -6631,23 +5589,23 @@ def command_build(args: argparse.Namespace) -> None:
             else "delivery/validation-failed",
             evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
-    write_tree(tree, args.output)
+    document.write_tree(tree, args.output)
     result.update(
         {
             "operation": "build",
             "strict_mode": args.strict,
-            "output": file_receipt(args.output),
+            "output": document.file_receipt(args.output),
         }
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def command_patch(args: argparse.Namespace) -> None:
-    ensure_different(args.input, args.output)
-    ensure_output_available(args.output, args.force)
-    input_receipt = file_receipt(args.input)
+    document.ensure_different(args.input, args.output)
+    document.ensure_output_available(args.output, args.force)
+    input_receipt = document.file_receipt(args.input)
     if not args.expected_input_sha256:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Patch requires the SHA-256 digest returned by inspect",
             code="delivery/input-sha256-required",
             supported_fixes=["inspect-latest-input", "supply-expected-input-sha256"],
@@ -6655,7 +5613,7 @@ def command_patch(args: argparse.Namespace) -> None:
     if (
         input_receipt["sha256"] != args.expected_input_sha256
     ):
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Patch input does not match the reviewed SHA-256 baseline",
             code="delivery/input-sha256-mismatch",
             evidence={
@@ -6664,7 +5622,7 @@ def command_patch(args: argparse.Namespace) -> None:
             },
             supported_fixes=["inspect-latest-input", "update-expected-input-sha256"],
         )
-    tree = ET.parse(args.input)
+    tree = document.read_tree(args.input)
     input_validation = validate_tree(tree)
     integrity_errors = [
         diagnostic
@@ -6673,7 +5631,7 @@ def command_patch(args: argparse.Namespace) -> None:
         and diagnostic["code"].startswith("integrity/")
     ]
     if integrity_errors:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Patch input has unsafe managed metadata",
             code="delivery/input-integrity-failed",
             evidence={"diagnostics": integrity_errors},
@@ -6683,7 +5641,7 @@ def command_patch(args: argparse.Namespace) -> None:
         input_validation.get("model_hash_matches") is False
         and not args.accept_model_drift
     ):
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Patch input semantic metadata changed after its managed hash was written",
             code="integrity/model-hash-mismatch",
             evidence={
@@ -6709,7 +5667,7 @@ def command_patch(args: argparse.Namespace) -> None:
     result = validate_tree(tree)
     strict_failed = bool(args.strict and result["warnings"])
     if not result["valid"] or strict_failed:
-        raise DiagramError(
+        raise contracts.DiagramError(
             "Patched diagram failed strict validation"
             if strict_failed
             else "Patched diagram failed validation",
@@ -6718,7 +5676,7 @@ def command_patch(args: argparse.Namespace) -> None:
             else "delivery/validation-failed",
             evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
-    write_tree(tree, args.output)
+    document.write_tree(tree, args.output)
     result.update(
         {
             "operation": "patch",
@@ -6726,14 +5684,14 @@ def command_patch(args: argparse.Namespace) -> None:
             "manual_waypoints_preserved": patch_receipt["manual_waypoints_preserved"],
             "manual_waypoints_checked": patch_receipt["manual_waypoints_checked"],
             "patch_receipt": patch_receipt,
-            "output": file_receipt(args.output),
+            "output": document.file_receipt(args.output),
         }
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def command_validate(args: argparse.Namespace) -> None:
-    result = validate_tree(ET.parse(args.input))
+    result = validate_tree(document.read_tree(args.input))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["valid"] or (args.strict and result["warnings"]):
         raise SystemExit(1)
@@ -6741,15 +5699,15 @@ def command_validate(args: argparse.Namespace) -> None:
 
 def command_compare(args: argparse.Namespace) -> None:
     changes = load_json(args.changes) if args.changes else None
-    result = compare_trees(ET.parse(args.before), ET.parse(args.after), changes)
+    result = compare_trees(document.read_tree(args.before), document.read_tree(args.after), changes)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["preserved"]:
         raise SystemExit(1)
 
 
 def command_inspect(args: argparse.Namespace) -> None:
-    result = inspect_tree(ET.parse(args.input))
-    result["input"] = file_receipt(args.input)
+    result = inspect_tree(document.read_tree(args.input))
+    result["input"] = document.file_receipt(args.input)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -6812,7 +5770,7 @@ def main() -> int:
         args = build_parser().parse_args()
         args.func(args)
         return 0
-    except DiagramError as exc:
+    except contracts.DiagramError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print(
             json.dumps(
@@ -6837,7 +5795,7 @@ def main() -> int:
             code = "delivery/io-error"
         else:
             code = "input/invalid"
-        diagnostic = make_diagnostic(code, "error", str(exc))
+        diagnostic = contracts.make_diagnostic(code, "error", str(exc))
         print(
             json.dumps(
                 {
@@ -6853,7 +5811,7 @@ def main() -> int:
         return 2
     except Exception as exc:
         message = "Unexpected internal error"
-        diagnostic = make_diagnostic(
+        diagnostic = contracts.make_diagnostic(
             "internal/unexpected",
             "error",
             message,

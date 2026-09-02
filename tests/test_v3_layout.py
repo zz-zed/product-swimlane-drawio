@@ -30,7 +30,7 @@ def run_tool(
             ["--expected-input-sha256", hashlib.sha256(input_path.read_bytes()).hexdigest()]
         )
     result = subprocess.run(
-        [sys.executable, str(TOOL), *command_args],
+        [sys.executable, "-B", str(TOOL), *command_args],
         cwd=ROOT,
         text=True,
         capture_output=True,

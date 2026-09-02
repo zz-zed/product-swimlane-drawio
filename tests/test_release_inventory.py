@@ -29,6 +29,9 @@ class ReleaseInventoryTests(unittest.TestCase):
             (skill / ".DS_Store").write_bytes(b"\xff\xfe")
             (skill / "scripts/__pycache__").mkdir()
             (skill / "scripts/__pycache__/tool.pyc").write_bytes(b"\xff\xfe")
+            nested = skill / "scripts/swimlane_core/__pycache__/contracts.cpython-314.pyc"
+            nested.parent.mkdir()
+            nested.write_bytes(b"\xff\xfe")
             self.assertTrue(release.check_release(root)["valid"])
             (skill / "unknown.bin").write_bytes(b"\xff\xfe")
             self.assertIn("Unexpected packaged file: unknown.bin", release.check_release(root)["errors"])
@@ -41,17 +44,36 @@ class ReleaseInventoryTests(unittest.TestCase):
             cache.write_bytes(b"\xff")
             subprocess.run(["git", "-C", str(root), "add", "-f", str(cache)], check=True)
             self.assertFalse(release.check_release(root)["valid"])
+            nested = root / release.SKILL_PREFIX / "scripts/swimlane_core/__pycache__/contracts.cpython-314.pyc"
+            nested.parent.mkdir()
+            nested.write_bytes(b"\xff")
+            subprocess.run(["git", "-C", str(root), "add", "-f", str(nested)], check=True)
+            self.assertIn("Unexpected packaged file: scripts/swimlane_core/__pycache__/contracts.cpython-314.pyc",
+                          release.check_release(root)["errors"])
 
     def test_export_rejects_caches_and_unknown_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.make_source(root, source=False)
             self.assertTrue(release.check_release(root, source=False)["valid"])
-            for name in (".DS_Store", "unknown.bin", "scripts/__pycache__/tool.pyc"):
+            for name in (".DS_Store", "unknown.bin", "scripts/__pycache__/tool.pyc",
+                         "scripts/swimlane_core/__pycache__/contracts.cpython-314.pyc"):
                 path = root / release.SKILL_PREFIX / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"\xff")
                 self.assertIn(f"Unexpected packaged file: {name}", release.check_release(root, source=False)["errors"])
+
+    def test_missing_or_unknown_core_module_fails_against_exact_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_source(root, source=False)
+            core = root / release.SKILL_PREFIX / "scripts/swimlane_core"
+            (core / "contracts.py").unlink()
+            self.assertIn("Missing packaged file: scripts/swimlane_core/contracts.py",
+                          release.check_release(root, source=False)["errors"])
+            (core / "unreviewed_helper.py").write_text("# not allowlisted\n", encoding="utf-8")
+            self.assertIn("Unexpected packaged file: scripts/swimlane_core/unreviewed_helper.py",
+                          release.check_release(root, source=False)["errors"])
 
     def test_outer_release_payload_and_extra_skills_are_checked(self):
         for source in (True, False):
@@ -92,4 +114,28 @@ class ReleaseInventoryTests(unittest.TestCase):
             scripts.rename(root / "redirected")
             scripts.symlink_to(root / "redirected", target_is_directory=True)
             self.assertIn("Not a regular packaged file: scripts/drawio_swimlane.py",
+                          release.check_release(root)["errors"])
+
+    def test_package_file_and_package_directory_symlinks_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_source(root)
+            subprocess.run(["git", "-C", str(root), "add", release.SKILL_PREFIX], check=True)
+            core = root / release.SKILL_PREFIX / "scripts/swimlane_core"
+            contracts = core / "contracts.py"
+            redirected_file = root / "redirected-contracts.py"
+            contracts.rename(redirected_file)
+            contracts.symlink_to(redirected_file)
+            self.assertIn("Not a regular packaged file: scripts/swimlane_core/contracts.py",
+                          release.check_release(root)["errors"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_source(root)
+            subprocess.run(["git", "-C", str(root), "add", release.SKILL_PREFIX], check=True)
+            core = root / release.SKILL_PREFIX / "scripts/swimlane_core"
+            redirected_directory = root / "redirected-core"
+            core.rename(redirected_directory)
+            core.symlink_to(redirected_directory, target_is_directory=True)
+            self.assertIn("Not a regular packaged file: scripts/swimlane_core/contracts.py",
                           release.check_release(root)["errors"])

@@ -34,7 +34,7 @@ Schema v3 is the default for new diagrams. It represents lanes, nodes, edges, a 
 
 ### Deterministic engine
 
-The standard-library Python tool validates input, calculates lane and node geometry, allocates ports, routes orthogonal connectors, places labels, emits native Draw.io XML, and returns an atomic delivery receipt.
+The standard-library Python tool validates input, calculates lane and node geometry, allocates ports, routes orthogonal connectors, places labels, emits native Draw.io XML, and returns an atomic delivery receipt. The complete Skill directory is its distribution unit: the CLI entrypoint loads its adjacent private `swimlane_core` package from any working directory, with no pip installation or repository tools required.
 
 The engine uses a bounded compilation pipeline, not an unbounded global solver. It allocates lane and rank space, selects among finite route candidates for each automatic edge, and performs label reflow against the compiled scene. It does not repeatedly optimize the whole diagram until a subjective visual optimum is reached, and it does not infer durable layout intent from a person's drag operations. Deterministic means that the same supported input produces the same bytes; it does not mean that every valid process is automatically presentation-perfect.
 
@@ -67,10 +67,10 @@ The pool cell stores the producing tool version, model-hash version, stable lane
 
 ## Current implementation and page scope
 
-The portable CLI and its logical compiler, routing, Draw.io, validation, and round-trip responsibilities currently live in one standard-library Python file. These are responsibility boundaries, not separate runtime packages. The public interface is the CLI and its structured JSON receipts; internal function boundaries are not compatibility guarantees.
+The portable CLI retains compilation, routing, label strategy, validation, patch and compare orchestration. Four narrow private modules now own shared contracts, pure geometry, Draw.io document adaptation, and managed semantic metadata respectively. They are one-way implementation boundaries inside the Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
 
 Each generated file is a single-page process view. The tool does not provide multi-page navigation, cross-page connectors, or cross-file references. Split a dense end-to-end process and its exception detail into separate `.drawio` files when one page would no longer be readable.
 
 ## Distribution
 
-Claude Code, Codex, and Agent Skills installers all resolve the same canonical directory: `skills/product-swimlane-drawio`. Marketplace manifests provide platform metadata without duplicating implementation files.
+Claude Code, Codex, and Agent Skills installers all resolve the same canonical directory: `skills/product-swimlane-drawio`. Install or copy the complete directory rather than the entry script alone. Marketplace manifests provide platform metadata without duplicating implementation files.

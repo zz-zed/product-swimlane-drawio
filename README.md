@@ -66,7 +66,7 @@ Do not generate files until I approve the structure.
 
 ## Install
 
-All installation paths use the same canonical Skill under `skills/product-swimlane-drawio`. Python 3.10+ is required at runtime; Node.js is needed only when installing with `npx skills`.
+All installation paths use the same canonical Skill under `skills/product-swimlane-drawio`. Python 3.10+ is required at runtime; Node.js is needed only when installing with `npx skills`. The complete Skill directory is the runtime unit: do not copy only the CLI script, because its adjacent private modules are required. No pip installation or `PYTHONPATH` setup is needed.
 
 ### Manual installation
 
@@ -152,6 +152,8 @@ Local editing is part of the design, not an escape hatch.
 4. The agent runs `inspect`, checks the artifact state, binds the patch to the reported input SHA-256, prepares the smallest semantic patch, preserves unrelated geometry, validates, and compares the result.
 
 Safe patching depends on semantic metadata, a matching semantic-model hash, stable IDs, and the exact inspected input file. A patch can insert, resize, rename, or safely remove lanes, and v3 patch-added nodes can use lane-local slots and note anchors without rebuilding the diagram. Dependent lane shifts and automatic reroutes are reported separately. Reviewed direct semantic edits can establish a new baseline explicitly; malformed or manually created `.drawio` files may require migration or a controlled rebuild. Explicit manual waypoints are never silently simplified.
+
+Use the same tool version for a patch and its comparison. In 0.6.0, reviewing a patch already completed by 0.5.1 may fail solely because its producing-tool stamp differs; this does not mean the diagram was damaged. Editing a supported old input with the current tool and comparing with that same version is the normal workflow. A failed comparison is not waived, and read-only review must not rewrite stamps or automatically patch/rebuild files. See the [compatibility matrix](skills/product-swimlane-drawio/references/schema.md#compatibility).
 
 ## Validation and reliability
 

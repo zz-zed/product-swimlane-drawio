@@ -66,7 +66,7 @@ npx skills add zz-zed/product-swimlane-drawio
 
 ## 安装
 
-所有安装方式都使用 `skills/product-swimlane-drawio` 下的同一份 Skill。运行时要求 Python 3.10+；Node.js 只在通过 `npx skills` 安装时需要。
+所有安装方式都使用 `skills/product-swimlane-drawio` 下的同一份 Skill。运行时要求 Python 3.10+；Node.js 只在通过 `npx skills` 安装时需要。完整 Skill 目录才是运行单元：不能只复制 CLI 脚本，因为它依赖相邻的私有模块；不需要 pip 安装或配置 `PYTHONPATH`。
 
 ### 手动安装
 
@@ -152,6 +152,8 @@ Agent 可能会询问安装范围，并在运行命令前请求授权。
 4. Agent 运行 `inspect`，检查产物状态，将补丁绑定到返回的输入 SHA-256，准备最小语义补丁，保留无关几何，再校验并对比结果。
 
 安全补丁依赖该 Skill 创建的语义元数据、匹配的语义模型哈希、稳定 ID 和经过检查的准确输入文件。补丁可以插入、调整宽度、重命名或安全删除泳道；v3 新增节点也可直接使用泳道内 slot 和说明节点 anchor，无需重建整张图。由此产生的后续泳道平移与自动重路由会单独回执。经确认的直接语义编辑可以显式建立新基线；结构异常或手工创建的 `.drawio` 可能需要迁移或受控重建。明确设置的人工 waypoint 不会被静默简化。
+
+执行补丁及随后对比时应使用同一工具版本。0.6.0 复核由 0.5.1 已经完成的补丁结果时，可能仅因生产版本戳不同而报不通过，这不代表图已损坏。用新版修改受支持的旧输入、再用同一新版对比，是正常编辑流程。对比失败不能自动放行；只读复核不得改写版本戳或自动补丁、重建文件。详见[兼容矩阵](skills/product-swimlane-drawio/references/schema.md#compatibility)。
 
 ## 校验与输出可靠度
 

@@ -10,9 +10,20 @@ Build native, uncompressed `.drawio` files with the bundled Python tool. Keep th
 ## Requirements
 
 - Use Python 3.10 or later.
+- The complete `product-swimlane-drawio` Skill directory is the runtime unit. Do not copy only `scripts/drawio_swimlane.py`; keep its adjacent `swimlane_core` package and use the existing relative CLI path. No pip install, `PYTHONPATH`, or other dependency is required.
 - Resolve referenced files relative to this `SKILL.md`; never assume an installation path or working directory.
 - Treat Draw.io Desktop or the web app as an optional editor and renderer, not as a generation dependency.
 - Keep task inputs and outputs outside the skill directory.
+
+## Choose the task
+
+- **New diagram:** confirm the structure, then read the [build contract](references/schema.md#build-specification) and use the build workflow below.
+- **Modify an existing diagram:** use the latest saved file; read the [patch contract](references/schema.md#patch-specification), [inspection rules](references/schema.md#inspection-and-diagnostics), [artifact integrity](references/schema.md#artifact-integrity), and [compatibility matrix](references/schema.md#compatibility).
+- **Read-only check:** read only the relevant [inspection](references/schema.md#inspection-and-diagnostics), [integrity](references/schema.md#artifact-integrity), or [compatibility](references/schema.md#compatibility) section, then choose the requested `inspect`, `validate`, or `compare` command. Do not build, patch, overwrite, or automatically repair a diagram during a read-only request.
+
+Use information already supplied by the user; ask only for a missing fact that changes process meaning, ownership, the main path, or a safety authorization. When the user asks to confirm the structure first, wait without creating a specification or diagram.
+
+Use the same tool version for a patch and its subsequent comparison. For read-only review of an older completed patch, read the [cross-version limitation](references/schema.md#compatibility): a producing-version mismatch can cause comparison failure. Explain the evidence without marking it passed, changing the saved version stamp, or automatically rebuilding/patching the files.
 
 ## Start from natural language
 
@@ -38,7 +49,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 
 ## Build after confirmation
 
-1. Read [references/schema.md](references/schema.md). Use its v3 contract for new diagrams; keep v2 only for compatibility work.
+1. Read the [build contract](references/schema.md#build-specification). Use its v3 contract for new diagrams; keep v2 only for compatibility work.
 2. Translate the confirmed structure into a task-local JSON specification with `schema_version: "3"`, a fitting `behavior_pattern`, stable semantic IDs, and the confirmed `main_path`. Add `phases` only when the process has meaningful horizontal stages.
 3. Express repeated topology with `groups`, same-rank composition with `left/main/right` slots, and explanatory notes with semantic anchors. Choose `compact`, `review`, or `long-form` spacing. When phases are navigation labels rather than colored backgrounds, use `layout.phase_presentation: "rail"`. Start without absolute coordinates; let the compiler expand lanes and place slots deterministically.
 4. Mark primary progress as `flow_role: main`, branches and joins with their corresponding roles, historical return or retry as `route: back`, and same-rank interaction as `route: side`. Use stable `outcome` IDs plus `branch` where a decision has distinct results.
@@ -49,23 +60,16 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
    python3 "<skill-root>/scripts/drawio_swimlane.py" validate --input "<diagram.drawio>" --strict
    ```
 
-6. Follow structured diagnostic codes and `supported_fixes`. If strict validation reports a warning, correct the specification and rebuild. Do not declare completion from XML validity alone.
-7. When a renderer is available, export a preview before handoff. Inspect it only when the current agent can analyze images; otherwise ask the user to review it and report that model visual review was not performed.
+6. Follow structured diagnostic codes and `supported_fixes`. If strict validation reports a warning, correct the specification and rebuild. Do not declare completion from XML validity alone. The Agent owns process meaning and layout intent; the script calculates ports, route candidates, geometry, and labels. Do not hand-calculate those algorithmic details.
+7. When a renderer is available, export a preview before handoff. The script's raw `visual_review` receipt remains `not_available`; report preview export, any later Agent image inspection, and human review as separate evidence.
 
 ## Routing semantics
 
 - Route the confirmed `main_path` before ordinary branches and returns so its channels remain visually dominant.
 - Keep every downward main-path continuation bottom-to-top, including a main path that crosses into another lane. Do not send a decision's normal continuation through a side hook merely because its target is in another lane.
-- Reserve a decision's top for incoming flow. Point a true exception branch toward its target lane. When a same-lane outcome terminates directly below the decision, leave from the bottom rather than creating a side hook.
-- Put a side outcome on the decision's rank when the branch should read as a horizontal handoff. Keep a directly following same-lane terminal on the lane's main axis so the decision can connect bottom-to-top without a folded detour.
-- For a binary decision, use distinct `positive` and `negative` branches. For three or more outgoing edges, give every edge an `outcome` ID; reuse an outcome only when one result intentionally triggers multiple actions. Treat `branch` as a directional hint that may repeat.
 - Allocate source and target ports as a pair. Prefer the center (`0.5`) of the selected source and target sides whenever those ports are free; only move to secondary offsets for an actual port conflict or explicit override. Treat endpoint alignment as secondary to balanced attachment points.
-- Route retries and returns after forward paths. Keep their target trunks in an independent outer-side slot inside the historical target lane and at least 16 pixels from the matching forward or response channel. An adjacent-lane retry should leave toward the target but enter through the target's outer side, keeping the normal facing corridor clear. A long cross-lane return may leave from the source's outer side and use the outer bottom corridor before entering the target gutter.
-- Allow new-diagram layout to widen an automatic target lane when its side gutter cannot safely contain a return or retry trunk. Recompute downstream lane positions and automatic routes from the expanded geometry.
-- Give each connection a distinct port by default. Set `allow_port_reuse` only for an intentional convergence.
-- Keep cross-lane vertical segments at least 16 pixels away from lane boundaries.
-- Score automatic candidates by bends, length, short segments, lane intrusion, node and connector clearance, reciprocal separation, main-path continuity, and label capacity.
-- Put ordinary labels on the longest clear independent segment available. For an automatic retry or return, prefer the nearest clear carrier to the source action instead of a distant outer-canvas detour. After all automatic routes exist, reflow labels globally so later return paths cannot invalidate earlier label placement. Re-route or increase automatic spacing before accepting a label collision.
+- Route returns and retries after forward paths, using independent return channels; retain explicit waypoints unchanged.
+- Keep decision outcomes semantically explicit and let the script select safe route/label candidates. Use manual ports or waypoints only after diagnostic or visual evidence identifies a need.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
 - Never simplify or silently rewrite explicit waypoints. Diagnose their quality issues and require an intentional edit instead.
 
@@ -91,9 +95,8 @@ Treat automated validation and visual review as separate evidence:
 
 - Always run strict validation on the actual `.drawio` file being handed off.
 - If Draw.io opens, moves, edits, or saves the file, re-run strict validation on that final saved file.
-- If the current agent can analyze images, inspect the rendered preview for clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions.
-- If the current agent cannot analyze images, export a preview when possible and request user review. Never claim that visual review passed.
-- Report `strict validation`, `preview export`, and `model visual review` as separate statuses.
+- If a preview is available, later Agent image inspection may check clipped labels, ambiguous arrow direction, hidden arrowheads, excessive detours, and visual collisions; human review is separate again. Never claim a raw runtime visual review passed.
+- Report `strict validation`, `preview export`, `raw visual_review`, later `Agent image inspection`, and `human review` as separate statuses.
 - Treat `visual_review: "not_available"` as an explicit incomplete visual-review status, never as a strict-validation success alias.
 
 ## Update an existing diagram
@@ -119,6 +122,7 @@ Treat automated validation and visual review as separate evidence:
    python3 "<skill-root>/scripts/drawio_swimlane.py" compare --before "<current.drawio>" --after "<updated.drawio>" --changes "<changes.json>"
    ```
 
+   `compare` is a separate delivery gate: require exit code 0 and `preserved: true`. Strict validation alone does not authorize handoff. An undeclared geometry, attribute, add/delete, unknown-content, or sibling-order difference blocks delivery.
 6. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
 7. When changing an existing node type, explicitly reroute every incident edge in the same patch. Do not leave old port semantics attached to a new shape.
 8. For a new v3 node, use `slot` or `anchor` when that intent is known. The patcher preserves existing node-local geometry, expands right-side lane space when necessary, and reports downstream lane shifts separately.
@@ -126,6 +130,8 @@ Treat automated validation and visual review as separate evidence:
 10. Keep valid manual waypoints and all unrelated geometry unchanged. If a lane change affects an edge with explicit waypoints, report it for visual review; never rewrite the waypoints silently.
 11. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
 12. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
+
+If diagnostics offer no safe authorized fix, a correction makes no progress, or a fix would change confirmed semantics or manual layout, stop with the diagnostic evidence and ask for a decision. Never lower strictness, add speculative waypoints, or use `--force` / `--accept-model-drift` to suppress the issue.
 
 ## Layout and handoff
 

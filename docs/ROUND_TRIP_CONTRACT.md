@@ -25,7 +25,7 @@ Generated artifacts also store the producing tool version, semantic-model hash v
 
 ## Inspect
 
-Inspection returns semantic intent, current geometry, the exact input SHA-256 digest, and one of three managed states: `managed`, `recoverable`, or `unsafe`. A missing hash in an older managed file is recoverable. A semantic-model hash mismatch or malformed schema composition is unsafe. Ordinary Draw.io files without Skill metadata require a generic digest or controlled migration; they must not be presented as safely patchable semantic diagrams.
+Inspection returns semantic intent, current geometry, the exact input SHA-256 digest, and one of three managed states: `managed`, `recoverable`, or `unsafe`. A missing hash in an older managed file is recoverable. A semantic-model hash mismatch or malformed schema composition is unsafe. Ordinary Draw.io files without Skill metadata require a generic digest or controlled migration; they must not be presented as safely patchable semantic diagrams. Inspection is evidence, not patch permission.
 
 ## Patch
 
@@ -59,6 +59,22 @@ is treated as formatting, unless inherited `xml:space="preserve"` applies.
 Any unexpected order or unmanaged-content difference makes
 `preserved=false` and CLI exit 1. These evidence fields are omitted when empty;
 the existing semantic-cell count still counts managed cells only.
+
+`compare` is a delivery gate after a declared patch: require exit 0 and
+`preserved=true` in addition to strict validation. It compares observed
+differences; an identical ordinary or unsafe input pair can still return
+`preserved=true`, which does not classify the input as patch-safe.
+
+Use the same tool version for a patch and its comparison. Reviewing a completed
+0.5.1 patch with 0.6.0 is different from editing an old input with the current
+tool: declared-patch replay writes the current `data-tool-version`, so an old
+`after` may yield `unexpected_attributes: ["pool:main"]`, `preserved=false` and
+exit 1 solely because of its producing stamp. This limitation does not damage
+the input or prove a semantic/geometry defect, but the failed gate remains
+failed. Other pool attributes may represent real changes; never waive the whole
+pool or edit an old result's stamp to pass. Read-only checks must not trigger
+automatic patching or rebuilding. See [compatibility](../skills/product-swimlane-drawio/references/schema.md#compatibility)
+for isolated original-version verification and authorized current-version editing.
 
 Future reconciliation should translate repeated manual corrections into layout intent when the mapping is unambiguous:
 

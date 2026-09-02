@@ -32,10 +32,16 @@
   "skills/product-swimlane-drawio/references/schema.json",
   "skills/product-swimlane-drawio/references/schema.md",
   "skills/product-swimlane-drawio/scripts/drawio_swimlane.py",
+  "skills/product-swimlane-drawio/scripts/swimlane_core/__init__.py",
+  "skills/product-swimlane-drawio/scripts/swimlane_core/contracts.py",
+  "skills/product-swimlane-drawio/scripts/swimlane_core/document.py",
+  "skills/product-swimlane-drawio/scripts/swimlane_core/geometry.py",
+  "skills/product-swimlane-drawio/scripts/swimlane_core/metadata.py",
   "tests/fixtures/cli-contract-v1.json",
   "tests/fixtures/neutral-flow.json",
   "tests/fixtures/neutral-patch.json",
   "tests/test_evidence_baseline.py",
+  "tests/test_core_boundaries.py",
   "tests/test_reference_benchmark.py",
   "tests/test_release.py",
   "tests/test_release_inventory.py",
@@ -44,5 +50,6 @@
   "tools/performance_probe.py",
   "tools/reference_benchmark.py",
   "tools/regression_baseline.py",
+  "tools/swimlane_loader.py",
   "tools/release_check.py"
 ]
