@@ -76,7 +76,7 @@ GEOMETRY_TOLERANCE = 0.75
 SCHEMA_VERSION = "2"
 V3_SCHEMA_VERSION = "3"
 STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
-TOOL_VERSION = "0.5.0"
+TOOL_VERSION = "0.5.1"
 MODEL_HASH_VERSION = "1"
 
 SLOT_CLASSES = {"left", "main", "right"}
@@ -1514,6 +1514,11 @@ def set_style_option(cell: ET.Element, key: str, value: str) -> None:
     cell.attrib["style"] = ";".join(updated) + ";"
 
 
+def native_cell(element: ET.Element) -> ET.Element | None:
+    """A root entry may be a cell or a native object/UserObject wrapper."""
+    return element if element.tag == "mxCell" else element.find("mxCell")
+
+
 def normalize_phase_layering(
     root: ET.Element,
     pool: ET.Element,
@@ -1544,20 +1549,54 @@ def normalize_phase_layering(
     if not phases:
         return
 
-    # Stable-sort only semantic drawing cells in their existing slots. This
-    # preserves unrelated user cells while enforcing background -> lanes ->
-    # nodes -> connectors for every build and patch operation.
+    # Retain canonical serialization for generated diagrams. Unknown cells
+    # need an additional sibling-order guard: a fixed XML slot alone does not
+    # preserve their paint order when other parents' descendants move past it.
     layer_order = {"phase": 0, "lane": 1, "node": 2, "edge": 3}
+    def is_drawing_cell(cell):
+        return (cell.tag == "mxCell" and cell.get("data-kind") in layer_order
+                and bool(cell.get("data-semantic-id")))
+
     children = list(root)
     semantic_positions = [
         index
         for index, cell in enumerate(children)
-        if cell.attrib.get("data-kind") in layer_order
+        if is_drawing_cell(cell)
     ]
     semantic_cells = [children[index] for index in semantic_positions]
     semantic_cells.sort(key=lambda cell: layer_order[cell.attrib["data-kind"]])
     for index, cell in zip(semantic_positions, semantic_cells):
         children[index] = cell
+    # A wrapped cell and its metadata are one drawing unit. The parent lives
+    # on the nested mxCell; the identity usually lives on the wrapper.
+    natives = {element: native_cell(element) for element in root}
+    original_siblings: dict[str | None, list[ET.Element]] = {}
+    for element, cell in natives.items():
+        if cell is not None:
+            original_siblings.setdefault(cell.get("parent"), []).append(element)
+    positions_by_parent: dict[str | None, list[int]] = {}
+    for index, element in enumerate(children):
+        cell = natives[element]
+        if cell is not None:
+            positions_by_parent.setdefault(cell.get("parent"), []).append(index)
+    for parent, siblings in original_siblings.items():
+        if all(is_drawing_cell(cell) for cell in siblings):
+            continue
+        # Unknown siblings are anchors. Sort only the semantic runs between
+        # them, never moving an existing cell across an unknown sibling. If
+        # this prevents safe phase layering, validation rejects the candidate.
+        ordered: list[ET.Element] = []
+        run: list[ET.Element] = []
+        for cell in siblings:
+            if is_drawing_cell(cell):
+                run.append(cell)
+            else:
+                ordered.extend(sorted(run, key=lambda c: layer_order[c.get("data-kind")]))
+                run.clear()
+                ordered.append(cell)
+        ordered.extend(sorted(run, key=lambda c: layer_order[c.get("data-kind")]))
+        for index, cell in zip(positions_by_parent[parent], ordered):
+            children[index] = cell
     root[:] = children
 
 
@@ -5389,13 +5428,37 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             for index, cell in enumerate(list(root))
             if cell.attrib.get("data-kind") in layer_order
         ]
-        ranks = [layer_order[item["kind"]] for item in semantic_layers]
+        # Draw.io serializes descendants immediately after their parent. XML
+        # order across different parents is not sibling paint order: a node in
+        # lane A may precede lane B without covering the phase background.
+        # Include the pool and its ancestors as background containers. A
+        # connector reparented beside one must not be hidden behind it.
+        cells_by_id = {cell.attrib.get("id"): cell for cell in list(root)}
+        background_containers: set[str] = set()
+        container = pool
+        while container is not None:
+            container_id = container.attrib.get("id")
+            if not container_id or container_id in background_containers:
+                break
+            background_containers.add(container_id)
+            container = cells_by_id.get(container.attrib.get("parent"))
+        sibling_ranks: dict[str | None, list[int]] = {}
+        for cell in list(root):
+            kind = cell.attrib.get("data-kind")
+            rank = (
+                -1 if cell.attrib.get("id") in background_containers
+                else layer_order.get(kind)
+            )
+            if rank is not None:
+                sibling_ranks.setdefault(cell.attrib.get("parent"), []).append(
+                    rank
+                )
         pool_index = list(root).index(pool)
         phase_indices = [
             item["index"] for item in semantic_layers if item["kind"] == "phase"
         ]
         if (
-            ranks != sorted(ranks)
+            any(ranks != sorted(ranks) for ranks in sibling_ranks.values())
             or not phase_indices
             or min(phase_indices) <= pool_index
         ):
@@ -6205,6 +6268,80 @@ def comparison_attributes(cell: ET.Element) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(cell.attrib.items()))
 
 
+def sibling_order_changes(before: ET.ElementTree, after: ET.ElementTree) -> list[dict]:
+    """Compare paint order, not flat serialization across different parents.
+
+    Only shared siblings participate. Additions, removals and reparenting are
+    checked separately; a declared new cell still participates when comparing
+    the replayed expected output to the actual output.
+    """
+    def groups(tree):
+        result: dict[str | None, list[str | None]] = {}
+        for element in graph_root(tree):
+            cell = native_cell(element)
+            if cell is not None:
+                result.setdefault(cell.get("parent"), []).append(element.get("id") or cell.get("id"))
+        return result
+
+    left, right = groups(before), groups(after)
+    changes = []
+    for parent in sorted(left.keys() & right.keys(), key=lambda value: value or ""):
+        common = set(left[parent]) & set(right[parent])
+        old = [cell_id for cell_id in left[parent] if cell_id in common]
+        new = [cell_id for cell_id in right[parent] if cell_id in common]
+        if old != new:
+            changes.append({"parent": parent, "before": old, "after": new})
+    return changes
+
+
+def unmanaged_root_entries(tree: ET.ElementTree) -> list[ET.Element]:
+    """Return opaque drawing units and extensions, including native wrappers."""
+    entries = []
+    for element in graph_root(tree):
+        if not (element.tag == "mxCell"
+                and element.get("data-kind") in {"pool", "lane", "node", "phase", "edge"}
+                and element.get("data-semantic-id")):
+            entries.append(element)
+    return entries
+
+
+def graph_root_preserves_space(tree: ET.ElementTree) -> bool:
+    """Resolve inherited xml:space for tails between drawing-root entries."""
+    target = graph_root(tree)
+    pending = [(tree.getroot(), False)]
+    while pending:
+        element, preserve = pending.pop()
+        setting = element.get("{http://www.w3.org/XML/1998/namespace}space")
+        if setting in {"default", "preserve"}:
+            preserve = setting == "preserve"
+        if element is target:
+            return preserve
+        pending.extend((child, preserve) for child in element)
+    return False
+
+
+def unmanaged_cell_signatures(tree: ET.ElementTree) -> dict:
+    """Retain opaque subtrees exactly, including whitespace and duplicate IDs."""
+    preserve_outer_space = graph_root_preserves_space(tree)
+
+    def signature(element, outer=False):
+        # Unknown payloads are opaque: even whitespace-only mixed content can
+        # be meaningful. Only an entry's outer tail is root-level formatting.
+        tail = element.tail or ""
+        if outer and not preserve_outer_space and not tail.strip():
+            tail = ""
+        return (element.tag, tuple(sorted(element.attrib.items())),
+                element.text or "", tail,
+                tuple(signature(child) for child in element))
+
+    result: dict[str | None, list] = {}
+    for element in unmanaged_root_entries(tree):
+        cell = native_cell(element)
+        cell_id = element.get("id") or (cell.get("id") if cell is not None else None)
+        result.setdefault(cell_id, []).append(signature(element, outer=True))
+    return result
+
+
 def allowed_missing_from_patch(changes: dict | None) -> set[str]:
     if not changes:
         return set()
@@ -6241,6 +6378,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
             changed_attributes.append(key)
 
     if changes is None:
+        expected_tree = before
         expected_cells = before_cells
         expected_added: set[str] = set()
         expected_missing: set[str] = set()
@@ -6290,13 +6428,26 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         | expected_added
         | expected_missing
     )
+    changed_order = sibling_order_changes(before, after)
+    unexpected_order = sibling_order_changes(expected_tree, after)
+    expected_unmanaged = unmanaged_cell_signatures(expected_tree)
+    actual_unmanaged = unmanaged_cell_signatures(after)
+    unexpected_unmanaged = []
+    for cell_id in sorted(expected_unmanaged.keys() | actual_unmanaged.keys(),
+                          key=lambda value: value or ""):
+        if expected_unmanaged.get(cell_id) != actual_unmanaged.get(cell_id):
+            change = ("added" if cell_id not in expected_unmanaged else
+                      "missing" if cell_id not in actual_unmanaged else "changed")
+            unexpected_unmanaged.append({"cell_id": cell_id, "change": change})
     preserved = (
         not unexpected_missing
         and not unexpected_geometry
         and not unexpected_attributes
         and not unexpected_added
+        and not unexpected_order
+        and not unexpected_unmanaged
     )
-    return {
+    result = {
         "preserved": preserved,
         "existing_cells_checked": len(set(before_cells) & set(after_cells)),
         "added_cells": added,
@@ -6310,6 +6461,15 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         "unexpected_attributes": unexpected_attributes,
         "unexpected_added": unexpected_added,
     }
+    # Add evidence only when applicable, keeping existing clean CLI receipts
+    # byte-for-byte compatible. Missing optional fields mean no such change.
+    if changed_order:
+        result["changed_sibling_order"] = changed_order
+    if unexpected_order:
+        result["unexpected_sibling_order"] = unexpected_order
+    if unexpected_unmanaged:
+        result["unexpected_unmanaged_cells"] = unexpected_unmanaged
+    return result
 
 
 def inspect_tree(tree: ET.ElementTree) -> dict:
@@ -6405,7 +6565,20 @@ def ensure_output_available(output: Path, force: bool) -> None:
 
 def write_tree(tree: ET.ElementTree, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Pretty-print managed XML without interpreting or rewriting opaque text.
+    # ET.indent alone would destroy xml:space and whitespace word separators.
+    preserve_outer_space = graph_root_preserves_space(tree)
+    opaque_text = []
+    for entry in unmanaged_root_entries(tree):
+        for element in entry.iter():
+            keep_tail = (element is not entry or preserve_outer_space
+                         or bool((element.tail or "").strip()))
+            opaque_text.append((element, element.text, element.tail, keep_tail))
     ET.indent(tree, space="  ")
+    for element, text, tail, keep_tail in opaque_text:
+        element.text = text
+        if keep_tail:
+            element.tail = tail
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{output.name}.", suffix=".candidate", dir=output.parent
     )

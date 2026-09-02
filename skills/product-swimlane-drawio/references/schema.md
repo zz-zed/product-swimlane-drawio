@@ -82,7 +82,7 @@ A phase is an optional horizontal band across every vertical lane:
 - `from_rank`, `to_rank`: inclusive rank range; `to_rank` must not exceed the maximum node rank.
 - `fill_color`: optional `#RRGGBB` value.
 
-When at least one phase exists, the generator and patcher enforce semantic Z-order as phase backgrounds, lanes, nodes, then connectors. Lane bodies use a transparent `swimlaneFillColor` so the bands remain visible, while phase cells use `connectable=0` and `pointerEvents=0` so they cannot intercept node selection. Without phases, lane bodies retain their opaque white fill. Strict validation reports `layout/phase-z-order`, `layout/phase-lane-visibility`, or `layout/phase-interactive` when a saved Draw.io file violates these editability rules.
+When at least one phase exists, the generator and patcher enforce semantic Z-order as phase backgrounds, lanes, nodes, then connectors. Z-order is evaluated among siblings sharing a parent; Draw.io may serialize lane descendants before the next lane without changing paint order. Lane bodies use a transparent `swimlaneFillColor` so the bands remain visible, while phase cells use `connectable=0` and `pointerEvents=0` so they cannot intercept node selection. Without phases, lane bodies retain their opaque white fill. Strict validation reports `layout/phase-z-order`, `layout/phase-lane-visibility`, or `layout/phase-interactive` when a saved Draw.io file violates these editability rules.
 
 ## Nodes and edges
 
@@ -158,6 +158,7 @@ Patch rules:
 - Existing node geometry requires `--allow-geometry-updates`.
 - Moving or resizing a node automatically reroutes only incident edges whose routes become invalid.
 - Valid manual waypoints and unrelated geometry remain unchanged. A lane change that moves an endpoint lane reports affected explicit-waypoint edges for visual review without rewriting them.
+- Unknown cells anchor their relative sibling drawing order during phase normalization. Managed cells may be sorted between those anchors, not across them; a conflict with safe phase layering is rejected without output. Unknown content still requires review and is not silently promoted to managed content.
 - Deleting a node requires explicitly listing every incident edge in `delete_edges`.
 - Deleting a node on `main_path` requires a replacement `main_path` in the same patch.
 - Write to a new output path. Use `--force` only when replacing a reviewed output intentionally.
@@ -190,6 +191,15 @@ Strict validation fails when warnings remain. Routing diagnostics include short 
 Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes requested lane/node/edge changes, lane order, dependent lane shifts, automatic reroutes, affected explicit-waypoint edges, and the inspected input integrity evidence. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. When the current agent cannot inspect a rendered image, `visual_review` is `not_available`; a clean strict result does not change that status.
 
 ## Artifact integrity
+
+`compare` also checks sibling drawing order and complete unmanaged-cell
+subtrees. When present, `changed_sibling_order` / `unexpected_sibling_order`
+list raw parent IDs and before/after raw cell-ID sequences of shared siblings;
+`unexpected_unmanaged_cells` lists raw cell IDs with `added`, `missing`, or
+`changed`. Empty optional fields are omitted. Unexpected evidence makes
+`preserved=false` and CLI exit 1. A declared patch is replayed to distinguish
+supported additions/deletions from unexplained ordering changes. Reordering
+XML entries across different parents alone is not a drawing-order change.
 
 Generated files carry a versioned semantic-model hash. The hash covers the stable process meaning required for safe patching:
 

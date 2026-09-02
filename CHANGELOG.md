@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-02
+
+### Fixed
+
+- Check the actual Skill release inventory rather than decoding ignored local caches as text. Tracked caches, unexpected packaged files and polluted exports still fail.
+- Validate phase Z-order within each parent, accepting Draw.io's depth-first XML serialization while still rejecting phase backgrounds above sibling content.
+- Preserve unknown cells' relative sibling paint order during phase normalization. If safe layering conflicts with those anchors, refuse the candidate instead of crossing them.
+- Detect sibling paint-order differences and complete unmanaged-cell subtree changes in `compare`, including changes previously hidden by a declared label patch.
+
+### Tests and evidence
+
+- Freeze v1/v2/v3 CLI, diagnostics, hashes, atomic-output and patch/compare baselines, with exact repeat-build and unordered-input checks.
+- Add a small fictional combination corpus that separates strict passes, a known request/response/retry routing conflict, and explicit-port rejection.
+- Add timeout-bounded same-topology timing, memory and label-overlap probes, plus separate editor and visual evidence contracts.
+
+### Compatibility
+
+- Strict validation no longer mistakes depth-first editor serialization for unsafe phase layering. Actual layer, visibility and interaction checks remain enforced. No routing, semantic-hash or patch-permission changes; generated files only update the tool-version stamp. Arrowhead clearance and structured visual repair remain design-only.
+- `compare` adds optional `changed_sibling_order`, `unexpected_sibling_order`, and `unexpected_unmanaged_cells` evidence when applicable. Unexpected changes make `preserved` false and CLI exit 1; unchanged receipts retain their existing shape. Cross-parent XML serialization alone is not a paint-order change. Non-strict patching still does not make unmanaged content a strict-quality deliverable.
+
 ## [0.5.0] - 2026-08-31
 
 ### Added
