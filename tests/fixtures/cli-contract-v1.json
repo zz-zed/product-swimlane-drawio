@@ -1,0 +1,268 @@
+{
+  "contract_version": 1,
+  "normalization": "Only temporary directory, tool-version metadata and file hashes derived from that metadata.",
+  "cases": {
+    "linear-v1": {
+      "spec_sha256": "768d18ac6243a8288ed93eb3f535afc6fdde4a54532ebd1394418ecac0baeb85",
+      "commands": {
+        "build": {
+          "exit_code": 0,
+          "sha256": "0205c170d24f68bb01c0a602c04d0a6d4bd394dcd845c90b83f15967786a7d43"
+        },
+        "inspect": {
+          "exit_code": 0,
+          "sha256": "8d4fa99fef1f10b441a9f22a5370032f86f66c14061d78eeb39b437c79f4145c"
+        },
+        "validate-strict": {
+          "exit_code": 0,
+          "sha256": "c7d3f9636e308700e17a51dc0691bea99d3b8edaca3f95f689832a041df83400"
+        },
+        "patch": {
+          "exit_code": 0,
+          "sha256": "330e4d995a58b0054ea8d120fc9f90fce6cc05825bd3025a4b3f21b184b499da"
+        },
+        "compare": {
+          "exit_code": 0,
+          "sha256": "b61cdfa33eabb7224443ec0a183a3f52d7a46785487551b51513223f058be415"
+        },
+        "reject-stale-input": {
+          "exit_code": 2,
+          "sha256": "840e9b05a6523cec8ee4d8c2c21c9d2e12b08648643e8029b6d39e49e9ee52b5"
+        },
+        "build-strict": {
+          "exit_code": 0,
+          "sha256": "349dd3604e37a08ae7307b8996339ae97138bc2ae572d99af6d3f48f563d6572"
+        }
+      },
+      "before": {
+        "bytes": 7508,
+        "canonical_sha256": "8ab23887f5f8d45940b854ce8edd6d94d29271da123800e822c453ad5f5bc47d"
+      },
+      "after": {
+        "bytes": 7509,
+        "canonical_sha256": "77e7b77372ff85b157c0873d2d162e820c028f562be5be25ba5b786338dfedff"
+      },
+      "stale_output_exists": false,
+      "input_unchanged": true,
+      "strict_output_exists": true,
+      "candidate_files": [],
+      "diagnostics": []
+    },
+    "linear-v2": {
+      "spec_sha256": "0e6df66353d0f86021302db8882bc31cfd91c360bc4746915db1c7fbbcc25c73",
+      "commands": {
+        "build": {
+          "exit_code": 0,
+          "sha256": "914acb8991123c148d7dc0125dca18f83ea80009e8351e61174a31dd943f78b8"
+        },
+        "inspect": {
+          "exit_code": 0,
+          "sha256": "deb298bdb95e02c22d9da4e303419600ac66109031c6a5a8ddeb8568a8263d2a"
+        },
+        "validate-strict": {
+          "exit_code": 0,
+          "sha256": "af692cbe2108e70e4de167ec9c24e534848241bcb2443b390f5a96a6fc7ed481"
+        },
+        "patch": {
+          "exit_code": 0,
+          "sha256": "a87e61a657f98334e89f6a8548d40514c2b27b7461901e653cb38d701f88aaf1"
+        },
+        "compare": {
+          "exit_code": 0,
+          "sha256": "b61cdfa33eabb7224443ec0a183a3f52d7a46785487551b51513223f058be415"
+        },
+        "reject-stale-input": {
+          "exit_code": 2,
+          "sha256": "0b38b76014d6a812631ef11cdf13adf8f6bc7813d190014db92170665a2d3e7c"
+        },
+        "build-strict": {
+          "exit_code": 0,
+          "sha256": "02dbf00a0b01e5454807952753f38d4d0f6ed32aa1bd7172c171d362282a3d27"
+        }
+      },
+      "before": {
+        "bytes": 7508,
+        "canonical_sha256": "f2c8db6fb50b241e770064d795ada84a614232046d234d1600ea2129fa45f970"
+      },
+      "after": {
+        "bytes": 7509,
+        "canonical_sha256": "e76e61109d9f19649abbcd679d3138483581d40560fdd255efd38b7e6856abdd"
+      },
+      "stale_output_exists": false,
+      "input_unchanged": true,
+      "strict_output_exists": true,
+      "candidate_files": [],
+      "diagnostics": []
+    },
+    "linear-v3": {
+      "spec_sha256": "8bddbcdef8b0eb7d7e2f64089a1678a5fb3aaf0b0644281da1ac0eb093e81b59",
+      "commands": {
+        "build": {
+          "exit_code": 0,
+          "sha256": "29aa840e0999327913d3a43d4aea9735b15f8568f7d035c7a9ccfed17ba1efc7"
+        },
+        "inspect": {
+          "exit_code": 0,
+          "sha256": "6a43d871ac86d68b4c94f6d655b3c859e064d4dfe5a57d1f06936dc9bb4e8e17"
+        },
+        "validate-strict": {
+          "exit_code": 0,
+          "sha256": "5c9e26f2b9616e26916e997dee61dd0b01489fe0bbb1cf6be3e7144602c37869"
+        },
+        "patch": {
+          "exit_code": 0,
+          "sha256": "68d67722168c224611b2b15acfd8d53932061c9d947e75f76fd63d2c301ba13b"
+        },
+        "compare": {
+          "exit_code": 0,
+          "sha256": "b61cdfa33eabb7224443ec0a183a3f52d7a46785487551b51513223f058be415"
+        },
+        "reject-stale-input": {
+          "exit_code": 2,
+          "sha256": "f443dcf433dd072d6d08d90415c9fe86b5987c65a723976ec55b7ea41150f846"
+        },
+        "build-strict": {
+          "exit_code": 0,
+          "sha256": "560d01ffde03b5536386c539faf0189d7252f3ec56530696b82681295232b95e"
+        }
+      },
+      "before": {
+        "bytes": 7728,
+        "canonical_sha256": "d4783fea7d3363e7c3c9ba1d79e80fa6c74d7fc556e92f717b6ba022a0ba0a51"
+      },
+      "after": {
+        "bytes": 7729,
+        "canonical_sha256": "d79fe821944060942544aade74c404e3dbe7da25bb13d9969458a58b93ef5a8b"
+      },
+      "stale_output_exists": false,
+      "input_unchanged": true,
+      "strict_output_exists": true,
+      "candidate_files": [],
+      "diagnostics": []
+    },
+    "decision-retry-phases": {
+      "spec_sha256": "2edb9d1e0c3580f6d2e4654e05db8378d91de389b0cd625ab32050ab4e083f74",
+      "commands": {
+        "build": {
+          "exit_code": 0,
+          "sha256": "a61c29036506b1ddb3eae8c082b754500e27cdbab4f653ae8d1c9cb837fbf37a"
+        },
+        "inspect": {
+          "exit_code": 0,
+          "sha256": "f7fe88fb1ea307c02e6d8f28fb7254b41c6cf7321999c9f440e1f734bc21c9fe"
+        },
+        "validate-strict": {
+          "exit_code": 0,
+          "sha256": "afd6e567721ce324b76f58760336042bef79dd7624711d5b089670395d63520e"
+        },
+        "patch": {
+          "exit_code": 0,
+          "sha256": "61c1423d6a337c95981799ad7cc9c3335d9324d2f0ccad52c67385698a798ba6"
+        },
+        "compare": {
+          "exit_code": 0,
+          "sha256": "edbd2b46781df2f6037c4371457e93f05e190ff2c767ef933bf1cfc1616be6fb"
+        },
+        "reject-stale-input": {
+          "exit_code": 2,
+          "sha256": "40d866c80f2fef62a71db46266b1ed70f6a33be87eca77e849810c6e4591469c"
+        },
+        "build-strict": {
+          "exit_code": 0,
+          "sha256": "99d9a2cd2e0c27e99873ffed97ad420b9a506621356d88f42d344948613e2bfc"
+        }
+      },
+      "before": {
+        "bytes": 9843,
+        "canonical_sha256": "2466b333a7373df0a60a954ce1c2ae2050ae3b206334690a04a86b6e5fe88386"
+      },
+      "after": {
+        "bytes": 9844,
+        "canonical_sha256": "821c6cd5f85970ccfc3ca5a7a8eba99416e297fbc8aae5eab77e8a16618d3a75"
+      },
+      "stale_output_exists": false,
+      "input_unchanged": true,
+      "strict_output_exists": true,
+      "candidate_files": [],
+      "diagnostics": []
+    },
+    "request-response-retry": {
+      "spec_sha256": "6d9c830aa578b5b5ccca6f6ca479c0dc7b0cbedcea7febb99a881a62b4050a72",
+      "commands": {
+        "build": {
+          "exit_code": 0,
+          "sha256": "7f63ff752e70ae418fbd122b99c8f17f87ad8d6291055325cdfe8fadae86db60"
+        },
+        "inspect": {
+          "exit_code": 0,
+          "sha256": "bf82c893460cab94a6e6a779a69895e14d4f29f08424198fe836faf4e0e6cc27"
+        },
+        "validate-strict": {
+          "exit_code": 1,
+          "sha256": "2432b1295f600830083d61c345a74aadd3b9b1fcb1bcddbd7bb66535b414c1f9"
+        },
+        "patch": {
+          "exit_code": 2,
+          "sha256": "f892a6d1650ca3a0bffffff60f3ff5e373ea62f569503a457640a99abd368e3a"
+        },
+        "reject-stale-input": {
+          "exit_code": 2,
+          "sha256": "a85b0a4a8bbc679948315e680c41f8f6f48a2966728b8f346a3fcc53d838ce7d"
+        },
+        "build-strict": {
+          "exit_code": 2,
+          "sha256": "e80cb7dd05a33696eb01063455dd98a049ad3d1e9f85a1fe1c69a4cb76e28ede"
+        }
+      },
+      "before": {
+        "bytes": 12797,
+        "canonical_sha256": "683118a058598bd8c588132e67d3089d069c9e25318d335f22d357800cecb0e2"
+      },
+      "stale_output_exists": false,
+      "input_unchanged": true,
+      "strict_output_exists": false,
+      "candidate_files": [],
+      "diagnostics": [
+        {
+          "code": "routing/edge-conflict",
+          "severity": "warning",
+          "message": "Connector segments cross or overlap: e4 / retry",
+          "evidence": {
+            "other_edge": "retry"
+          },
+          "supported_fixes": [
+            "reroute-edge"
+          ],
+          "subject": {
+            "kind": "edge",
+            "id": "e4"
+          }
+        }
+      ]
+    },
+    "explicit-port-conflict": {
+      "spec_sha256": "03e41e5d02a4683990e0632df87f4d684648aae58e75421a56f3cd6f76d3c106",
+      "commands": {
+        "build": {
+          "exit_code": 2,
+          "sha256": "9b1384317946d1bfede5299e5a8d694deba57c2c62730733c563c6bfca8ac054"
+        },
+        "build-strict": {
+          "exit_code": 2,
+          "sha256": "9b1384317946d1bfede5299e5a8d694deba57c2c62730733c563c6bfca8ac054"
+        }
+      },
+      "strict_output_exists": false,
+      "candidate_files": [],
+      "diagnostics": [
+        {
+          "code": "input/invalid",
+          "severity": "error",
+          "message": "Port n1:bottom@0.5 is already used by e1; choose another port or set allow_port_reuse",
+          "evidence": {},
+          "supported_fixes": []
+        }
+      ]
+    }
+  }
+}

@@ -9,7 +9,7 @@
       "name": "product-swimlane-drawio",
       "source": ".",
       "description": "Create deterministic, editable product swimlanes and safely revise them after local Draw.io edits.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "author": {
         "name": "zz-zed"
       }

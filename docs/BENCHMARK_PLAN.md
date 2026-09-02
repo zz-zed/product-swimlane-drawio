@@ -6,6 +6,11 @@ The benchmark suite distinguishes structural correctness, deterministic geometry
 
 ## Test sets
 
+For the executable regression baseline, bounded same-topology probe, known
+failure cases, and independent editor/visual evidence gates, see
+[Evidence contract](EVIDENCE_CONTRACT.md). Synthetic coverage and editor
+operation coverage must be reported separately.
+
 ### Public synthetic fixtures
 
 Public tests use fictional actors, systems, and labels. They contain no user data, organization names, or copied business flows.

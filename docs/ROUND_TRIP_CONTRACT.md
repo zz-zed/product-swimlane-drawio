@@ -32,6 +32,7 @@ Inspection returns semantic intent, current geometry, the exact input SHA-256 di
 - Semantic updates apply to declared IDs only.
 - Lane insertion uses stable `before` / `after` references. Lane deletion requires explicit reconciliation of owned nodes, incident edges, `main_path`, and groups.
 - Unrelated geometry remains unchanged.
+- Unknown cells retain their complete subtrees and relative order among siblings. Phase normalization may sort managed runs between unknown cells, but cannot move an existing sibling across an unknown cell. A resulting phase-layer conflict fails validation without writing the candidate, even in non-strict mode.
 - Manual waypoints remain exact unless the user explicitly reroutes that edge.
 - Moving or resizing an existing node requires geometry authorization.
 - A new v3 layout intent field may affect only its declared group or incident region unless a required lane expansion shifts later lanes.
@@ -41,6 +42,23 @@ Inspection returns semantic intent, current geometry, the exact input SHA-256 di
 - Reviewed direct semantic edits require both an equivalent declared patch and `--accept-model-drift`. Schema-composition errors cannot be overridden.
 
 ## Manual corrections
+
+`compare` checks paint order within each parent, including unknown cells; it
+does not equate flat XML order across different parents with drawing order.
+Optional `changed_sibling_order` and `unexpected_sibling_order` records contain
+the raw parent ID and ordered raw cell IDs before/after (only shared siblings).
+For declared patches, the expected order comes from the actual replayed patch,
+so supported additions/deletions do not count as unexplained reordering.
+`unexpected_unmanaged_cells` records raw cell IDs and `added`, `missing`, or
+`changed` status, comparing full subtrees including attributes, geometry and
+custom children. Native `object` / `UserObject` wrappers are kept as drawing
+units using their nested cell's parent and their wrapper ID. Wrapper metadata
+and all internal text/tails (including whitespace-only content) are checked
+and protected from writer indentation. Only whitespace between root entries
+is treated as formatting, unless inherited `xml:space="preserve"` applies.
+Any unexpected order or unmanaged-content difference makes
+`preserved=false` and CLI exit 1. These evidence fields are omitted when empty;
+the existing semantic-cell count still counts managed cells only.
 
 Future reconciliation should translate repeated manual corrections into layout intent when the mapping is unambiguous:
 

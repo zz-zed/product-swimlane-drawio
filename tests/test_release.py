@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "product-swimlane-drawio"
 TOOL = SKILL / "scripts" / "drawio_swimlane.py"
 FIXTURES = ROOT / "tests" / "fixtures"
+sys.path.insert(0, str(ROOT / "tools"))
+from release_check import check_release, skill_inventory, EXPECTED_SKILL_FILES
 
 
 def run_tool(
@@ -391,7 +393,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.5.0")
+        self.assertEqual(codex_plugin["version"], "0.5.1")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -528,21 +530,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("**不声明**模型生成流程图具有经过测量的准确率", chinese)
 
     def test_expected_skill_files_only(self) -> None:
-        relative_files = {
-            path.relative_to(SKILL).as_posix()
-            for path in SKILL.rglob("*")
-            if path.is_file()
-        }
-        self.assertEqual(
-            relative_files,
-            {
-                "SKILL.md",
-                "agents/openai.yaml",
-                "references/schema.json",
-                "references/schema.md",
-                "scripts/drawio_swimlane.py",
-            },
-        )
+        self.assertEqual(skill_inventory(ROOT), EXPECTED_SKILL_FILES)
 
     def test_v2_json_schema_is_strict_and_valid_json(self) -> None:
         schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
@@ -650,12 +638,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(keys, {"name", "description"})
 
     def test_skill_has_no_absolute_user_paths_or_generated_files(self) -> None:
-        for path in SKILL.rglob("*"):
-            if not path.is_file():
-                continue
-            self.assertNotIn(path.suffix.lower(), {".drawio", ".png", ".svg", ".pdf"})
-            text = path.read_text(encoding="utf-8")
-            self.assertNotRegex(text, r"/Users/|/home/|[A-Za-z]:\\Users\\")
+        result = check_release(ROOT)
+        self.assertTrue(result["valid"], result["errors"])
 
 
 class DiagramWorkflowTests(unittest.TestCase):
@@ -673,7 +657,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.5.0")
+        self.assertEqual(report["tool_version"], "0.5.1")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -886,7 +870,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.5.0")
+            self.assertEqual(upgraded["tool_version"], "0.5.1")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -1963,6 +1947,90 @@ class DiagramWorkflowTests(unittest.TestCase):
                     for lane in lanes
                 )
             )
+
+    def test_phase_validation_accepts_depth_first_editor_order(self) -> None:
+        # Synthetic codec-order regression, not evidence of GUI editing.
+        for presentation in ("bands", "rail"):
+            with self.subTest(presentation=presentation), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+                spec["schema_version"] = "3"
+                spec["behavior_pattern"] = "linear"
+                spec["layout"] = {"phase_presentation": presentation}
+                spec_path = directory / "spec.json"
+                spec_path.write_text(json.dumps(spec), encoding="utf-8")
+                diagram = directory / "before.drawio"
+                run_tool("build", "--spec", str(spec_path), "--output", str(diagram))
+                tree = ET.parse(diagram)
+                root = tree.find("./diagram/mxGraphModel/root")
+                original = list(root)
+
+                def descendants(parent):
+                    for cell in original:
+                        if cell.attrib.get("parent") == parent:
+                            yield cell
+                            yield from descendants(cell.attrib["id"])
+
+                root[:] = list(descendants(None))
+                self.assertEqual(len(root), len(original))
+                self.assertNotEqual(list(root), original)
+                for parent in {cell.attrib.get("parent") for cell in original}:
+                    self.assertEqual(
+                        [cell for cell in root if cell.attrib.get("parent") == parent],
+                        [cell for cell in original if cell.attrib.get("parent") == parent],
+                    )
+                saved = directory / "depth-first.drawio"
+                tree.write(saved, encoding="utf-8", xml_declaration=True)
+                run_tool("validate", "--input", str(saved), "--strict")
+                inspected = json.loads(run_tool("inspect", "--input", str(saved)).stdout)
+                self.assertTrue(inspected["model_hash_matches"])
+                changes = directory / "changes.json"
+                changes.write_text("{}", encoding="utf-8")
+                patched = directory / "patched.drawio"
+                run_tool("patch", "--input", str(saved), "--changes", str(changes),
+                         "--output", str(patched), "--strict")
+                compared = json.loads(run_tool("compare", "--before", str(saved),
+                    "--after", str(patched), "--changes", str(changes)).stdout)
+                self.assertTrue(compared["preserved"])
+
+                phase = next(cell for cell in root if cell.attrib.get("data-kind") == "phase")
+                root.remove(phase)
+                root.append(phase)
+                broken = directory / "bad-sibling-order.drawio"
+                tree.write(broken, encoding="utf-8", xml_declaration=True)
+                rejected = run_tool("validate", "--input", str(broken), "--strict", check=False)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("layout/phase-z-order", {
+                    item["code"] for item in json.loads(rejected.stdout)["diagnostics"]
+                })
+
+    def test_phase_validation_rejects_edges_behind_ancestor_containers(self) -> None:
+        tool = load_tool_module()
+        for presentation in ("bands", "rail"):
+            for container_id in ("psd-pool-main", "1"):
+                with self.subTest(presentation=presentation, container=container_id):
+                    spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
+                    spec.update(schema_version="3", behavior_pattern="linear",
+                                layout={"phase_presentation": presentation})
+                    tree = tool.build_tree(spec)
+                    root = tool.graph_root(tree)
+                    container = next(cell for cell in root if cell.get("id") == container_id)
+                    edge = next(cell for cell in root if cell.get("data-kind") == "edge")
+                    edge.set("parent", container.get("parent"))
+                    root.remove(edge)
+                    root.insert(list(root).index(container), edge)
+                    report = tool.validate_tree(tree)
+                    self.assertFalse(report["quality_gate_passed"])
+                    self.assertIn("layout/phase-z-order", {
+                        item["code"] for item in report["diagnostics"]
+                    })
+                    # Moving it in front of the container removes this layer
+                    # defect; reparenting alone is not a z-order failure.
+                    root.remove(edge)
+                    root.append(edge)
+                    self.assertNotIn("layout/phase-z-order", {
+                        item["code"] for item in tool.validate_tree(tree)["diagnostics"]
+                    })
 
     def test_strict_validate_rejects_phase_above_editable_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
