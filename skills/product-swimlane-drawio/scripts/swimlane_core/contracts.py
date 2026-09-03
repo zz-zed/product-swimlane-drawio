@@ -8,7 +8,7 @@ import re
 SCHEMA_VERSION = "2"
 V3_SCHEMA_VERSION = "3"
 STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
-TOOL_VERSION = "0.6.0"
+TOOL_VERSION = "0.6.1"
 MODEL_HASH_VERSION = "1"
 
 GROUP_KINDS = {"parallel", "branch", "merge", "exception", "support"}
@@ -70,6 +70,13 @@ DATA_TO_RANK = "data-to-rank"
 DATA_TOP_PADDING = "data-top-padding"
 DATA_WAYPOINTS_ORIGIN = "data-waypoints-origin"
 MANAGED_KINDS = frozenset({"pool", "lane", "node", "phase", "edge"})
+
+
+def number(value) -> str:
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
 class DiagramError(ValueError):

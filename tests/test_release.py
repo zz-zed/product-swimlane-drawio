@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import json
 import hashlib
@@ -385,7 +386,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.6.0")
+        self.assertEqual(codex_plugin["version"], "0.6.1")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -495,12 +496,29 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("A patch is bound to the exact inspected input bytes", architecture)
         self.assertIn("Strict validation and visual review are independent", architecture)
         self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
-        self.assertIn("Four narrow private modules now own shared contracts, pure geometry, Draw.io document adaptation, and managed semantic metadata", architecture)
         self.assertIn("complete Skill directory is its distribution unit", architecture)
-        self.assertIn("portable CLI retains compilation, routing, label strategy, validation, patch and compare orchestration", architecture)
-        self.assertIn("from swimlane_core import contracts, document, geometry as core_geometry, metadata", TOOL.read_text(encoding="utf-8"))
-        for module in ("contracts.py", "geometry.py", "document.py", "metadata.py"):
-            self.assertTrue((SKILL / "scripts" / "swimlane_core" / module).is_file())
+        self.assertIn("portable CLI retains input validation, layout compilation, build, patch impact and operations, inspect, compare, and command orchestration", architecture)
+        tool_tree = ast.parse(TOOL.read_text(encoding="utf-8"))
+        core_imports = [
+            node for node in tool_tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "swimlane_core"
+        ]
+        self.assertEqual(len(core_imports), 1)
+        self.assertEqual(
+            {alias.name for alias in core_imports[0].names},
+            {
+                "contracts", "document", "geometry", "labels", "metadata",
+                "ports", "routing", "routing_adapter", "routing_policy", "sizing", "validation",
+            },
+        )
+        self.assertEqual(
+            {alias.name: alias.asname for alias in core_imports[0].names}["geometry"],
+            "core_geometry",
+        )
+        for module in ("contracts", "geometry", "document", "metadata", "sizing",
+                       "routing_policy", "ports", "labels", "routing", "routing_adapter", "validation"):
+            self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
+            self.assertIn(f"| `{module}` |", architecture)
         self.assertIn("single-page process view", architecture)
         self.assertIn("Stay narrow", principles)
         self.assertIn("does not attempt to become a general-purpose generator", principles)
@@ -654,7 +672,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.6.0")
+        self.assertEqual(report["tool_version"], "0.6.1")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -867,7 +885,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.6.0")
+            self.assertEqual(upgraded["tool_version"], "0.6.1")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -2016,7 +2034,7 @@ class DiagramWorkflowTests(unittest.TestCase):
                     edge.set("parent", container.get("parent"))
                     root.remove(edge)
                     root.insert(list(root).index(container), edge)
-                    report = tool.validate_tree(tree)
+                    report = tool.core_validation.validate_tree(tree)
                     self.assertFalse(report["quality_gate_passed"])
                     self.assertIn("layout/phase-z-order", {
                         item["code"] for item in report["diagnostics"]
@@ -2026,7 +2044,7 @@ class DiagramWorkflowTests(unittest.TestCase):
                     root.remove(edge)
                     root.append(edge)
                     self.assertNotIn("layout/phase-z-order", {
-                        item["code"] for item in tool.validate_tree(tree)["diagnostics"]
+                        item["code"] for item in tool.core_validation.validate_tree(tree)["diagnostics"]
                     })
 
     def test_strict_validate_rejects_phase_above_editable_content(self) -> None:

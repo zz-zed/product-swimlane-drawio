@@ -12,8 +12,11 @@ Requirements:
 Run the tests:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -B -m unittest discover -s tests -v
+python3 -B tools/release_check.py
 ```
+
+Distribute the complete Skill directory, including its adjacent `swimlane_core` modules. Keep the explicit inventories in `release-files.json` and `tools/release_check.py` synchronized when adding a file. Before delivery, create and extract an archive containing exactly the release inventory, then run the full test command and `python3 -B tools/release_check.py --export` from that extraction. The extracted package must remain unchanged and contain no bytecode caches. Child Python commands must also pass `-B`; the parent flag is not inherited.
 
 Check Skill discovery:
 

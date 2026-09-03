@@ -43,12 +43,12 @@ def replay_label_overlaps(tool, geometry, tree) -> dict:
     """
     root = tool.document.graph_root(tree)
     lanes, nodes = tool.document.lane_node_records(root, tool.document.find_pool(tree))
-    bounds = [tool.document.node_bounds_in_pool(node, lanes[node["lane"]]) for node in nodes.values()]
+    bounds = [geometry.node_bounds_in_pool(node, lanes[node["lane"]]) for node in nodes.values()]
     segments, labels = {}, {}
     for edge_id, cell in tool.document.edge_records(root).items():
         points = tool.document.edge_polyline(cell, lanes, nodes)
         segments[edge_id] = list(zip(points, points[1:]))
-        label = tool.effective_label_bounds(cell, points)
+        label = tool.core_validation.effective_label_bounds(cell, points)
         if label is not None:
             labels[edge_id] = label
     started = time.perf_counter()
@@ -80,7 +80,7 @@ def worker(edges: int) -> dict:
     started = time.perf_counter()
     tree = tool.build_tree(spec)
     built = time.perf_counter()
-    result = tool.validate_tree(tree)
+    result = tool.core_validation.validate_tree(tree)
     finished = time.perf_counter()
     profiler.disable()
     stats = pstats.Stats(profiler).stats

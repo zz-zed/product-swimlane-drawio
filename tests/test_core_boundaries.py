@@ -1,5 +1,6 @@
 import ast
 import copy
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import ModuleType
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
@@ -24,8 +26,8 @@ from release_check import EXPECTED_SKILL_FILES
 SKILL = ROOT / "skills" / "product-swimlane-drawio"
 TOOL = SKILL / "scripts" / "drawio_swimlane.py"
 CORE = TOOL.parent / "swimlane_core"
-DOCUMENT_FUNCTIONS = set("graph_root find_pool native_cell lane_node_records phase_records edge_records semantic_cells parse_geometry style_values port_from_style edge_waypoints edge_polyline stored_label_bounds node_center_in_pool node_bounds_in_pool number geometry set_style_option set_edge_points unmanaged_root_entries graph_root_preserves_space unmanaged_cell_signatures element_signature comparison_attributes sibling_order_changes write_tree file_receipt ensure_different ensure_output_available values_from_pool read_tree".split())
-METADATA_FUNCTIONS = set("json_attribute managed_metadata_error managed_id_list_attribute managed_groups_attribute semantic_model_document semantic_model_hash managed_artifact_summary refresh_managed_metadata".split())
+DOCUMENT_FUNCTIONS = set("graph_root find_pool native_cell lane_node_records phase_records edge_records semantic_cells parse_geometry style_values port_from_style edge_waypoints edge_polyline stored_label_bounds node_center_in_pool geometry set_style_option set_edge_points unmanaged_root_entries graph_root_preserves_space unmanaged_cell_signatures element_signature comparison_attributes sibling_order_changes write_tree file_receipt ensure_different ensure_output_available values_from_pool read_tree routing_node_views routing_lane_views read_main_path unmanaged_edge_specs read_lane_order json_attribute managed_metadata_error managed_id_list_attribute".split())
+METADATA_FUNCTIONS = set("managed_groups_attribute semantic_model_document semantic_model_hash managed_artifact_summary refresh_managed_metadata".split())
 
 
 def copy_skill_package(destination: Path) -> None:
@@ -114,7 +116,7 @@ def assert_only_allowed_imports(tree: ast.AST, allowed: set[str]) -> None:
 
 class CoreBoundaryTests(unittest.TestCase):
     def test_cli_test_helpers_do_not_write_caches_to_a_writable_complete_skill(self) -> None:
-        """Each subprocess helper must protect the ten-file distributed unit."""
+        """Each subprocess helper must protect the complete distributed Skill."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             spec_path = root / "neutral-flow.json"
@@ -213,25 +215,63 @@ class CoreBoundaryTests(unittest.TestCase):
         geometry = ast.parse((CORE / "geometry.py").read_text(encoding="utf-8"))
         document = ast.parse((CORE / "document.py").read_text(encoding="utf-8"))
         metadata = ast.parse((CORE / "metadata.py").read_text(encoding="utf-8"))
+        sizing = ast.parse((CORE / "sizing.py").read_text(encoding="utf-8"))
+        routing_policy = ast.parse((CORE / "routing_policy.py").read_text(encoding="utf-8"))
+        ports = ast.parse((CORE / "ports.py").read_text(encoding="utf-8"))
+        labels = ast.parse((CORE / "labels.py").read_text(encoding="utf-8"))
+        routing = ast.parse((CORE / "routing.py").read_text(encoding="utf-8"))
+        adapter = ast.parse((CORE / "routing_adapter.py").read_text(encoding="utf-8"))
+        validation = ast.parse((CORE / "validation.py").read_text(encoding="utf-8"))
+        assert_only_allowed_imports(validation, {
+            "json", "xml.etree.ElementTree", "swimlane_core.contracts",
+            "swimlane_core.document", "swimlane_core.geometry", "swimlane_core.labels",
+            "swimlane_core.metadata", "swimlane_core.routing", "swimlane_core.routing_policy",
+            "swimlane_core.sizing",
+        })
+        assert_only_allowed_imports(routing, {
+            "swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.labels",
+            "swimlane_core.ports", "swimlane_core.routing_policy",
+        })
+        assert_only_allowed_imports(adapter, {
+            "xml.etree.ElementTree", "swimlane_core.contracts", "swimlane_core.document",
+            "swimlane_core.geometry", "swimlane_core.labels", "swimlane_core.ports",
+            "swimlane_core.routing",
+        })
         assert_only_allowed_imports(contracts, {"re"})
         assert_only_allowed_imports(geometry, {"swimlane_core.contracts"})
         assert_only_allowed_imports(document, {
-            "hashlib", "os", "pathlib", "tempfile", "xml.etree.ElementTree",
+            "hashlib", "json", "os", "pathlib", "tempfile", "xml.etree.ElementTree",
             "swimlane_core.contracts", "swimlane_core.geometry",
         })
         assert_only_allowed_imports(metadata, {
             "hashlib", "json", "xml.etree.ElementTree",
             "swimlane_core.contracts", "swimlane_core.document",
         })
-        expected = {"port_xy", "port_point", "compact_points", "remove_collinear_points", "segment_length", "polyline_length", "bend_count", "bounds_overlap", "segment_axis", "value_between", "segment_crosses_bounds", "segment_intersects_box", "segments_conflict"}
+        expected = {"node_bounds_in_pool", "port_xy", "port_point", "compact_points", "remove_collinear_points", "segment_length", "polyline_length", "bend_count", "bounds_overlap", "segment_axis", "value_between", "segment_crosses_bounds", "segment_intersects_box", "segments_conflict"}
         geometry_functions = {node.name for node in geometry.body if isinstance(node, ast.FunctionDef)}
         self.assertEqual(geometry_functions, expected)
         entry_source = TOOL.read_text(encoding="utf-8")
         entry_functions = {node.name for node in ast.walk(ast.parse(entry_source)) if isinstance(node, ast.FunctionDef)}
         self.assertTrue(expected.isdisjoint(entry_functions))
+        assert_only_allowed_imports(sizing, {"unicodedata", "swimlane_core.contracts", "swimlane_core.geometry"})
+        assert_only_allowed_imports(routing_policy, set())
+        assert_only_allowed_imports(ports, {"swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.routing_policy"})
+        assert_only_allowed_imports(labels, {"unicodedata", "swimlane_core.geometry"})
+        self.assertEqual({node.name for node in sizing.body if isinstance(node, ast.FunctionDef)},
+                         {"estimated_text_lines", "recommended_process_height", "node_size"})
+        self.assertEqual({node.name for node in ports.body if isinstance(node, ast.FunctionDef)},
+                         {"validate_side", "validate_offset", "candidate_port_offsets", "allocate_port_pair"})
+        self.assertEqual({node.name for node in ports.body if isinstance(node, ast.ClassDef)}, {"PortAllocator"})
+        self.assertEqual({node.name for node in labels.body if isinstance(node, ast.FunctionDef)},
+                         {"edge_label_size", "label_box_candidates", "choose_label_box", "polyline_midpoint"})
         for tree, functions in ((document, DOCUMENT_FUNCTIONS), (metadata, METADATA_FUNCTIONS)):
             self.assertEqual({node.name for node in tree.body if isinstance(node, ast.FunctionDef)}, functions)
             self.assertTrue(functions.isdisjoint(entry_functions))
+        validation_functions = {node.name for node in validation.body if isinstance(node, ast.FunctionDef)}
+        self.assertEqual(len({name for name in validation_functions if name.startswith("_collect_")}), 19)
+        self.assertEqual({name for name in validation_functions if not name.startswith("_collect_")},
+                         {"effective_label_bounds", "_summarize_validation", "validate_tree"})
+        self.assertTrue(validation_functions.isdisjoint(entry_functions))
         owners = {}
         for path in [TOOL, *sorted(CORE.glob("*.py"))]:
             for node in ast.parse(path.read_text(encoding="utf-8")).body:
@@ -264,7 +304,7 @@ class CoreBoundaryTests(unittest.TestCase):
         cell = ET.Element("mxCell", {"style": "rounded=1;fillColor=red;html=1;fillColor=blue;"})
         loaded.document.set_style_option(cell, "fillColor", "green")
         self.assertEqual(cell.get("style"), "rounded=1;fillColor=green;html=1;")
-        self.assertEqual([loaded.document.number(v) for v in (1.0, 1.123456, 0.00001)], ["1", "1.1235", "0"])
+        self.assertEqual([loaded.contracts.number(v) for v in (1.0, 1.123456, 0.00001)], ["1", "1.1235", "0"])
 
     def test_document_reader_uses_existing_parser_and_exception_identity(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="document_reader")
@@ -312,7 +352,7 @@ class CoreBoundaryTests(unittest.TestCase):
                 with mock.patch.object(loaded.metadata, "refresh_managed_metadata", side_effect=AssertionError("read-only refresh")):
                     loaded.metadata.managed_artifact_summary(tree)
                     loaded.tool.inspect_tree(tree)
-                    loaded.tool.validate_tree(tree)
+                    loaded.validation.validate_tree(tree)
                     loaded.tool.compare_trees(tree, copy.deepcopy(tree))
                 self.assertEqual(ET.tostring(tree.getroot()), before)
 
@@ -329,15 +369,70 @@ class CoreBoundaryTests(unittest.TestCase):
     def test_metadata_distinguishes_missing_empty_malformed_and_wrong_type(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="metadata_values")
         cell = ET.Element("mxCell")
-        self.assertIsNone(loaded.metadata.managed_id_list_attribute(cell, "data-main-path", None))
+        self.assertIsNone(loaded.document.managed_id_list_attribute(cell, "data-main-path", None))
         cell.set("data-main-path", "[]")
-        self.assertEqual(loaded.metadata.managed_id_list_attribute(cell, "data-main-path", None), [])
+        self.assertEqual(loaded.document.managed_id_list_attribute(cell, "data-main-path", None), [])
         for raw in ("", "null", "{}", '["bad id"]'):
             with self.subTest(raw=raw):
                 cell.set("data-main-path", raw)
                 with self.assertRaises(loaded.contracts.DiagramError) as caught:
-                    loaded.metadata.managed_id_list_attribute(cell, "data-main-path", None)
+                    loaded.document.managed_id_list_attribute(cell, "data-main-path", None)
                 self.assertEqual(caught.exception.code, "integrity/schema-composition-mismatch")
+
+    def test_document_lane_order_keeps_strict_errors_and_filtered_native_order(self) -> None:
+        loaded = load_skill_modules(TOOL, module_name="strict_lane_order")
+        root = ET.Element("root")
+        for lane_id in ("b", "outside", "a"):
+            ET.SubElement(root, "mxCell", {loaded.contracts.DATA_KIND: "lane", loaded.contracts.DATA_SEMANTIC_ID: lane_id})
+        pool = ET.Element("mxCell")
+        lanes = {"a": {}, "b": {}}
+        self.assertEqual(loaded.document.read_lane_order(pool, root, lanes), ["b", "a"])
+        pool.set(loaded.contracts.DATA_LANE_ORDER, '["a", "b"]')
+        self.assertEqual(loaded.document.read_lane_order(pool, root, lanes), ["a", "b"])
+        cases = (
+            ("{", "Invalid managed metadata in data-lane-order", {"attribute": "data-lane-order"}, "JSONDecodeError"),
+            ("null", "Managed metadata in data-lane-order has the wrong type", {"attribute": "data-lane-order", "expected_type": "list"}, None),
+            ('["a", "a"]', "Managed metadata in data-lane-order must contain semantic IDs", {"attribute": "data-lane-order", "cause": "schema/duplicate"}, "DiagramError"),
+        )
+        for raw, message, evidence, cause in cases:
+            with self.subTest(raw=raw):
+                pool.set(loaded.contracts.DATA_LANE_ORDER, raw)
+                before = ET.tostring(pool)
+                with self.assertRaises(loaded.contracts.DiagramError) as caught:
+                    loaded.document.read_lane_order(pool, root, lanes)
+                self.assertEqual(caught.exception.diagnostic(), {
+                    "code": "integrity/schema-composition-mismatch", "severity": "error",
+                    "message": message, "evidence": evidence,
+                    "supported_fixes": ["restore-semantic-metadata", "controlled-rebuild"],
+                    "subject": {"kind": "pool", "id": "main"},
+                })
+                actual_cause = type(caught.exception.__cause__).__name__ if caught.exception.__cause__ else None
+                self.assertEqual(actual_cause, cause)
+                self.assertEqual(ET.tostring(pool), before)
+        for order in (["a", "outside"], []):
+            pool.set(loaded.contracts.DATA_LANE_ORDER, json.dumps(order))
+            with self.assertRaises(loaded.contracts.DiagramError) as caught:
+                loaded.document.read_lane_order(pool, root, lanes)
+            self.assertEqual(caught.exception.diagnostic(), {
+                "code": "integrity/schema-composition-mismatch", "severity": "error",
+                "message": "Managed lane order does not match the diagram lanes",
+                "evidence": {"lane_order": order, "lane_ids": ["a", "b"]},
+                "supported_fixes": ["restore-lane-order", "controlled-rebuild"],
+            })
+
+    def test_validation_module_does_not_call_document_or_metadata_mutators(self) -> None:
+        loaded = load_skill_modules(TOOL, module_name="readonly_validation_module")
+        tree = loaded.tool.build_tree(linear_spec(2))
+        before = ET.tostring(tree.getroot())
+        with ExitStack() as stack:
+            for name in ("geometry", "set_style_option", "set_edge_points", "write_tree"):
+                stack.enter_context(mock.patch.object(loaded.document, name, side_effect=AssertionError("validation mutation")))
+            stack.enter_context(mock.patch.object(loaded.metadata, "refresh_managed_metadata", side_effect=AssertionError("validation refresh")))
+            report = loaded.validation.validate_tree(tree)
+        self.assertTrue(report["valid"])
+        self.assertEqual(ET.tostring(tree.getroot()), before)
+        self.assertFalse(hasattr(loaded.tool, "validate_tree"))
+        self.assertFalse(hasattr(loaded.validation, "routing_adapter"))
 
     def test_two_checkouts_do_not_reuse_core_modules_or_write_caches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -351,12 +446,45 @@ class CoreBoundaryTests(unittest.TestCase):
                 path.relative_to(copied_skill).as_posix(): path.read_bytes()
                 for path in copied_skill.rglob("*.pyc")
             }
-            first = load_skill_modules(TOOL, module_name="first_checkout")
-            second = load_skill_modules(copied_skill / "scripts" / "drawio_swimlane.py", module_name="second_checkout")
-            self.assertNotEqual(first.contracts.__file__, second.contracts.__file__)
-            self.assertNotEqual(first.geometry.__file__, second.geometry.__file__)
-            self.assertNotEqual(first.document.__file__, second.document.__file__)
-            self.assertNotEqual(first.metadata.__file__, second.metadata.__file__)
+            module_names = ("contracts", "geometry", "document", "metadata", "sizing",
+                            "routing_policy", "ports", "labels", "routing", "routing_adapter", "validation")
+            sentinel_names = ("swimlane_core", "swimlane_core.unrelated",
+                              *(f"swimlane_core.{name}" for name in module_names))
+            sentinels = {name: ModuleType(name) for name in sentinel_names}
+            original_path = list(sys.path)
+            with mock.patch.dict(sys.modules, sentinels), mock.patch.object(sys, "dont_write_bytecode", False):
+                package_before = {name: value for name, value in sys.modules.items()
+                                  if name == "swimlane_core" or name.startswith("swimlane_core.")}
+
+                def assert_restored() -> None:
+                    self.assertEqual(sys.path, original_path)
+                    self.assertFalse(sys.dont_write_bytecode)
+                    self.assertEqual(package_before, {
+                        name: value for name, value in sys.modules.items()
+                        if name == "swimlane_core" or name.startswith("swimlane_core.")
+                    })
+
+                first = load_skill_modules(TOOL, module_name="first_checkout")
+                assert_restored()
+                second = load_skill_modules(copied_skill / "scripts" / "drawio_swimlane.py", module_name="second_checkout")
+                assert_restored()
+                third = load_skill_modules(TOOL, module_name="first_checkout_again")
+                assert_restored()
+                for name in module_names:
+                    with self.subTest(module=name):
+                        first_module, second_module, third_module = (getattr(loaded, name) for loaded in (first, second, third))
+                        self.assertIsNot(first_module, second_module)
+                        self.assertIsNot(first_module, third_module)
+                        self.assertEqual(Path(first_module.__file__).resolve(), (CORE / f"{name}.py").resolve())
+                        self.assertEqual(Path(second_module.__file__).resolve(), (copied_skill / "scripts" / "swimlane_core" / f"{name}.py").resolve())
+                        self.assertEqual(first_module.__file__, third_module.__file__)
+                with self.assertRaises(FileNotFoundError):
+                    load_skill_modules(copied_skill / "scripts" / "missing.py", module_name="failed_checkout")
+                assert_restored()
+            self.assertIs(first.tool.core_validation, first.validation)
+            self.assertIs(first.validation.document, first.document)
+            self.assertIs(first.validation.metadata, first.metadata)
+            self.assertIs(second.validation.routing, second.routing)
             self.assertIs(first.tool.document, first.document)
             self.assertIs(first.metadata.document, first.document)
             self.assertIs(first.document.contracts, first.contracts)
@@ -424,7 +552,7 @@ class CoreBoundaryTests(unittest.TestCase):
 
                         def run(*arguments: str) -> dict:
                             result = subprocess.run(
-                                [sys.executable, *( [] if readonly else ["-B"] ), str(tool), *arguments],
+                                [sys.executable, "-B", str(tool), *arguments],
                                 cwd=workspace, env=environment, check=True, timeout=20,
                                 capture_output=True, text=True,
                             )

@@ -26,6 +26,13 @@ class LoadedSkill:
     geometry: ModuleType
     document: ModuleType
     metadata: ModuleType
+    sizing: ModuleType
+    routing_policy: ModuleType
+    ports: ModuleType
+    labels: ModuleType
+    routing: ModuleType
+    routing_adapter: ModuleType
+    validation: ModuleType
 
 
 def _package_modules() -> dict[str, ModuleType]:
@@ -52,13 +59,23 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         geometry = importlib.import_module("swimlane_core.geometry")
         document = importlib.import_module("swimlane_core.document")
         metadata = importlib.import_module("swimlane_core.metadata")
+        sizing = importlib.import_module("swimlane_core.sizing")
+        routing_policy = importlib.import_module("swimlane_core.routing_policy")
+        ports = importlib.import_module("swimlane_core.ports")
+        labels = importlib.import_module("swimlane_core.labels")
+        routing = importlib.import_module("swimlane_core.routing")
+        routing_adapter = importlib.import_module("swimlane_core.routing_adapter")
+        validation = importlib.import_module("swimlane_core.validation")
         spec = importlib.util.spec_from_file_location(module_name, tool_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to load swimlane tool: {tool_path}")
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
         return LoadedSkill(tool=tool, contracts=contracts, geometry=geometry,
-                           document=document, metadata=metadata)
+                           document=document, metadata=metadata, sizing=sizing,
+                           routing_policy=routing_policy, ports=ports, labels=labels,
+                           routing=routing, routing_adapter=routing_adapter,
+                           validation=validation)
     finally:
         for name in list(_package_modules()):
             sys.modules.pop(name, None)

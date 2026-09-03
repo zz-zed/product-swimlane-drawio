@@ -25,7 +25,7 @@ class ReferenceBenchmarkTests(unittest.TestCase):
             path = Path(temporary) / "reference.drawio"
             path.write_text(source, encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, str(BENCHMARK), str(path)],
+                [sys.executable, "-B", str(BENCHMARK), str(path)],
                 cwd=ROOT,
                 text=True,
                 capture_output=True,

@@ -67,7 +67,25 @@ The pool cell stores the producing tool version, model-hash version, stable lane
 
 ## Current implementation and page scope
 
-The portable CLI retains compilation, routing, label strategy, validation, patch and compare orchestration. Four narrow private modules now own shared contracts, pure geometry, Draw.io document adaptation, and managed semantic metadata respectively. They are one-way implementation boundaries inside the Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
+The portable CLI retains input validation, layout compilation, build, patch impact and operations, inspect, compare, and command orchestration. Its adjacent private modules own these responsibilities:
+
+| Module | Responsibility |
+| --- | --- |
+| `contracts` | Shared constants, errors, diagnostics, and numeric serialization. |
+| `geometry` | Bounds, ports, polylines, intersections, and geometric comparisons. |
+| `document` | Draw.io XML readers and writers, raw routing views, native order, file receipts, and atomic output. |
+| `metadata` | Managed semantic identity, model hashing, and explicit metadata refresh. |
+| `sizing` | Text estimates and node sizes. |
+| `routing_policy` | Shared routing and validation thresholds. |
+| `ports` | Port candidates, pair allocation, and per-operation allocator state. |
+| `labels` | Label dimensions, candidates, scoring, and placement. |
+| `routing` | Route candidates, selection, scoring, and explicit routing context. |
+| `routing_adapter` | Conversion between native XML and route decisions, including applying styles, points, and label geometry. |
+| `validation` | Ordered diagnostic collectors and read-only validation summaries. |
+
+Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Allocators and routing context are explicit mutable state owned by each operation; there is no process-wide route cache. Validation reads the latest tree and calls shared geometry, sizing, label, and routing helpers without calling the XML routing adapter or refreshing metadata.
+
+Dependencies point from orchestration and adapters into the shared core; core modules do not import the CLI. These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
 
 Each generated file is a single-page process view. The tool does not provide multi-page navigation, cross-page connectors, or cross-file references. Split a dense end-to-end process and its exception detail into separate `.drawio` files when one page would no longer be readable.
 

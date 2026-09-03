@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -11,15 +12,8 @@ import xml.etree.ElementTree as ET
 from . import contracts, geometry as core_geometry
 
 
-def number(value) -> str:
-    value = float(value)
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
-
-
 def geometry(parent: ET.Element, **attrs) -> ET.Element:
-    normalized = {key: number(value) for key, value in attrs.items() if value is not None}
+    normalized = {key: contracts.number(value) for key, value in attrs.items() if value is not None}
     normalized["as"] = "geometry"
     return ET.SubElement(parent, "mxGeometry", normalized)
 
@@ -103,19 +97,7 @@ def node_center_in_pool(node_record: dict, lane_record: dict) -> tuple[float, fl
     )
 
 
-def node_bounds_in_pool(node_record: dict, lane_record: dict) -> dict[str, float]:
-    node_geom = node_record["geometry"]
-    lane_geom = lane_record["geometry"]
-    left = lane_geom["x"] + node_geom["x"]
-    top = lane_geom["y"] + node_geom["y"]
-    return {
-        "left": left,
-        "top": top,
-        "right": left + node_geom["width"],
-        "bottom": top + node_geom["height"],
-        "width": node_geom["width"],
-        "height": node_geom["height"],
-    }
+
 
 
 def set_edge_points(cell: ET.Element, points: list[tuple[float, float]]) -> None:
@@ -130,7 +112,7 @@ def set_edge_points(cell: ET.Element, points: list[tuple[float, float]]) -> None
     if points:
         array = ET.SubElement(geom, "Array", {"as": "points"})
         for x, y in points:
-            ET.SubElement(array, "mxPoint", {"x": number(x), "y": number(y)})
+            ET.SubElement(array, "mxPoint", {"x": contracts.number(x), "y": contracts.number(y)})
 
 
 def graph_root(tree: ET.ElementTree) -> ET.Element:
@@ -226,8 +208,8 @@ def edge_polyline(
         return []
     source = nodes[source_id]
     target = nodes[target_id]
-    source_bounds = node_bounds_in_pool(source, lanes[source["lane"]])
-    target_bounds = node_bounds_in_pool(target, lanes[target["lane"]])
+    source_bounds = core_geometry.node_bounds_in_pool(source, lanes[source["lane"]])
+    target_bounds = core_geometry.node_bounds_in_pool(target, lanes[target["lane"]])
     return core_geometry.compact_points(
         [
             core_geometry.port_point(source_bounds, exit_port[0], exit_port[1]),
@@ -420,3 +402,162 @@ def ensure_different(input_path: Path, output_path: Path) -> None:
 def read_tree(path: Path) -> ET.ElementTree:
     """Use the existing ElementTree parser without changing error mapping."""
     return ET.parse(path)
+
+
+def routing_node_views(nodes: dict[str, dict]) -> dict[str, dict]:
+    """Project raw fields without converting ranks or computing geometry."""
+    views = {}
+    for node_id, record in nodes.items():
+        view = {key: record[key] for key in ("lane", "geometry", "rank", "type") if key in record}
+        if "cell" in record:
+            attributes = record["cell"].attrib
+            view["semantic"] = {
+                key: attributes[attribute]
+                for key, attribute in (("rank", contracts.DATA_RANK), ("type", contracts.DATA_NODE_TYPE))
+                if attribute in attributes
+            }
+        views[node_id] = view
+    return views
+
+
+def routing_lane_views(lanes: dict[str, dict]) -> dict[str, dict]:
+    """Retain current raw lane geometry and map order without XML cells."""
+    return {
+        lane_id: {"geometry": record["geometry"]} if "geometry" in record else {}
+        for lane_id, record in lanes.items()
+    }
+
+
+def read_main_path(pool: ET.Element) -> list[str]:
+    raw = pool.attrib.get(contracts.DATA_MAIN_PATH, "[]")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def json_attribute(
+    cell: ET.Element,
+    name: str,
+    expected_type: type,
+    default,
+):
+    raw = cell.attrib.get(name)
+    if raw is None:
+        return default
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise contracts.DiagramError(
+            f"Invalid managed metadata in {name}",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"attribute": name},
+            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+        ) from exc
+    if not isinstance(value, expected_type):
+        raise contracts.DiagramError(
+            f"Managed metadata in {name} has the wrong type",
+            code="integrity/schema-composition-mismatch",
+            subject={"kind": "pool", "id": "main"},
+            evidence={"attribute": name, "expected_type": expected_type.__name__},
+            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+        )
+    return value
+
+
+def managed_metadata_error(
+    message: str,
+    *,
+    attribute: str,
+    evidence: dict | None = None,
+) -> contracts.DiagramError:
+    return contracts.DiagramError(
+        message,
+        code="integrity/schema-composition-mismatch",
+        subject={"kind": "pool", "id": "main"},
+        evidence={"attribute": attribute, **(evidence or {})},
+        supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
+    )
+
+
+def managed_id_list_attribute(
+    cell: ET.Element,
+    name: str,
+    default,
+) -> list[str] | None:
+    value = json_attribute(cell, name, list, default)
+    if value is None:
+        return value
+    try:
+        return contracts.validate_id_list(value, f"managed metadata {name}")
+    except contracts.DiagramError as exc:
+        raise managed_metadata_error(
+            f"Managed metadata in {name} must contain semantic IDs",
+            attribute=name,
+            evidence={"cause": exc.code},
+        ) from exc
+
+
+def unmanaged_edge_specs(root: ET.Element, nodes: dict[str, dict]) -> list[dict]:
+    """Describe Draw.io connectors redrawn manually without semantic metadata."""
+    node_by_cell_id = {
+        record["cell"].attrib.get("id"): semantic_id
+        for semantic_id, record in nodes.items()
+    }
+    children_by_parent: dict[str, list[ET.Element]] = {}
+    for child in root.iter("mxCell"):
+        children_by_parent.setdefault(child.attrib.get("parent", ""), []).append(child)
+
+    recovered: list[dict] = []
+    for cell in root.iter("mxCell"):
+        if cell.attrib.get("edge") != "1" or cell.attrib.get(contracts.DATA_KIND) == "edge":
+            continue
+        source = node_by_cell_id.get(cell.attrib.get("source"))
+        target = node_by_cell_id.get(cell.attrib.get("target"))
+        if source is None or target is None:
+            continue
+        label = cell.attrib.get("value", "")
+        if not label:
+            label = next(
+                (
+                    child.attrib.get("value", "")
+                    for child in children_by_parent.get(cell.attrib.get("id", ""), [])
+                    if "edgeLabel" in child.attrib.get("style", "")
+                ),
+                "",
+            )
+        recovered.append(
+            {
+                "cell_id": cell.attrib.get("id", ""),
+                "from": source,
+                "to": target,
+                "label": label,
+                "exit_port": port_from_style(cell, "exit"),
+                "entry_port": port_from_style(cell, "entry"),
+                "waypoints": [
+                    {"x": x, "y": y} for x, y in edge_waypoints(cell)
+                ],
+            }
+        )
+    return sorted(recovered, key=lambda item: (item["from"], item["to"], item["cell_id"]))
+
+
+def read_lane_order(pool: ET.Element, root: ET.Element, lanes: dict[str, dict]) -> list[str]:
+    order = managed_id_list_attribute(pool, contracts.DATA_LANE_ORDER, None)
+    if order is None:
+        order = [
+            cell.attrib[contracts.DATA_SEMANTIC_ID]
+            for cell in list(root)
+            if cell.attrib.get(contracts.DATA_KIND) == "lane"
+            and cell.attrib.get(contracts.DATA_SEMANTIC_ID) in lanes
+        ]
+    if len(order) != len(set(order)) or set(order) != set(lanes):
+        raise contracts.DiagramError(
+            "Managed lane order does not match the diagram lanes",
+            code="integrity/schema-composition-mismatch",
+            evidence={"lane_order": order, "lane_ids": sorted(lanes)},
+            supported_fixes=["restore-lane-order", "controlled-rebuild"],
+        )
+    return order

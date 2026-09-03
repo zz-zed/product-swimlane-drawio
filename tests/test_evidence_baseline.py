@@ -50,7 +50,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         after = copy.deepcopy(before)
         tool.patch_tree(after, changes, allow_geometry_updates=False)
         self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
-        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.6.0")
+        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.6.1")
         for field, value in (("custom-protected", "tampered"), ("data-model-hash", "0" * 64)):
             with self.subTest(field=field):
                 tampered = copy.deepcopy(after)
@@ -337,7 +337,7 @@ class EvidenceBaselineTests(unittest.TestCase):
                 for key in ("unexpected_geometry", "unexpected_attributes", "unexpected_added", "unexpected_missing"):
                     self.assertEqual(compared[key], [])
                 self.assertEqual(compared.get("unexpected_sibling_order"), compared.get("changed_sibling_order"))
-                self.assertEqual(tool.validate_tree(first), tool.validate_tree(third))
+                self.assertEqual(tool.core_validation.validate_tree(first), tool.core_validation.validate_tree(third))
 
     def test_locked_conflict_is_rejected_not_waived(self):
         tool = load_tool()
@@ -347,7 +347,7 @@ class EvidenceBaselineTests(unittest.TestCase):
 
     def test_known_routing_failure_remains_visible(self):
         tool = load_tool()
-        report = tool.validate_tree(tool.build_tree(corpus()["request-response-retry"]))
+        report = tool.core_validation.validate_tree(tool.build_tree(corpus()["request-response-retry"]))
         self.assertFalse(report["quality_gate_passed"])
         self.assertEqual([d["code"] for d in report["diagnostics"]], ["routing/edge-conflict"])
 
@@ -379,7 +379,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         for value in (None, 501, True, "unknown", "0.5.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": value}}}
             self.assertEqual(normalize(result, {}, input_version="0.5.1"), result)
-        for version in ("0.5.0", "0.5.1", "0.6.0"):
+        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1"):
             result = {"result": {"patch_receipt": {"input_tool_version": version}}}
             self.assertEqual(normalize(result, {}, input_version=version)["result"]["patch_receipt"]["input_tool_version"], "<tool-version>")
 

@@ -9,115 +9,52 @@ import xml.etree.ElementTree as ET
 from . import contracts, document
 
 
-def json_attribute(
-    cell: ET.Element,
-    name: str,
-    expected_type: type,
-    default,
-):
-    raw = cell.attrib.get(name)
-    if raw is None:
-        return default
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise contracts.DiagramError(
-            f"Invalid managed metadata in {name}",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "pool", "id": "main"},
-            evidence={"attribute": name},
-            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-        ) from exc
-    if not isinstance(value, expected_type):
-        raise contracts.DiagramError(
-            f"Managed metadata in {name} has the wrong type",
-            code="integrity/schema-composition-mismatch",
-            subject={"kind": "pool", "id": "main"},
-            evidence={"attribute": name, "expected_type": expected_type.__name__},
-            supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-        )
-    return value
-
-
-def managed_metadata_error(
-    message: str,
-    *,
-    attribute: str,
-    evidence: dict | None = None,
-) -> contracts.DiagramError:
-    return contracts.DiagramError(
-        message,
-        code="integrity/schema-composition-mismatch",
-        subject={"kind": "pool", "id": "main"},
-        evidence={"attribute": attribute, **(evidence or {})},
-        supported_fixes=["restore-semantic-metadata", "controlled-rebuild"],
-    )
-
-
-def managed_id_list_attribute(
-    cell: ET.Element,
-    name: str,
-    default,
-) -> list[str] | None:
-    value = json_attribute(cell, name, list, default)
-    if value is None:
-        return value
-    try:
-        return contracts.validate_id_list(value, f"managed metadata {name}")
-    except contracts.DiagramError as exc:
-        raise managed_metadata_error(
-            f"Managed metadata in {name} must contain semantic IDs",
-            attribute=name,
-            evidence={"cause": exc.code},
-        ) from exc
-
-
 def managed_groups_attribute(
     pool: ET.Element,
     lanes: dict[str, dict],
     nodes: dict[str, dict],
 ) -> list[dict]:
-    groups = json_attribute(pool, contracts.DATA_GROUPS, list, [])
+    groups = document.json_attribute(pool, contracts.DATA_GROUPS, list, [])
     group_ids: set[str] = set()
     member_to_group: dict[str, str] = {}
     for index, group in enumerate(groups):
         try:
             contracts.validate_group_object(group, f"managed group[{index}]")
         except contracts.DiagramError as exc:
-            raise managed_metadata_error(
+            raise document.managed_metadata_error(
                 "Managed group metadata is invalid",
                 attribute=contracts.DATA_GROUPS,
                 evidence={"index": index, "cause": exc.code},
             ) from exc
         group_id = group["id"]
         if group_id in group_ids:
-            raise managed_metadata_error(
+            raise document.managed_metadata_error(
                 "Managed group IDs must be unique",
                 attribute=contracts.DATA_GROUPS,
                 evidence={"group_id": group_id},
             )
         group_ids.add(group_id)
         if group["lane"] not in lanes:
-            raise managed_metadata_error(
+            raise document.managed_metadata_error(
                 "Managed group references a missing lane",
                 attribute=contracts.DATA_GROUPS,
                 evidence={"group_id": group_id, "lane": group["lane"]},
             )
         for node_id in group["nodes"]:
             if node_id not in nodes:
-                raise managed_metadata_error(
+                raise document.managed_metadata_error(
                     "Managed group references a missing node",
                     attribute=contracts.DATA_GROUPS,
                     evidence={"group_id": group_id, "node": node_id},
                 )
             if nodes[node_id]["lane"] != group["lane"]:
-                raise managed_metadata_error(
+                raise document.managed_metadata_error(
                     "Managed group contains a node from another lane",
                     attribute=contracts.DATA_GROUPS,
                     evidence={"group_id": group_id, "node": node_id},
                 )
             if node_id in member_to_group:
-                raise managed_metadata_error(
+                raise document.managed_metadata_error(
                     "Managed node belongs to more than one group",
                     attribute=contracts.DATA_GROUPS,
                     evidence={
@@ -131,7 +68,7 @@ def managed_groups_attribute(
         mirrored_group = record["cell"].attrib.get(contracts.DATA_GROUP_ID)
         expected_group = member_to_group.get(node_id)
         if mirrored_group != expected_group:
-            raise managed_metadata_error(
+            raise document.managed_metadata_error(
                 "Node group metadata does not match the managed group model",
                 attribute=contracts.DATA_GROUP_ID,
                 evidence={
@@ -151,7 +88,7 @@ def semantic_model_document(tree: ET.ElementTree) -> dict:
     phases = document.phase_records(root, pool)
     schema_version = pool.attrib.get(contracts.DATA_SCHEMA_VERSION, "1")
 
-    lane_order = managed_id_list_attribute(pool, contracts.DATA_LANE_ORDER, None)
+    lane_order = document.managed_id_list_attribute(pool, contracts.DATA_LANE_ORDER, None)
     if lane_order is None:
         lane_order = [
             cell.attrib[contracts.DATA_SEMANTIC_ID]
@@ -198,7 +135,7 @@ def semantic_model_document(tree: ET.ElementTree) -> dict:
         if cell.attrib.get(contracts.DATA_SLOT):
             item["slot"] = cell.attrib[contracts.DATA_SLOT]
         if cell.attrib.get(contracts.DATA_ANCHOR):
-            item["anchor"] = json_attribute(cell, contracts.DATA_ANCHOR, dict, {})
+            item["anchor"] = document.json_attribute(cell, contracts.DATA_ANCHOR, dict, {})
         node_model.append(item)
 
     edge_model = []
@@ -244,7 +181,7 @@ def semantic_model_document(tree: ET.ElementTree) -> dict:
         "lanes": lane_model,
         "nodes": node_model,
         "edges": edge_model,
-        "main_path": managed_id_list_attribute(pool, contracts.DATA_MAIN_PATH, []),
+        "main_path": document.managed_id_list_attribute(pool, contracts.DATA_MAIN_PATH, []),
         "phases": phase_model,
     }
     if schema_version == contracts.V3_SCHEMA_VERSION:
