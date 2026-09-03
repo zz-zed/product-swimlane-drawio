@@ -165,3 +165,18 @@ def segments_conflict(first: tuple[tuple[float, float], tuple[float, float]], se
         overlap = min(max(ax1, ax2), max(bx1, bx2)) - max(min(ax1, ax2), min(bx1, bx2))
         return overlap > GEOMETRY_TOLERANCE
     return False
+
+
+def node_bounds_in_pool(node_record: dict, lane_record: dict) -> dict[str, float]:
+    node_geom = node_record["geometry"]
+    lane_geom = lane_record["geometry"]
+    left = lane_geom["x"] + node_geom["x"]
+    top = lane_geom["y"] + node_geom["y"]
+    return {
+        "left": left,
+        "top": top,
+        "right": left + node_geom["width"],
+        "bottom": top + node_geom["height"],
+        "width": node_geom["width"],
+        "height": node_geom["height"],
+    }

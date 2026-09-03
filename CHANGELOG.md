@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-03
+
+### Changed
+
+- Split diagram validation into ordered collectors and a read-only coordinator in a private validation module.
+- Separate sizing, port allocation, label placement, routing policy and route selection from XML adaptation. Keep allocator and routing context explicit per operation, with no new planner or cache.
+- Document the complete Skill package and the CLI's remaining input validation, layout, build, patch, inspect and compare responsibilities.
+
+### Tests and evidence
+
+- Add direct validator and routing boundary checks, including raw value defaults, candidate ordering, explicit waypoints and failure-state preservation.
+- Verify all private modules across isolated checkouts and reject missing files, unexpected modules, symlinks and published caches. Pass `-B` explicitly to child Python commands.
+- Validate source and actual extracted packages, retaining the frozen CLI contract and extending only its valid producing-stamp allowlist to 0.6.1.
+
+### Compatibility
+
+- Preserve the five CLI commands, schemas, diagnostics, routing decisions, defaults and patch authorization rules. The version stamp changes to 0.6.1, so newly written XML and its file hash differ from 0.6.0.
+- Keep patch and comparison on the same tool version. Reviewing a patch already completed by an older version can still fail solely because replay writes the current producing stamp; do not ignore pool differences or waive a failed comparison.
+- The complete Skill remains Python 3.10+ and standard-library-only. No new rendering, migration or visual-review API is introduced.
+
 ## [0.6.0] - 2026-09-02
 
 ### Changed

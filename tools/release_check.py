@@ -17,6 +17,10 @@ EXPECTED_SKILL_FILES = frozenset({
     "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/contracts.py",
     "scripts/swimlane_core/geometry.py",
     "scripts/swimlane_core/document.py", "scripts/swimlane_core/metadata.py",
+    "scripts/swimlane_core/sizing.py", "scripts/swimlane_core/routing_policy.py",
+    "scripts/swimlane_core/ports.py", "scripts/swimlane_core/labels.py",
+    "scripts/swimlane_core/routing.py", "scripts/swimlane_core/routing_adapter.py",
+    "scripts/swimlane_core/validation.py",
 })
 EXPECTED_RELEASE_FILES = frozenset(json.loads(
     (Path(__file__).resolve().parents[1] / "release-files.json").read_text(encoding="utf-8")
