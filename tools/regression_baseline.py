@@ -16,7 +16,7 @@ from evidence_cases import corpus, digest, linear_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py"
-BASELINE_TOOL_VERSIONS = {"0.5.0", "0.5.1", "0.6.0", "0.6.1"}
+BASELINE_TOOL_VERSIONS = {"0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5"}
 
 
 def normalize(value, replacements, *, tool_version=None, input_version=None, path=()):

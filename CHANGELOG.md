@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-09-04
+
 ### Added
 
 - Add a bounded whole-batch port planner that assigns source and target endpoints together, preserves explicit locks, separates reciprocal corridors, and keeps unrelated solved components stable during route feedback.
@@ -296,7 +298,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...v0.6.5
 [0.6.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.0...v0.5.1

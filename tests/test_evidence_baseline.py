@@ -50,7 +50,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         after = copy.deepcopy(before)
         tool.patch_tree(after, changes, allow_geometry_updates=False)
         self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
-        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.6.1")
+        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.6.5")
         for field, value in (("custom-protected", "tampered"), ("data-model-hash", "0" * 64)):
             with self.subTest(field=field):
                 tampered = copy.deepcopy(after)
@@ -415,12 +415,12 @@ class EvidenceBaselineTests(unittest.TestCase):
         for value in (None, 501, True, "unknown", "0.5.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": value}}}
             self.assertEqual(normalize(result, {}, input_version="0.5.1"), result)
-        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1"):
+        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5"):
             result = {"result": {"patch_receipt": {"input_tool_version": version}}}
             self.assertEqual(normalize(result, {}, input_version=version)["result"]["patch_receipt"]["input_tool_version"], "<tool-version>")
 
     def test_release_stamp_normalization_is_path_and_artifact_bound(self):
-        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1"):
+        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1", "0.6.5"):
             result = {"result": {"tool_version": value,
                                  "validation": {"tool_version": value},
                                  "patch_receipt": {"input_tool_version": value}}}

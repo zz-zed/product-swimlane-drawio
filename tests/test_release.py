@@ -386,7 +386,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.6.1")
+        self.assertEqual(codex_plugin["version"], "0.6.5")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -673,7 +673,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.6.1")
+        self.assertEqual(report["tool_version"], "0.6.5")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -886,7 +886,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.6.1")
+            self.assertEqual(upgraded["tool_version"], "0.6.5")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:

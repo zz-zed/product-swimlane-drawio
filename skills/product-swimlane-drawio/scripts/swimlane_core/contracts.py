@@ -8,7 +8,7 @@ import re
 SCHEMA_VERSION = "2"
 V3_SCHEMA_VERSION = "3"
 STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
-TOOL_VERSION = "0.6.1"
+TOOL_VERSION = "0.6.5"
 MODEL_HASH_VERSION = "1"
 
 GROUP_KINDS = {"parallel", "branch", "merge", "exception", "support"}
