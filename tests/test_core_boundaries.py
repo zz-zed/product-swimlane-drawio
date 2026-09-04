@@ -211,6 +211,7 @@ class CoreBoundaryTests(unittest.TestCase):
         self.assertFalse(geometry.segments_conflict(((0, 0), (0, 4)), ((-1, 0), (1, 0))))
 
     def test_core_dependency_direction_and_no_duplicate_implementations(self) -> None:
+        clearance = ast.parse((CORE / "clearance.py").read_text(encoding="utf-8"))
         contracts = ast.parse((CORE / "contracts.py").read_text(encoding="utf-8"))
         geometry = ast.parse((CORE / "geometry.py").read_text(encoding="utf-8"))
         document = ast.parse((CORE / "document.py").read_text(encoding="utf-8"))
@@ -218,19 +219,23 @@ class CoreBoundaryTests(unittest.TestCase):
         sizing = ast.parse((CORE / "sizing.py").read_text(encoding="utf-8"))
         routing_policy = ast.parse((CORE / "routing_policy.py").read_text(encoding="utf-8"))
         ports = ast.parse((CORE / "ports.py").read_text(encoding="utf-8"))
+        port_planner = ast.parse((CORE / "port_planner.py").read_text(encoding="utf-8"))
         labels = ast.parse((CORE / "labels.py").read_text(encoding="utf-8"))
         routing = ast.parse((CORE / "routing.py").read_text(encoding="utf-8"))
         adapter = ast.parse((CORE / "routing_adapter.py").read_text(encoding="utf-8"))
         validation = ast.parse((CORE / "validation.py").read_text(encoding="utf-8"))
         assert_only_allowed_imports(validation, {
             "json", "xml.etree.ElementTree", "swimlane_core.contracts",
+            "swimlane_core.clearance",
             "swimlane_core.document", "swimlane_core.geometry", "swimlane_core.labels",
             "swimlane_core.metadata", "swimlane_core.routing", "swimlane_core.routing_policy",
             "swimlane_core.sizing",
         })
         assert_only_allowed_imports(routing, {
+            "dataclasses",
+            "swimlane_core.clearance",
             "swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.labels",
-            "swimlane_core.ports", "swimlane_core.routing_policy",
+            "swimlane_core.port_planner", "swimlane_core.ports", "swimlane_core.routing_policy",
         })
         assert_only_allowed_imports(adapter, {
             "xml.etree.ElementTree", "swimlane_core.contracts", "swimlane_core.document",
@@ -238,6 +243,9 @@ class CoreBoundaryTests(unittest.TestCase):
             "swimlane_core.routing",
         })
         assert_only_allowed_imports(contracts, {"re"})
+        assert_only_allowed_imports(clearance, {
+            "dataclasses", "math", "typing", "swimlane_core.geometry",
+        })
         assert_only_allowed_imports(geometry, {"swimlane_core.contracts"})
         assert_only_allowed_imports(document, {
             "hashlib", "json", "os", "pathlib", "tempfile", "xml.etree.ElementTree",
@@ -256,21 +264,25 @@ class CoreBoundaryTests(unittest.TestCase):
         assert_only_allowed_imports(sizing, {"unicodedata", "swimlane_core.contracts", "swimlane_core.geometry"})
         assert_only_allowed_imports(routing_policy, set())
         assert_only_allowed_imports(ports, {"swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.routing_policy"})
+        assert_only_allowed_imports(port_planner, {"dataclasses", "swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.ports"})
         assert_only_allowed_imports(labels, {"unicodedata", "swimlane_core.geometry"})
         self.assertEqual({node.name for node in sizing.body if isinstance(node, ast.FunctionDef)},
                          {"estimated_text_lines", "recommended_process_height", "node_size"})
         self.assertEqual({node.name for node in ports.body if isinstance(node, ast.FunctionDef)},
-                         {"validate_side", "validate_offset", "candidate_port_offsets", "allocate_port_pair"})
+                         {"validate_side", "validate_offset", "candidate_port_offsets", "port_side_length", "finite_port_offsets", "continuous_port_capacity", "allocate_port_pair"})
         self.assertEqual({node.name for node in ports.body if isinstance(node, ast.ClassDef)}, {"PortAllocator"})
+        self.assertEqual({node.name for node in port_planner.body if isinstance(node, ast.ClassDef)},
+                         {"PlannerBudget", "EndpointRequest", "EdgePortRequest", "PlannedEndpoint", "EdgePortAssignment", "PortPlanIssue", "ComponentPlan", "PortPlanPreparation", "PortPlan"})
         self.assertEqual({node.name for node in labels.body if isinstance(node, ast.FunctionDef)},
                          {"edge_label_size", "label_box_candidates", "choose_label_box", "polyline_midpoint"})
         for tree, functions in ((document, DOCUMENT_FUNCTIONS), (metadata, METADATA_FUNCTIONS)):
             self.assertEqual({node.name for node in tree.body if isinstance(node, ast.FunctionDef)}, functions)
             self.assertTrue(functions.isdisjoint(entry_functions))
         validation_functions = {node.name for node in validation.body if isinstance(node, ast.FunctionDef)}
-        self.assertEqual(len({name for name in validation_functions if name.startswith("_collect_")}), 19)
+        self.assertEqual(len({name for name in validation_functions if name.startswith("_collect_")}), 20)
         self.assertEqual({name for name in validation_functions if not name.startswith("_collect_")},
-                         {"effective_label_bounds", "_summarize_validation", "validate_tree"})
+                         {"effective_label_bounds", "_clearance_evidence",
+                          "_summarize_validation", "validate_tree"})
         self.assertTrue(validation_functions.isdisjoint(entry_functions))
         owners = {}
         for path in [TOOL, *sorted(CORE.glob("*.py"))]:
@@ -446,8 +458,9 @@ class CoreBoundaryTests(unittest.TestCase):
                 path.relative_to(copied_skill).as_posix(): path.read_bytes()
                 for path in copied_skill.rglob("*.pyc")
             }
-            module_names = ("contracts", "geometry", "document", "metadata", "sizing",
-                            "routing_policy", "ports", "labels", "routing", "routing_adapter", "validation")
+            module_names = ("clearance", "contracts", "geometry", "document", "metadata", "sizing",
+                            "routing_policy", "ports", "port_planner", "labels", "routing",
+                            "routing_adapter", "validation")
             sentinel_names = ("swimlane_core", "swimlane_core.unrelated",
                               *(f"swimlane_core.{name}" for name in module_names))
             sentinels = {name: ModuleType(name) for name in sentinel_names}

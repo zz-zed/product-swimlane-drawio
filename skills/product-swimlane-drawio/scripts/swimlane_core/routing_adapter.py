@@ -25,6 +25,44 @@ def edge_style(
     )
 
 
+def arrowhead_clearance_profiles(
+    edges: list[dict],
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    *,
+    existing_edges: dict[str, ET.Element] | None = None,
+) -> dict[str, dict]:
+    """Describe the renderer-relevant terminal state without changing XML.
+
+    Existing edges keep their complete native style as their effective style;
+    new edges use exactly the canonical default writer style.  Anchor values do
+    not affect arrowhead capability, but retaining them for existing records is
+    important because a caller may carry custom, unsupported renderer tokens.
+    ``routing_context`` owns this as immutable planning input.
+    """
+    existing = existing_edges or {}
+    profiles: dict[str, dict] = {}
+    for edge in edges:
+        target_id = edge.get("to")
+        target = nodes.get(target_id)
+        if target is None:
+            continue
+        target_cell = target["cell"]
+        target_bounds = core_geometry.node_bounds_in_pool(target, lanes[target["lane"]])
+        current = existing.get(edge["id"])
+        profiles[edge["id"]] = {
+            "edge_style": (
+                current.attrib.get("style", "")
+                if current is not None
+                else edge_style(edge.get("type", "flow"), "bottom", "top", 0.5, 0.5)
+            ),
+            "target_style": target_cell.attrib.get("style", ""),
+            "target_type": target_cell.attrib.get(contracts.DATA_NODE_TYPE, "process"),
+            "target_bounds": dict(target_bounds),
+        }
+    return profiles
+
+
 def set_edge_label_position(
     cell: ET.Element,
     full_path: list[tuple[float, float]],
@@ -141,17 +179,65 @@ def apply_edge_route(
         edge, document.routing_lane_views(lanes), document.routing_node_views(nodes),
         allocator, routing_context,
     )
-    style = edge_style(
-        edge.get("type", "flow"), routed["exit_side"], routed["entry_side"],
-        routed["exit_offset"], routed["entry_offset"],
+    return apply_route_decision(
+        cell, edge, routing.RouteDecision(edge["id"], None, routed), lanes, nodes,
+        write_label_position=True, routing_context=routing_context,
     )
-    cell.attrib.update(
+
+
+def apply_route_decision(
+    cell: ET.Element,
+    edge: dict,
+    decision: routing.RouteDecision,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    *,
+    existing: bool = False,
+    explicit_fields: set[str] | None = None,
+    points_action: str = "replace_automatic",
+    write_label_position: bool = False,
+    routing_context: dict | None = None,
+) -> ET.Element:
+    """Apply an already planned route without re-running allocation/routing.
+
+    The decision comes from ``plan_route_batch``.  Keeping this writeback small
+    is what lets patch freeze unrelated XML while still moving the eight native
+    edge-anchor keys required by Draw.io.
+    """
+    routed = decision.routed
+    explicit = explicit_fields if explicit_fields is not None else set(edge)
+    if existing:
+        for key, value in (
+            ("exitX", core_geometry.port_xy(routed["exit_side"], routed["exit_offset"])[0]),
+            ("exitY", core_geometry.port_xy(routed["exit_side"], routed["exit_offset"])[1]),
+            ("exitDx", 0), ("exitDy", 0),
+            ("entryX", core_geometry.port_xy(routed["entry_side"], routed["entry_offset"])[0]),
+            ("entryY", core_geometry.port_xy(routed["entry_side"], routed["entry_offset"])[1]),
+            ("entryDx", 0), ("entryDy", 0),
+        ):
+            document.set_style_option(cell, key, contracts.number(value))
+        if "type" in explicit:
+            document.set_style_option(cell, "dashed", "1" if edge.get("type") == "async" else "0")
+    else:
+        new_style = edge_style(
+            edge.get("type", "flow"), routed["exit_side"], routed["entry_side"],
+            routed["exit_offset"], routed["entry_offset"],
+        )
+    attributes = {
+        "source": nodes[edge["from"]]["cell"].attrib["id"],
+        "target": nodes[edge["to"]]["cell"].attrib["id"],
+    }
+    if not existing:
+        # New canonical cells retain the historical XML insertion sequence:
+        # source, target, style, value, then semantic metadata.  Updating an
+        # existing dict key does not move it, so patch keeps authored order.
+        attributes["style"] = new_style
+        attributes["value"] = str(edge.get("label", ""))
+    elif "label" in explicit:
+        attributes["value"] = str(edge.get("label", ""))
+    attributes.update(
         {
-            "source": nodes[edge["from"]]["cell"].attrib["id"],
-            "target": nodes[edge["to"]]["cell"].attrib["id"],
-            "style": style,
-            "value": str(edge.get("label", "")),
-            contracts.DATA_EDGE_TYPE: edge.get("type", "flow"),
+            contracts.DATA_EDGE_TYPE: edge.get("type", cell.attrib.get(contracts.DATA_EDGE_TYPE, "flow")),
             contracts.DATA_FROM: edge["from"],
             contracts.DATA_TO: edge["to"],
             contracts.DATA_ROUTE: routed["route"],
@@ -160,13 +246,14 @@ def apply_edge_route(
             contracts.DATA_EXIT_OFFSET: contracts.number(routed["exit_offset"]),
             contracts.DATA_ENTRY_OFFSET: contracts.number(routed["entry_offset"]),
             contracts.DATA_ALLOW_PORT_REUSE: "1" if edge.get("allow_port_reuse") else "0",
-            contracts.DATA_WAYPOINTS_ORIGIN: "explicit" if "waypoints" in edge else "automatic",
-            contracts.DATA_EXIT_SIDE_EXPLICIT: "1" if "exit_side" in edge else "0",
-            contracts.DATA_ENTRY_SIDE_EXPLICIT: "1" if "entry_side" in edge else "0",
-            contracts.DATA_EXIT_OFFSET_EXPLICIT: "1" if "exit_offset" in edge else "0",
-            contracts.DATA_ENTRY_OFFSET_EXPLICIT: "1" if "entry_offset" in edge else "0",
+            contracts.DATA_WAYPOINTS_ORIGIN: "explicit" if "waypoints" in explicit else "automatic",
+            contracts.DATA_EXIT_SIDE_EXPLICIT: "1" if "exit_side" in explicit else "0",
+            contracts.DATA_ENTRY_SIDE_EXPLICIT: "1" if "entry_side" in explicit else "0",
+            contracts.DATA_EXIT_OFFSET_EXPLICIT: "1" if "exit_offset" in explicit else "0",
+            contracts.DATA_ENTRY_OFFSET_EXPLICIT: "1" if "entry_offset" in explicit else "0",
         }
     )
+    cell.attrib.update(attributes)
     if edge.get("branch"):
         cell.attrib[contracts.DATA_BRANCH] = edge["branch"]
     else:
@@ -179,14 +266,58 @@ def apply_edge_route(
         cell.attrib[contracts.DATA_OUTCOME] = edge["outcome"]
     else:
         cell.attrib.pop(contracts.DATA_OUTCOME, None)
-    document.set_edge_points(cell, routed["points"])
-    set_edge_label_position(cell, routed["full_path"], routed["label_choice"])
+    points = routed["points"]
+    if points_action == "replace_explicit":
+        # Routing uses a normalized calculation view.  XML writeback must
+        # retain authoring details such as duplicate
+        # and collinear points (and an explicit empty list).
+        points = []
+        for point in edge.get("waypoints", []):
+            if isinstance(point, dict):
+                points.append((float(point["x"]), float(point["y"])))
+            else:
+                # The public schema also permits a compact [x, y] form.
+                points.append((float(point[0]), float(point[1])))
+    document.set_edge_points(cell, points, action=points_action)
+    if write_label_position:
+        set_edge_label_position(cell, routed["full_path"], routed["label_choice"])
     if routing_context is not None:
         routing_context.setdefault("paths", {})[edge["id"]] = routed["full_path"]
         routing_context.setdefault("endpoints", {})[edge["id"]] = (edge["from"], edge["to"])
         if routed["label_choice"] is not None:
             routing_context.setdefault("labels", {})[edge["id"]] = routed["label_choice"][1]
     return cell
+
+
+def reflow_mutable_edge_labels(
+    root: ET.Element,
+    pool: ET.Element,
+    lanes: dict[str, dict],
+    nodes: dict[str, dict],
+    mutable_edge_ids: set[str],
+    preferred_sides: dict[str, str] | None = None,
+) -> None:
+    """Reflow only mutated labels; pre-existing labels are hard obstacles."""
+    records = document.edge_records(root)
+    paths = {edge_id: document.edge_polyline(cell, lanes, nodes) for edge_id, cell in records.items()}
+    node_boxes = [core_geometry.node_bounds_in_pool(record, lanes[record["lane"]]) for record in nodes.values()]
+    pool_geometry = document.parse_geometry(pool)
+    container = {"left": 0.0, "right": pool_geometry["width"], "top": 0.0, "bottom": pool_geometry["height"]}
+    main_pairs = set(zip(document.read_main_path(pool), document.read_main_path(pool)[1:]))
+    def order(item):
+        edge_id, cell = item
+        pair = (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO))
+        return (0 if pair in main_pairs else 2 if cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back" else 1, edge_id)
+    assigned = [box for edge_id, cell in records.items() if edge_id not in mutable_edge_ids for box in [document.stored_label_bounds(cell)] if box is not None]
+    for edge_id, cell in sorted(records.items(), key=order):
+        if edge_id not in mutable_edge_ids:
+            continue
+        path = paths.get(edge_id, [])
+        other_segments = [segment for other_id, other_path in paths.items() if other_id != edge_id for segment in zip(other_path, other_path[1:])]
+        choice = labels.choose_label_box(path, cell.attrib.get("value", ""), node_boxes, other_segments, assigned, (preferred_sides or {}).get(edge_id), container, cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back")
+        set_edge_label_position(cell, path, choice)
+        if choice is not None:
+            assigned.append(choice[1])
 
 
 def seed_routing_context(

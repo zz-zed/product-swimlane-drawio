@@ -100,15 +100,30 @@ def node_center_in_pool(node_record: dict, lane_record: dict) -> tuple[float, fl
 
 
 
-def set_edge_points(cell: ET.Element, points: list[tuple[float, float]]) -> None:
+def set_edge_points(
+    cell: ET.Element,
+    points: list[tuple[float, float]],
+    *,
+    action: str = "replace_automatic",
+) -> None:
+    """Update only the Draw.io points child, unless the caller freezes it.
+
+    Patch operations must be able to leave a manually authored geometry byte-for-
+    byte intact.  The old helper rebuilt the entire geometry and incidentally
+    dropped offsets and unknown children; that is appropriate for neither a
+    frozen edge nor an existing edge with vendor metadata.
+    """
+    if action == "preserve_existing":
+        return
+    if action not in {"replace_automatic", "replace_explicit"}:
+        raise ValueError(f"Unsupported edge points action: {action}")
     geom = cell.find("mxGeometry")
     if geom is None:
         geom = geometry(cell, relative=1)
-    else:
-        geom.attrib.clear()
-        geom.attrib.update({"relative": "1", "as": "geometry"})
-        for child in list(geom):
-            geom.remove(child)
+    for array in list(geom.findall("./Array[@as='points']")):
+        geom.remove(array)
+    # An explicit empty waypoint list is represented by no Array at all.  This
+    # remains distinct from preserving the pre-existing Array above.
     if points:
         array = ET.SubElement(geom, "Array", {"as": "points"})
         for x, y in points:

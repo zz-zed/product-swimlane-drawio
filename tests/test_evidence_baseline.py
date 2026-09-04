@@ -343,13 +343,48 @@ class EvidenceBaselineTests(unittest.TestCase):
         tool = load_tool()
         with self.assertRaises(tool.contracts.DiagramError) as caught:
             tool.build_tree(corpus()["explicit-port-conflict"])
-        self.assertIn("already used", str(caught.exception))
+        self.assertEqual(caught.exception.code, "routing/port-plan-exhausted")
+        self.assertIn("port assignment", str(caught.exception))
+        self.assertIn("allocate-distinct-port", caught.exception.supported_fixes)
+        self.assertIn("reroute-edge", caught.exception.supported_fixes)
+        self.assertIn("component", caught.exception.evidence)
+        self.assertIn("assignment", caught.exception.evidence)
+        self.assertIn("batch_replays", caught.exception.evidence)
+        self.assertIn("component_replans", caught.exception.evidence)
+        self.assertIn("component", caught.exception.evidence)
+        self.assertIn("batch_replays", caught.exception.evidence)
+        self.assertIn("component_replans", caught.exception.evidence)
+        self.assertIn("allocate-distinct-port", caught.exception.supported_fixes)
+        self.assertIn("increase-lane-width", caught.exception.supported_fixes)
 
-    def test_known_routing_failure_remains_visible(self):
+    def test_request_response_retry_is_jointly_routed_without_conflict(self):
         tool = load_tool()
-        report = tool.core_validation.validate_tree(tool.build_tree(corpus()["request-response-retry"]))
-        self.assertFalse(report["quality_gate_passed"])
-        self.assertEqual([d["code"] for d in report["diagnostics"]], ["routing/edge-conflict"])
+        tree = tool.build_tree(corpus()["request-response-retry"])
+        report = tool.core_validation.validate_tree(tree)
+        self.assertTrue(report["quality_gate_passed"])
+        self.assertEqual(report["diagnostics"], [])
+        self.assertEqual(report["arrowhead_clearance"]["status"], "complete")
+        self.assertEqual(report["arrowhead_clearance"]["checked_count"], 7)
+        self.assertEqual(report["arrowhead_clearance"]["violations"], 0)
+        inspected = tool.inspect_tree(tree)
+        retry = next(edge for edge in inspected["edges"] if edge["id"] == "retry")
+        self.assertEqual((retry["exit_side"], retry["entry_side"]), ("right", "right"))
+        retry_carrier_x = {point["x"] for point in retry["waypoints"]}
+        self.assertEqual(len(retry_carrier_x), 1)
+        lane = next(item for item in inspected["lanes"] if item["id"] == "lane-b")
+        carrier_x = retry_carrier_x.pop()
+        self.assertGreater(carrier_x, lane["x"])
+        self.assertLess(carrier_x, lane["x"] + lane["width"])
+        forward_waypoint_x = {
+            point["x"]
+            for edge in inspected["edges"]
+            if edge["id"] != "retry"
+            for point in edge.get("waypoints") or []
+        }
+        self.assertGreaterEqual(
+            carrier_x - max(forward_waypoint_x),
+            tool.routing_policy.LANE_BOUNDARY_CLEARANCE,
+        )
 
     def test_performance_probe_has_measurements_and_real_timeout(self):
         result = worker(3)
@@ -358,7 +393,8 @@ class EvidenceBaselineTests(unittest.TestCase):
             self.assertGreater(result["peak_rss_bytes"], 0)
         else:
             self.assertIsNone(result["peak_rss_bytes"])
-        self.assertGreater(result["profile"]["route_edge"]["calls"], 0)
+        self.assertGreater(result["profile"]["plan_route_batch"]["calls"], 0)
+        self.assertGreater(result["profile"]["route_edge_at_ports"]["calls"], 0)
         self.assertEqual(result["label_overlap_replay"]["overlap_hits"], 0)
         self.assertEqual(result["label_overlap_replay"]["labels"], 3)
         timeout = probe(500, 0.001)

@@ -113,6 +113,101 @@ def candidate_port_offsets(
         key=lambda value: (abs(value - 0.5), value),
     )
 
+
+def port_side_length(bounds: dict[str, float], side: str) -> float:
+    """Return the physical length represented by offsets on one node side."""
+    validate_side(side, "port side")
+    dimension = "height" if side in {"left", "right"} else "width"
+    length = float(bounds[dimension])
+    if length <= 0.0:
+        raise contracts.DiagramError(f"Port side length must be positive for {side}")
+    return length
+
+
+def finite_port_offsets(
+    candidates,
+    *,
+    minimum: float = 0.05,
+    maximum: float = 0.95,
+    locked_offsets=(),
+    minimum_gap: float = 0.0,
+    limit: int = 16,
+    mandatory_offsets=(),
+) -> list[float]:
+    """Return a bounded candidate set, including useful hard-lock edges only.
+
+    This deliberately does not manufacture an unbounded uniform distribution.
+    The batch planner stays a finite search over established offsets, remote
+    projections, and the immediately feasible positions next to hard locks.
+    """
+    lower = validate_offset(minimum, "minimum port offset")
+    upper = validate_offset(maximum, "maximum port offset")
+    if lower > upper + core_geometry.GEOMETRY_TOLERANCE / 100:
+        raise contracts.DiagramError("minimum port offset must not exceed maximum")
+    if minimum_gap < 0.0:
+        raise contracts.DiagramError("minimum port gap must not be negative")
+    if limit <= 0:
+        raise contracts.DiagramError("port candidate limit must be positive")
+    values = [*candidates, lower, upper]
+    for value in locked_offsets:
+        locked = float(value)
+        values.extend((locked - minimum_gap, locked + minimum_gap))
+    tolerance = core_geometry.GEOMETRY_TOLERANCE / 100
+    mandatory = {
+        round(float(value), 6)
+        for value in mandatory_offsets
+        if lower - tolerance <= float(value) <= upper + tolerance
+    }
+    filtered = {
+        round(float(value), 6)
+        for value in values
+        if lower - tolerance <= float(value) <= upper + tolerance
+    }
+    # Mandatory values deliberately bypass center preference.  A caller that
+    # needs a strict cap can detect ``len(result) > limit`` and report a finite
+    # candidate failure instead of silently dropping a hard geometric option.
+    required = sorted(mandatory)
+    optional = sorted(filtered - mandatory, key=lambda value: (abs(value - 0.5), value))
+    return required + optional[:max(0, limit - len(required))]
+
+
+def continuous_port_capacity(
+    minimum: float,
+    maximum: float,
+    locked_offsets,
+    minimum_gap: float,
+) -> int:
+    """Prove capacity across continuous intervals split by hard locks."""
+    lower = validate_offset(minimum, "minimum port offset")
+    upper = validate_offset(maximum, "maximum port offset")
+    if lower > upper + core_geometry.GEOMETRY_TOLERANCE / 100:
+        return 0
+    gap = float(minimum_gap)
+    if gap < 0.0:
+        raise contracts.DiagramError("minimum port gap must not be negative")
+    tolerance = core_geometry.GEOMETRY_TOLERANCE / 100
+    if gap <= tolerance:
+        return 1_000_000_000
+    # A lock can constrain this interval even when its own offset falls just
+    # outside it: its exclusion radius still reaches into the usable range.
+    locks = sorted(
+        float(value) for value in locked_offsets
+        if float(value) + gap >= lower - tolerance
+        and float(value) - gap <= upper + tolerance
+    )
+    capacity = 0
+    cursor = lower
+    for locked in locks:
+        interval_end = min(upper, locked - gap)
+        while cursor <= interval_end + tolerance:
+            capacity += 1
+            cursor += gap
+        cursor = max(cursor, locked + gap)
+    while cursor <= upper + tolerance:
+        capacity += 1
+        cursor += gap
+    return capacity
+
 def allocate_port_pair(
     allocator: PortAllocator,
     edge: dict,

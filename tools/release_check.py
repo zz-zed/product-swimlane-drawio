@@ -14,11 +14,13 @@ SKILL_PREFIX = "skills/product-swimlane-drawio"
 EXPECTED_SKILL_FILES = frozenset({
     "SKILL.md", "agents/openai.yaml", "references/schema.json",
     "references/schema.md", "scripts/drawio_swimlane.py",
-    "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/contracts.py",
+    "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/clearance.py",
+    "scripts/swimlane_core/contracts.py",
     "scripts/swimlane_core/geometry.py",
     "scripts/swimlane_core/document.py", "scripts/swimlane_core/metadata.py",
     "scripts/swimlane_core/sizing.py", "scripts/swimlane_core/routing_policy.py",
-    "scripts/swimlane_core/ports.py", "scripts/swimlane_core/labels.py",
+    "scripts/swimlane_core/ports.py", "scripts/swimlane_core/port_planner.py",
+    "scripts/swimlane_core/labels.py",
     "scripts/swimlane_core/routing.py", "scripts/swimlane_core/routing_adapter.py",
     "scripts/swimlane_core/validation.py",
 })

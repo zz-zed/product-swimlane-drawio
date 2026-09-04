@@ -6,7 +6,7 @@ import json
 import xml.etree.ElementTree as ET
 
 from . import (
-    contracts, document, geometry as core_geometry, labels, metadata,
+    clearance, contracts, document, geometry as core_geometry, labels, metadata,
     routing, routing_policy, sizing,
 )
 
@@ -844,6 +844,95 @@ def _collect_label_pair_conflicts(edge_label_bounds, add):
                 )
 
 
+def _clearance_evidence(edge_id, target_id, measurement, edge_style):
+    """Build stable, self-describing evidence for an arrowhead check.
+
+    The clearance helper deliberately owns the measurement contract.  This
+    adapter only adds document identity and the effective style values needed
+    to reproduce the result from a validation report.
+    """
+    style = document.style_values(edge_style)
+    evidence = measurement.to_dict()
+    last_turn = measurement.last_actual_turn
+    nominal_endpoint = measurement.nominal_endpoint
+    model_attachment = measurement.model_attachment
+    evidence.update(
+        {
+            "edge_id": edge_id,
+            "target_id": target_id,
+            "terminal_segment": {
+                "from": last_turn,
+                "to": model_attachment,
+                "length_px": measurement.terminal_run_px,
+            },
+            "nominal_endpoint": nominal_endpoint,
+            "threshold": measurement.minimum_terminal_run_px,
+            "profile": measurement.profile_id,
+            "shape": measurement.target_shape,
+            "perimeter": measurement.measurement_basis,
+            "coordinate_space": "unscaled_diagram_px",
+            "view_scale": 1,
+            "renderer_version": "31.3.2",
+            "arrow": style.get("endArrow"),
+            # These defaults are the same effective values accepted by the
+            # calibrated helper when the Draw.io style omits the option.
+            "endSize": style.get("endSize", "6"),
+            "stroke": style.get("strokeWidth", "1"),
+            "coverage": {
+                "model_attachment": measurement.model_attachment,
+                "terminal_run_px": measurement.terminal_run_px,
+            },
+        }
+    )
+    return evidence
+
+
+def _collect_arrowhead_clearance(edge_cells, edge_points, nodes, node_bounds, add):
+    """Measure supported terminal runs without changing the native document."""
+    measurements = {}
+    for cell in edge_cells:
+        edge_id = cell.attrib.get(
+            contracts.DATA_SEMANTIC_ID, cell.attrib.get("id", "unknown")
+        )
+        target_id = cell.attrib.get(contracts.DATA_TO, "")
+        target = nodes.get(target_id)
+        if target is None:
+            measurement = clearance.ClearanceMeasurement(
+                status=clearance.STATUS_NOT_AVAILABLE,
+                reason="missing_target_node",
+            )
+        else:
+            measurement = clearance.measure_arrowhead_clearance(
+                edge_points.get(edge_id, []),
+                target_bounds=node_bounds[target_id],
+                target_type=target["cell"].attrib.get(
+                    contracts.DATA_NODE_TYPE, "process"
+                ),
+                target_style=target["cell"].attrib.get("style", ""),
+                edge_style=cell.attrib.get("style", ""),
+            )
+        measurements[edge_id] = measurement
+        if measurement.status == clearance.STATUS_COMPLETE and measurement.violation:
+            add(
+                "routing/arrowhead-clearance",
+                "warning",
+                f"Edge has insufficient arrowhead clearance: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence=_clearance_evidence(
+                    edge_id,
+                    target_id,
+                    measurement,
+                    cell.attrib.get("style", ""),
+                ),
+                supported_fixes=(
+                    ["edit-explicit-waypoints"]
+                    if cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
+                    else ["reroute-edge", "move-last-waypoint"]
+                ),
+            )
+    return measurements
+
+
 def _collect_semantic_diagnostics(
     schema_version,
     pool,
@@ -1074,7 +1163,10 @@ def _summarize_validation(
     unmanaged_edges,
     edge_cells_by_id,
     edge_points,
+    clearance_measurements=None,
 ):
+    if clearance_measurements is None:
+        clearance_measurements = {}
     unique_diagnostics: list[dict] = []
     seen_diagnostics: set[str] = set()
     for diagnostic in diagnostics:
@@ -1117,6 +1209,40 @@ def _summarize_validation(
             if (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO)) in main_pairs:
                 main_path_bends += core_geometry.bend_count(edge_points.get(edge_id, []))
 
+    checked_clearance = sorted(
+        edge_id
+        for edge_id, measurement in clearance_measurements.items()
+        if measurement.status == clearance.STATUS_COMPLETE
+    )
+    unavailable_clearance = sorted(
+        edge_id
+        for edge_id, measurement in clearance_measurements.items()
+        if measurement.status == clearance.STATUS_NOT_AVAILABLE
+    )
+    not_applicable_clearance = sorted(
+        edge_id
+        for edge_id, measurement in clearance_measurements.items()
+        if measurement.status == clearance.STATUS_NOT_APPLICABLE
+    )
+    unknown_clearance = [
+        measurement
+        for measurement in clearance_measurements.values()
+        if measurement.status not in {
+            clearance.STATUS_COMPLETE,
+            clearance.STATUS_NOT_AVAILABLE,
+            clearance.STATUS_NOT_APPLICABLE,
+        }
+    ]
+    applicable_count = len(clearance_measurements) - len(not_applicable_clearance)
+    if not clearance_measurements or applicable_count == 0:
+        clearance_status = clearance.STATUS_NOT_APPLICABLE
+    elif unknown_clearance:
+        clearance_status = "unknown"
+    elif unavailable_clearance:
+        clearance_status = "partial" if checked_clearance else clearance.STATUS_NOT_AVAILABLE
+    else:
+        clearance_status = clearance.STATUS_COMPLETE
+
     return {
         "valid": not errors,
         "quality_gate_passed": not errors and not warnings,
@@ -1139,6 +1265,22 @@ def _summarize_validation(
         "short_segments": diagnostic_codes.count("routing/short-segment"),
         "label_conflicts": sum(code.startswith("text/edge-label-") for code in diagnostic_codes),
         "reciprocal_ambiguities": diagnostic_codes.count("routing/reciprocal-ambiguity"),
+        "arrowhead_clearance": {
+            "rule_version": clearance.RULE_VERSION,
+            "status": clearance_status,
+            "checked_edges": checked_clearance,
+            "checked_count": len(checked_clearance),
+            "unavailable_edges": unavailable_clearance,
+            "not_applicable_edges": not_applicable_clearance,
+            "violations": (
+                sum(
+                    clearance_measurements[edge_id].violation is True
+                    for edge_id in checked_clearance
+                )
+                if checked_clearance
+                else None
+            ),
+        },
         "manual_waypoints_preserved": None,
         "manual_waypoints_checked": 0,
         "visual_review": "not_available",
@@ -1233,6 +1375,9 @@ def validate_tree(tree: ET.ElementTree) -> dict:
             cell, edge_id, segments, lanes, nodes, node_bounds, add,
         )
 
+    clearance_measurements = _collect_arrowhead_clearance(
+        edge_cells, edge_points, nodes, node_bounds, add,
+    )
     _collect_edge_pair_quality(edge_segments, edge_cells_by_id, add)
     _collect_label_path_conflicts(edge_label_bounds, edge_segments, add)
     _collect_label_pair_conflicts(edge_label_bounds, add)
@@ -1242,5 +1387,5 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     )
     return _summarize_validation(
         diagnostics, pool, schema_version, integrity, lanes, nodes, edge_cells,
-        unmanaged_edges, edge_cells_by_id, edge_points,
+        unmanaged_edges, edge_cells_by_id, edge_points, clearance_measurements,
     )

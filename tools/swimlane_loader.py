@@ -22,6 +22,7 @@ PACKAGE_PREFIX = "swimlane_core"
 @dataclass(frozen=True)
 class LoadedSkill:
     tool: ModuleType
+    clearance: ModuleType
     contracts: ModuleType
     geometry: ModuleType
     document: ModuleType
@@ -29,6 +30,7 @@ class LoadedSkill:
     sizing: ModuleType
     routing_policy: ModuleType
     ports: ModuleType
+    port_planner: ModuleType
     labels: ModuleType
     routing: ModuleType
     routing_adapter: ModuleType
@@ -55,6 +57,7 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
     sys.path.insert(0, str(scripts_dir))
     sys.dont_write_bytecode = True
     try:
+        clearance = importlib.import_module("swimlane_core.clearance")
         contracts = importlib.import_module("swimlane_core.contracts")
         geometry = importlib.import_module("swimlane_core.geometry")
         document = importlib.import_module("swimlane_core.document")
@@ -62,6 +65,7 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         sizing = importlib.import_module("swimlane_core.sizing")
         routing_policy = importlib.import_module("swimlane_core.routing_policy")
         ports = importlib.import_module("swimlane_core.ports")
+        port_planner = importlib.import_module("swimlane_core.port_planner")
         labels = importlib.import_module("swimlane_core.labels")
         routing = importlib.import_module("swimlane_core.routing")
         routing_adapter = importlib.import_module("swimlane_core.routing_adapter")
@@ -71,9 +75,10 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
             raise ImportError(f"Unable to load swimlane tool: {tool_path}")
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
-        return LoadedSkill(tool=tool, contracts=contracts, geometry=geometry,
+        return LoadedSkill(tool=tool, clearance=clearance, contracts=contracts, geometry=geometry,
                            document=document, metadata=metadata, sizing=sizing,
-                           routing_policy=routing_policy, ports=ports, labels=labels,
+                           routing_policy=routing_policy, ports=ports,
+                           port_planner=port_planner, labels=labels,
                            routing=routing, routing_adapter=routing_adapter,
                            validation=validation)
     finally:

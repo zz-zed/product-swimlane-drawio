@@ -507,7 +507,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             {alias.name for alias in core_imports[0].names},
             {
-                "contracts", "document", "geometry", "labels", "metadata",
+                "clearance", "contracts", "document", "geometry", "labels", "metadata",
                 "ports", "routing", "routing_adapter", "routing_policy", "sizing", "validation",
             },
         )
@@ -515,8 +515,9 @@ class ReleasePackageTests(unittest.TestCase):
             {alias.name: alias.asname for alias in core_imports[0].names}["geometry"],
             "core_geometry",
         )
-        for module in ("contracts", "geometry", "document", "metadata", "sizing",
-                       "routing_policy", "ports", "labels", "routing", "routing_adapter", "validation"):
+        for module in ("clearance", "contracts", "geometry", "document", "metadata", "sizing",
+                       "routing_policy", "ports", "port_planner", "labels", "routing",
+                       "routing_adapter", "validation"):
             self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
             self.assertIn(f"| `{module}` |", architecture)
         self.assertIn("single-page process view", architecture)
@@ -2381,10 +2382,18 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["warnings"], [])
             report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
             forward = next(edge for edge in report["edges"] if edge["id"] == "edge-forward")
+            lanes = {lane["id"]: lane for lane in report["lanes"]}
+            nodes = {node["id"]: node for node in report["nodes"]}
             self.assertEqual(forward["exit_side"], "right")
             self.assertEqual(forward["entry_side"], "top")
-            self.assertEqual(forward["waypoints"], [{"x": 570.0, "y": 396.0}])
-            self.assertGreaterEqual(abs(forward["waypoints"][0]["x"] - 500.0), 16)
+            target = nodes["target"]
+            decision = nodes["decision"]
+            self.assertEqual(forward["waypoints"], [{
+                "x": lanes[target["lane"]]["x"] + target["x"] + target["width"] / 2,
+                "y": decision["y"] + decision["height"],
+            }])
+            decision_right = lanes[decision["lane"]]["x"] + decision["x"] + decision["width"]
+            self.assertGreaterEqual(forward["waypoints"][0]["x"] - decision_right, 16)
 
     def test_cross_lane_adjacent_rank_flow_prefers_center_ports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2449,7 +2458,9 @@ class DiagramWorkflowTests(unittest.TestCase):
             report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
             lanes = {lane["id"]: lane for lane in report["lanes"]}
             nodes = {node["id"]: node for node in report["nodes"]}
-            self.assertGreaterEqual(lanes["lane-b"]["width"], 168.0)
+            # The automatic target-lane gutter must include both the 16px
+            # boundary margin and the calibrated 16px arrowhead terminal run.
+            self.assertGreaterEqual(lanes["lane-b"]["width"], 197.0)
             expected_x = (lanes["lane-b"]["width"] - nodes["history"]["width"]) / 2
             self.assertEqual(nodes["history"]["x"], expected_x)
             self.assertEqual(
@@ -2461,7 +2472,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertGreaterEqual(corridor_x - lanes["lane-b"]["x"], 16.0)
             self.assertLess(
                 corridor_x,
-                lanes["lane-b"]["x"] + nodes["history"]["x"],
+                lanes["lane-b"]["x"] + nodes["history"]["x"] - 16.0,
             )
             self.assertEqual(report["validation"]["warnings"], [])
 

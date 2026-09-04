@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Add a bounded whole-batch port planner that assigns source and target endpoints together, preserves explicit locks, separates reciprocal corridors, and keeps unrelated solved components stable during route feedback.
+- Add calibrated model-perimeter arrowhead-clearance evidence for supported Draw.io 31.3.2 default block-arrow profiles, including explicit `complete`, `partial`, `not_available`, and `not_applicable` coverage states.
+
+### Changed
+
+- Plan all build connectors before XML writeback. During patching, plan only new or rerouted connectors as one batch while treating frozen connector paths and labels as obstacles.
+- Let measurable automatic-route failures reject the affected component assignment and try another bounded port pairing without restoring the legacy unsafe fallback.
+- Preserve unrelated edge style tokens and geometry children, explicit endpoint locks, and authored waypoint arrays during incremental route updates.
+
+### Tests and evidence
+
+- Add unit and integration coverage for order-independent paired allocation, continuous port capacity, bounded per-component replanning, reciprocal links, explicit waypoint preservation, arrowhead geometry and strict diagnostics.
+- Record the calibrated clearance threshold, supported renderer/style profile, tolerance, native Draw.io export evidence, and unavailable-coverage behavior separately from visual and human review.
+
 ## [0.6.1] - 2026-09-03
 
 ### Changed
@@ -280,7 +296,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.3.1...v0.4.0

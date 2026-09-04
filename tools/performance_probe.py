@@ -100,7 +100,10 @@ def worker(edges: int) -> dict:
             "peak_rss_bytes": None if rss is None else int(rss if sys.platform == "darwin" else rss * 1024),
             "memory_source": "getrusage(RUSAGE_SELF)" if rss is not None else "not_available",
             "profile": {name: function_cost(name) for name in
-                        ("route_edge", "choose_label_box", "reflow_automatic_edge_labels", "bounds_overlap", "segment_intersects_box")},
+                        ("plan_route_batch", "route_edge_at_ports", "plan_port_requests",
+                         "replan_port_plan", "choose_label_box",
+                         "reflow_automatic_edge_labels", "bounds_overlap",
+                         "segment_intersects_box")},
             "label_overlap_replay": label_overlap,
             "label_overlap_note": "Separately timed replay of label/node, label/edge, label/label checks; not a slice of validation_seconds.",
             "quality_gate_passed": result["quality_gate_passed"],

@@ -7,19 +7,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "0205c170d24f68bb01c0a602c04d0a6d4bd394dcd845c90b83f15967786a7d43"
+          "sha256": "7bbb180946c4221bdd19de66f86cb8d082759bd7d21f9c3eb02c8623fc8b29ec"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "8d4fa99fef1f10b441a9f22a5370032f86f66c14061d78eeb39b437c79f4145c"
+          "sha256": "7b3851abbe5f9db5f405bfef6485079ae39e0aed4334f5c11645d4915d2c10ee"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "c7d3f9636e308700e17a51dc0691bea99d3b8edaca3f95f689832a041df83400"
+          "sha256": "42989a057d79f3e8e496564f3c0ffc80a61e82d263b671b16e0341dd45e51e3c"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "330e4d995a58b0054ea8d120fc9f90fce6cc05825bd3025a4b3f21b184b499da"
+          "sha256": "9566f87f4c1f058d73491c7efc69879e07d0beb5377994bd7175d35f0ba71c15"
         },
         "compare": {
           "exit_code": 0,
@@ -31,7 +31,7 @@
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "349dd3604e37a08ae7307b8996339ae97138bc2ae572d99af6d3f48f563d6572"
+          "sha256": "25f6b895838f9c7a98a28677c6923500028feb3846f65cf0b706707a01b0d9ea"
         }
       },
       "before": {
@@ -53,19 +53,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "914acb8991123c148d7dc0125dca18f83ea80009e8351e61174a31dd943f78b8"
+          "sha256": "10a52010be33a1c0d8e55d8c834e02d13c26be479348676081544f9c0d1e2ad0"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "deb298bdb95e02c22d9da4e303419600ac66109031c6a5a8ddeb8568a8263d2a"
+          "sha256": "6302f2e3e6525c5c494c54cebb8bf2334815faae47ab5aab1dcf47296a721fe0"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "af692cbe2108e70e4de167ec9c24e534848241bcb2443b390f5a96a6fc7ed481"
+          "sha256": "9406b243849806573c75dad2bd501b819c9b5b0953eafeba23b2480f22d1f0bc"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "a87e61a657f98334e89f6a8548d40514c2b27b7461901e653cb38d701f88aaf1"
+          "sha256": "590fd909f6835fac53a44e16cf4e57e5f4309c93c44a7d5135e62eddd95a435e"
         },
         "compare": {
           "exit_code": 0,
@@ -77,7 +77,7 @@
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "02dbf00a0b01e5454807952753f38d4d0f6ed32aa1bd7172c171d362282a3d27"
+          "sha256": "f0fa2c3ed2e3b50aa6f465cb9b007eed8c3708d16c1323722f3ee3908d42e7b8"
         }
       },
       "before": {
@@ -99,19 +99,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "29aa840e0999327913d3a43d4aea9735b15f8568f7d035c7a9ccfed17ba1efc7"
+          "sha256": "8c489ee7a0f93a720e9a778029802f38a73eedd4555dfffb043e8913d31f8f80"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "6a43d871ac86d68b4c94f6d655b3c859e064d4dfe5a57d1f06936dc9bb4e8e17"
+          "sha256": "25a70029b6b2874a51d27f7a2ff5dfcbd051e440d07f15a3a9e092c0d0cb9ac9"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "5c9e26f2b9616e26916e997dee61dd0b01489fe0bbb1cf6be3e7144602c37869"
+          "sha256": "76c927053d387aab467304075f8f3da15c34a4342a5d7e9b8197034acc55e44c"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "68d67722168c224611b2b15acfd8d53932061c9d947e75f76fd63d2c301ba13b"
+          "sha256": "ee0b40c5a2f867fd42edf756b31f5e8f849669f9ca79239043241dfa8016b36f"
         },
         "compare": {
           "exit_code": 0,
@@ -123,7 +123,7 @@
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "560d01ffde03b5536386c539faf0189d7252f3ec56530696b82681295232b95e"
+          "sha256": "b5c003c8797fcfed371b05475763bcac259d87a27d8bbf3ce7d6a3b0e593c088"
         }
       },
       "before": {
@@ -145,19 +145,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "a61c29036506b1ddb3eae8c082b754500e27cdbab4f653ae8d1c9cb837fbf37a"
+          "sha256": "92943d3f9e6e6a67cf70cbf591677e96c28d79fbfccab17c931de43c7167c7dd"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "f7fe88fb1ea307c02e6d8f28fb7254b41c6cf7321999c9f440e1f734bc21c9fe"
+          "sha256": "ff5b043ebb096968bc719c85e5e2c4c635cdcae0798077a8099f88c2e267b726"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "afd6e567721ce324b76f58760336042bef79dd7624711d5b089670395d63520e"
+          "sha256": "c596568aa57010745087cbf0ae01a5071172e0fe3b524a4cc5ea84f0940ae35e"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "61c1423d6a337c95981799ad7cc9c3335d9324d2f0ccad52c67385698a798ba6"
+          "sha256": "8ceb7257e17de0a40821ba0ac1beae69b5c66cf764e9452534eb5cf9c3aab834"
         },
         "compare": {
           "exit_code": 0,
@@ -169,7 +169,7 @@
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "99d9a2cd2e0c27e99873ffed97ad420b9a506621356d88f42d344948613e2bfc"
+          "sha256": "b7ab8f2dd365e40bb4a5fd1bac7e8dde14ba0f70b3260f612bf4c5e53fb9f12f"
         }
       },
       "before": {
@@ -191,76 +191,147 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "7f63ff752e70ae418fbd122b99c8f17f87ad8d6291055325cdfe8fadae86db60"
+          "sha256": "a2405c4ade2db69d59c330dfbbd9b8b68c56e27750c435710b7a79c301535c61"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "bf82c893460cab94a6e6a779a69895e14d4f29f08424198fe836faf4e0e6cc27"
+          "sha256": "a0ae5dd7ec24c9bf278fb7df3c07b088c2add6365d635187845fd77198ddd973"
         },
         "validate-strict": {
-          "exit_code": 1,
-          "sha256": "2432b1295f600830083d61c345a74aadd3b9b1fcb1bcddbd7bb66535b414c1f9"
+          "exit_code": 0,
+          "sha256": "332ff85450c3eb27b4ff027335f9013195377a5e8f7f05da8e7f205b5e2ff080"
         },
         "patch": {
-          "exit_code": 2,
-          "sha256": "f892a6d1650ca3a0bffffff60f3ff5e373ea62f569503a457640a99abd368e3a"
+          "exit_code": 0,
+          "sha256": "6c84324ed907a9f8d77c543c274db5ea65dbe469a69dbc6fb0d9a9527e3dc619"
+        },
+        "compare": {
+          "exit_code": 0,
+          "sha256": "a67f2fc1c8e79b6b89664ddba7a00f02bd2253ac65d10f92edbdfade87f07119"
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "a85b0a4a8bbc679948315e680c41f8f6f48a2966728b8f346a3fcc53d838ce7d"
+          "sha256": "255945d43be1cfeadad69cd343314880cbe4d071b84acf7d4caba5a8df63af4d"
         },
         "build-strict": {
-          "exit_code": 2,
-          "sha256": "e80cb7dd05a33696eb01063455dd98a049ad3d1e9f85a1fe1c69a4cb76e28ede"
+          "exit_code": 0,
+          "sha256": "d16831840315b67c62c0e9e165a6dbfb0bd99b5cb97df55ccd7d9faa56866ad3"
         }
       },
       "before": {
-        "bytes": 12797,
-        "canonical_sha256": "683118a058598bd8c588132e67d3089d069c9e25318d335f22d357800cecb0e2"
+        "bytes": 12720,
+        "canonical_sha256": "57df6944e12a5a6c7068eac28ada99f23861ec3df9c5a23ca0866222ebff678e"
+      },
+      "after": {
+        "bytes": 12721,
+        "canonical_sha256": "f841b8106123154daa1886c04e1b51afce66689bc601f8b442f936a1434baec3"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
-      "strict_output_exists": false,
+      "strict_output_exists": true,
       "candidate_files": [],
-      "diagnostics": [
-        {
-          "code": "routing/edge-conflict",
-          "severity": "warning",
-          "message": "Connector segments cross or overlap: e4 / retry",
-          "evidence": {
-            "other_edge": "retry"
-          },
-          "supported_fixes": [
-            "reroute-edge"
-          ],
-          "subject": {
-            "kind": "edge",
-            "id": "e4"
-          }
-        }
-      ]
+      "diagnostics": []
     },
     "explicit-port-conflict": {
       "spec_sha256": "03e41e5d02a4683990e0632df87f4d684648aae58e75421a56f3cd6f76d3c106",
       "commands": {
         "build": {
           "exit_code": 2,
-          "sha256": "9b1384317946d1bfede5299e5a8d694deba57c2c62730733c563c6bfca8ac054"
+          "sha256": "c64edcb012491297d63b6882e933ab814c2e49ba8ad29231821e3b8600209957"
         },
         "build-strict": {
           "exit_code": 2,
-          "sha256": "9b1384317946d1bfede5299e5a8d694deba57c2c62730733c563c6bfca8ac054"
+          "sha256": "c64edcb012491297d63b6882e933ab814c2e49ba8ad29231821e3b8600209957"
         }
       },
       "strict_output_exists": false,
       "candidate_files": [],
       "diagnostics": [
         {
-          "code": "input/invalid",
+          "code": "routing/port-plan-exhausted",
           "severity": "error",
-          "message": "Port n1:bottom@0.5 is already used by e1; choose another port or set allow_port_reuse",
-          "evidence": {},
-          "supported_fixes": []
+          "message": "No unrejected port assignment is available for the failed route component",
+          "evidence": {
+            "component": [
+              [
+                "n1",
+                "bottom"
+              ],
+              [
+                "n1",
+                "left"
+              ],
+              [
+                "n2",
+                "bottom"
+              ],
+              [
+                "n2",
+                "left"
+              ],
+              [
+                "n2",
+                "top"
+              ],
+              [
+                "n3",
+                "top"
+              ]
+            ],
+            "assignment": [
+              [
+                "e1",
+                "n1",
+                "bottom",
+                0.378788,
+                "n2",
+                "top",
+                0.5
+              ],
+              [
+                "e2",
+                "n2",
+                "bottom",
+                0.5,
+                "n3",
+                "top",
+                0.378788
+              ],
+              [
+                "locked",
+                "n1",
+                "bottom",
+                0.5,
+                "n3",
+                "top",
+                0.5
+              ],
+              [
+                "retry",
+                "n2",
+                "left",
+                0.5,
+                "n1",
+                "left",
+                0.35
+              ]
+            ],
+            "rejected_assignments": 4,
+            "batch_replays": 4,
+            "component_replans": {
+              "(('n1', 'bottom'), ('n1', 'left'), ('n2', 'bottom'), ('n2', 'left'), ('n2', 'top'), ('n3', 'top'))": 6
+            }
+          },
+          "supported_fixes": [
+            "allocate-distinct-port",
+            "align-ports",
+            "reroute-edge",
+            "increase-lane-width"
+          ],
+          "subject": {
+            "kind": "edge",
+            "id": "e1"
+          }
         }
       ]
     }

@@ -36,7 +36,7 @@ Schema v3 is the default for new diagrams. It represents lanes, nodes, edges, a 
 
 The standard-library Python tool validates input, calculates lane and node geometry, allocates ports, routes orthogonal connectors, places labels, emits native Draw.io XML, and returns an atomic delivery receipt. The complete Skill directory is its distribution unit: the CLI entrypoint loads its adjacent private `swimlane_core` package from any working directory, with no pip installation or repository tools required.
 
-The engine uses a bounded compilation pipeline, not an unbounded global solver. It allocates lane and rank space, selects among finite route candidates for each automatic edge, and performs label reflow against the compiled scene. It does not repeatedly optimize the whole diagram until a subjective visual optimum is reached, and it does not infer durable layout intent from a person's drag operations. Deterministic means that the same supported input produces the same bytes; it does not mean that every valid process is automatically presentation-perfect.
+The engine uses a bounded compilation pipeline, not an unbounded global solver. It allocates lane and rank space, plans endpoint ports for the complete mutable edge batch, routes the main path before branches and returns, and performs label reflow against the compiled scene. A failed route feeds its rejected component assignment back to the bounded port planner; successful unrelated components remain stable. It does not repeatedly optimize the whole diagram until a subjective visual optimum is reached, and it does not infer durable layout intent from a person's drag operations. Deterministic means that the same supported input produces the same bytes; it does not mean that every valid process is automatically presentation-perfect.
 
 ### Validator
 
@@ -71,6 +71,7 @@ The portable CLI retains input validation, layout compilation, build, patch impa
 
 | Module | Responsibility |
 | --- | --- |
+| `clearance` | Calibrated, read-only model-perimeter arrowhead-clearance measurements for supported Draw.io styles and target shapes. |
 | `contracts` | Shared constants, errors, diagnostics, and numeric serialization. |
 | `geometry` | Bounds, ports, polylines, intersections, and geometric comparisons. |
 | `document` | Draw.io XML readers and writers, raw routing views, native order, file receipts, and atomic output. |
@@ -78,12 +79,13 @@ The portable CLI retains input validation, layout compilation, build, patch impa
 | `sizing` | Text estimates and node sizes. |
 | `routing_policy` | Shared routing and validation thresholds. |
 | `ports` | Port candidates, pair allocation, and per-operation allocator state. |
+| `port_planner` | Whole-batch endpoint requests, conflict components, bounded paired assignments, and route-feedback replanning. |
 | `labels` | Label dimensions, candidates, scoring, and placement. |
 | `routing` | Route candidates, selection, scoring, and explicit routing context. |
 | `routing_adapter` | Conversion between native XML and route decisions, including applying styles, points, and label geometry. |
 | `validation` | Ordered diagnostic collectors and read-only validation summaries. |
 
-Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Allocators and routing context are explicit mutable state owned by each operation; there is no process-wide route cache. Validation reads the latest tree and calls shared geometry, sizing, label, and routing helpers without calling the XML routing adapter or refreshing metadata.
+Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans only new or explicitly/necessarily rerouted edges while treating frozen connector paths and labels as obstacles. Existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata.
 
 Dependencies point from orchestration and adapters into the shared core; core modules do not import the CLI. These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
 

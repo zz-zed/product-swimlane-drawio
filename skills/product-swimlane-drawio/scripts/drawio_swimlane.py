@@ -14,7 +14,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from swimlane_core import (
-    contracts, document, geometry as core_geometry, labels, metadata, ports,
+    clearance, contracts, document, geometry as core_geometry, labels, metadata, ports,
     routing, routing_adapter, routing_policy, sizing, validation as core_validation,
 )
 
@@ -922,7 +922,16 @@ def effective_lane_widths(spec: dict) -> dict[str, float]:
         for lane in spec["lanes"]
     }
     nodes = {node["id"]: node for node in spec["nodes"]}
-    required_gutter = routing_policy.LANE_BOUNDARY_CLEARANCE + 2 * core_geometry.GEOMETRY_TOLERANCE
+    # An internal return carrier has two independent requirements on each
+    # target-lane side: it must stay inside the lane-boundary safety margin and
+    # it must leave the calibrated terminal run before entering the target.
+    # The latter was previously omitted, leaving a mathematically unusable
+    # 24px centred gap and forcing automatic routes outside their target lane.
+    required_gutter = (
+        routing_policy.LANE_BOUNDARY_CLEARANCE
+        + clearance.CLEARANCE_THRESHOLD_PX
+        + core_geometry.GEOMETRY_TOLERANCE
+    )
 
     for node in spec["nodes"]:
         if "x" in node:
@@ -1287,8 +1296,10 @@ def create_edge_cell(
     edge: dict,
     lanes: dict[str, dict],
     nodes: dict[str, dict],
-    allocator: ports.PortAllocator,
+    allocator: ports.PortAllocator | None = None,
     routing_context: dict | None = None,
+    decision: routing.RouteDecision | None = None,
+    explicit_fields: set[str] | None = None,
 ) -> ET.Element:
     cell = ET.SubElement(
         root,
@@ -1302,7 +1313,44 @@ def create_edge_cell(
         },
     )
     document.geometry(cell, relative=1)
+    if decision is not None:
+        return routing_adapter.apply_route_decision(
+            cell, edge, decision, lanes, nodes, explicit_fields=explicit_fields,
+            points_action="replace_explicit" if "waypoints" in (explicit_fields or set()) else "replace_automatic",
+            routing_context=routing_context,
+        )
+    if allocator is None:
+        raise contracts.DiagramError("Edge creation requires a route decision or allocator")
     return routing_adapter.apply_edge_route(cell, edge, lanes, nodes, allocator, routing_context)
+
+
+def route_batch_error(batch: routing.BatchRouteResult) -> contracts.DiagramError:
+    """Preserve structured routing evidence at the public build/patch boundary."""
+    failure = batch.failure
+    evidence = dict(failure.evidence) if failure is not None else {}
+    evidence["batch_replays"] = batch.batch_replays
+    evidence["component_replans"] = {
+        str(key): value for key, value in batch.component_replans.items()
+    }
+    if failure is not None and failure.component_key is not None:
+        evidence.setdefault("component", failure.component_key)
+    if failure is not None and failure.assignment_key is not None:
+        evidence.setdefault("assignment", failure.assignment_key)
+    return contracts.DiagramError(
+        failure.message if failure is not None else "Route batch failed",
+        code=failure.code if failure is not None else "routing/batch-failed",
+        subject=(
+            {"kind": "edge", "id": failure.edge_id}
+            if failure is not None and failure.edge_id
+            else None
+        ),
+        evidence=evidence,
+        supported_fixes=(
+            list(failure.supported_fixes)
+            if failure is not None
+            else ["report-bug"]
+        ),
+    )
 
 
 def compile_v3_edges(spec: dict) -> list[dict]:
@@ -1439,17 +1487,27 @@ def build_tree(spec: dict) -> ET.ElementTree:
 
     lanes, nodes = document.lane_node_records(root, pool)
     compiled_edges = compile_v3_edges(spec)
-    allocator = ports.PortAllocator()
+    explicit_by_edge = {edge["id"]: set(edge) for edge in spec["edges"]}
     routing_context = routing.new_routing_context(
         spec.get("main_path", []),
         compiled_edges,
         document.routing_node_views(nodes),
         v3_semantics=schema_version == contracts.V3_SCHEMA_VERSION,
     )
-    routing.derive_port_limits(routing_context, compiled_edges, document.routing_lane_views(lanes), document.routing_node_views(nodes))
-    spec_nodes = {node["id"]: node for node in spec["nodes"]}
-    for edge in routing.edge_routing_order(compiled_edges, spec.get("main_path", []), document.routing_node_views(spec_nodes)):
-        create_edge_cell(root, pool, edge, lanes, nodes, allocator, routing_context)
+    routing_context["arrowhead_clearance_profiles"] = (
+        routing_adapter.arrowhead_clearance_profiles(compiled_edges, lanes, nodes)
+    )
+    batch = routing.plan_route_batch(
+        compiled_edges, document.routing_lane_views(lanes), document.routing_node_views(nodes),
+        main_path=spec.get("main_path", []), mutable_edge_ids={edge["id"] for edge in compiled_edges},
+        routing_context=routing_context, v3_semantics=schema_version == contracts.V3_SCHEMA_VERSION,
+    )
+    if batch.status != routing.ROUTE_COMPLETE:
+        raise route_batch_error(batch)
+    decisions = {decision.edge_id: decision for decision in batch.decisions}
+    for edge in routing.edge_routing_order(compiled_edges, spec.get("main_path", []), document.routing_node_views(nodes)):
+        create_edge_cell(root, pool, edge, lanes, nodes, routing_context=routing_context,
+                         decision=decisions[edge["id"]], explicit_fields=explicit_by_edge[edge["id"]])
     routing_adapter.reflow_automatic_edge_labels(
         root,
         pool,
@@ -2155,8 +2213,6 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     for update in edge_updates:
         if update["id"] not in existing_edges:
             raise contracts.DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
-        if "label" in update:
-            existing_edges[update["id"]].attrib["value"] = str(update["label"])
 
     explicit_reroute_ids = {
         update["id"]
@@ -2195,8 +2251,6 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
     }
     reroute_ids = explicit_reroute_ids | auto_reroute_ids
-    allocator = ports.PortAllocator()
-    routing_adapter.reserve_existing_ports(root, allocator, exclude=reroute_ids)
     update_by_id = {update["id"]: update for update in edge_updates}
     effective_main_path = list(changes.get("main_path", document.read_main_path(pool)))
     updated_specs: dict[str, dict] = {}
@@ -2218,11 +2272,11 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         document.routing_node_views(nodes),
         v3_semantics=pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION,
     )
-    routing.derive_port_limits(
-        routing_context,
-        [*updated_specs.values(), *new_edges],
-        document.routing_lane_views(lanes),
-        document.routing_node_views(nodes),
+    routing_context["arrowhead_clearance_profiles"] = (
+        routing_adapter.arrowhead_clearance_profiles(
+            [*updated_specs.values(), *new_edges], lanes, nodes,
+            existing_edges=existing_edges,
+        )
     )
     routing_adapter.seed_routing_context(
         routing_context,
@@ -2231,30 +2285,54 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         nodes,
         exclude=reroute_ids,
     )
-    reroute_specs = [updated_specs[edge_id] for edge_id in reroute_ids]
-    for edge in routing.edge_routing_order(reroute_specs, effective_main_path, document.routing_node_views(nodes)):
-        routing_adapter.apply_edge_route(
-            existing_edges[edge["id"]],
-            edge,
-            lanes,
-            nodes,
-            allocator,
-            routing_context,
-        )
-
     for edge in new_edges:
         if edge["id"] in existing_edges:
             raise contracts.DiagramError(f"Edge already exists: {edge['id']}")
+    mutable_edge_ids = set(reroute_ids) | {edge["id"] for edge in new_edges}
+    all_specs = [*updated_specs.values(), *new_edges]
+    batch = routing.plan_route_batch(
+        all_specs, document.routing_lane_views(lanes), document.routing_node_views(nodes),
+        main_path=effective_main_path, mutable_edge_ids=mutable_edge_ids,
+        routing_context=routing_context,
+        v3_semantics=pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION,
+    )
+    if batch.status != routing.ROUTE_COMPLETE:
+        raise route_batch_error(batch)
+    decisions = {decision.edge_id: decision for decision in batch.decisions}
+    # No edge XML has been changed before this point.  Existing records retain
+    # their unrelated style tokens/geometry children; additions are appended.
+    for edge_id in sorted(reroute_ids):
+        edge = updated_specs[edge_id]
+        update = update_by_id.get(edge_id, {})
+        existing_explicit = {
+            field for field, marker in (
+                ("waypoints", contracts.DATA_WAYPOINTS_ORIGIN),
+                ("exit_side", contracts.DATA_EXIT_SIDE_EXPLICIT),
+                ("entry_side", contracts.DATA_ENTRY_SIDE_EXPLICIT),
+                ("exit_offset", contracts.DATA_EXIT_OFFSET_EXPLICIT),
+                ("entry_offset", contracts.DATA_ENTRY_OFFSET_EXPLICIT),
+            ) if existing_edges[edge_id].attrib.get(marker) in {"explicit", "1"}
+        }
+        explicit = existing_explicit | set(update)
+        points_action = (
+            "replace_explicit" if "waypoints" in update
+            else "preserve_existing" if "waypoints" in existing_explicit
+            else "replace_automatic"
+        )
+        routing_adapter.apply_route_decision(
+            existing_edges[edge_id], edge, decisions[edge_id], lanes, nodes,
+            existing=True, explicit_fields=explicit, points_action=points_action,
+            routing_context=routing_context,
+        )
     for edge in routing.edge_routing_order(new_edges, effective_main_path, document.routing_node_views(nodes)):
         create_edge_cell(
-            root,
-            pool,
-            edge,
-            lanes,
-            nodes,
-            allocator,
-            routing_context,
+            root, pool, edge, lanes, nodes, routing_context=routing_context,
+            decision=decisions[edge["id"]], explicit_fields=set(edge),
         )
+    routing_adapter.reflow_mutable_edge_labels(
+        root, pool, lanes, nodes, mutable_edge_ids,
+        routing_context.get("label_sides", {}),
+    )
 
     phases = document.phase_records(root, pool)
     for update in changes.get("update_phases", []):

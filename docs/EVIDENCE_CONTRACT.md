@@ -52,7 +52,7 @@ not accepted build/patch fields or a new CLI command.
 
 Run `python3 -B tools/release_check.py` in a source checkout. It checks Git's
 tracked files plus nonignored candidates against `release-files.json` for the
-whole repository and the explicit ten-file Skill inventory. Extra sibling
+whole repository and the explicit Skill inventory. Extra sibling
 Skills, private payloads, and generated diagrams outside the Skill also fail
 the outer allowlist; adding an intentional public file requires a reviewed
 manifest update. Ignored local caches are not publication candidates; tracked caches,
@@ -94,7 +94,7 @@ The small synthetic corpus is deliberately not an editor golden corpus:
 |---|---|---|
 | linear-v1/v2/v3 | strict pass, patch and compare pass | legacy compatibility, hashes, receipts, deterministic generation |
 | decision-retry-phases | strict pass | same-lane decision, forward/retry, independent phase rail |
-| request-response-retry | strict refusal, `routing/edge-conflict` | automatic multi-lane conflict retained as a known routing limitation |
+| request-response-retry | strict pass | joint port planning, separated forward/response/retry corridors, calibrated terminal clearance |
 | explicit-port-conflict | build refusal, occupied-port diagnostic | explicit locks must not be overridden or waived |
 
 Failure cases are assertions of the precise refusal, not skipped/xfail tests.
@@ -130,7 +130,10 @@ profiles. All sizes use the same labeled linear topology family; this is not a
 complex-routing capacity claim or a speed SLA. Compare identical sizes and
 hashes under the same environment/profiler; cProfile overhead is included.
 
-Routing and label-placement profile costs are inclusive and may overlap.
+Batch planning, fixed-port routing, and label-placement profile costs are
+inclusive and may overlap. The probe reports the production
+`plan_route_batch` / `route_edge_at_ports` path rather than the legacy
+single-edge compatibility wrapper.
 Label/node, label/edge and label/label checks also have a separate timed replay
 on the same generated geometry. Its preparation is excluded; its time is **not**
 a measured slice of `validation_seconds`. Timeout/error records are not quality
@@ -139,21 +142,31 @@ successful smaller cases and timed-out larger cases into one mean.
 Input bounds are 2–5000 edges, 1–10 repeats, and a finite per-sample timeout of
 at most 60 seconds. On platforms without `getrusage`, RSS is `not_available`/null.
 
-## Draft arrowhead-clearance rule (not enabled)
+## Calibrated arrowhead-clearance rule
 
-Candidate code: `routing/arrowhead-clearance`, severity `warning`. Measure the
-final effective segment from its last bend to the rendered target attachment,
-in diagram pixels. Evidence must bind edge/target IDs, final segment endpoints,
-measured length, threshold and threshold version, arrow style/size, stroke,
-target shape/perimeter, view scale and renderer version. A candidate 20 px
-threshold is not calibrated and must not become a default yet. The existing
-16 px internal-segment check is a separate rule.
+`routing/arrowhead-clearance` is a strict-failing warning for a supported
+connector whose final effective model-space run is shorter than the calibrated
+minimum. Rule `drawio-31.3.2-default-block-v1` uses a 16 px minimum with the
+shared 0.75 px geometry tolerance. It measures the axis projection from the
+last actual turn to the target's true model perimeter; renderer marker/backoff
+behavior informed the calibration and is not subtracted a second time.
 
-Calibrate process and diamond targets, different arrow sizes/styles, zoom,
-short terminal segments and explicit manual waypoints. Unknown rendering
-geometry produces `not_available`, not a pass. Do not move locked ports or
-waypoints to satisfy this rule. Enabling it requires a documented rule version
-and compatibility note because existing strict calls also reject warnings.
+The calibrated profile covers unscaled orthogonal, non-rounded connectors with
+the default filled block arrow (`endSize=6`, edge stroke width 1) entering the
+supported unrotated process rectangle, decision diamond, or fixed-aspect end
+ellipse styles. Evidence binds edge and target IDs, the last turn, nominal XML
+endpoint, model attachment, measured terminal run, threshold/rule/profile,
+shape, arrow/style values, coordinate space, view scale, and Draw.io 31.3.2.
+No-end-arrow connectors are `not_applicable`; unsupported styles, shapes,
+perimeters, rotations, or unattached geometry are `not_available`, never a
+pass. The validation summary reports complete, partial, not-available, or
+not-applicable coverage and lists the affected edge IDs.
+
+Automatic routing rejects supported candidates that fail the calibrated rule
+and may request another paired port assignment. Explicit waypoints remain
+unchanged: a failing manual path is diagnosed with an intentional waypoint-edit
+fix rather than silently moved. The pre-existing 16 px internal-segment rule is
+separate and can still flag a short non-terminal segment.
 
 ## Draft visual issue sidecar (not a runtime API)
 
