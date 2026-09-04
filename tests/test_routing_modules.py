@@ -27,6 +27,7 @@ class RoutingModuleTests(unittest.TestCase):
         cls.document = cls.loaded.document
         cls.ports = cls.loaded.ports
         cls.contracts = cls.loaded.contracts
+        cls.clearance = cls.loaded.clearance
 
     def setUp(self):
         self.lanes = {"a": {"geometry": {"x": 0, "y": 0, "width": 500, "height": 400}}}
@@ -57,6 +58,74 @@ class RoutingModuleTests(unittest.TestCase):
             self.edge if edge is None else edge, self.lanes, self.nodes,
             self.ports.PortAllocator() if allocator is None else allocator, context,
         )
+
+    def assignment(self, edge_id="e", exit_offset=0.5, entry_offset=0.5,
+                   exit_side="right", entry_side="left", source="s", target="t"):
+        planner = self.routing.port_planner
+        return planner.EdgePortAssignment(
+            edge_id,
+            planner.PlannedEndpoint(source, exit_side, exit_offset, "derived"),
+            planner.PlannedEndpoint(target, entry_side, entry_offset, "derived"),
+        )
+
+    def alternate_plan(self, current, edge_id, *, exit_offset=None, entry_offset=None):
+        planner = self.routing.port_planner
+        assignments = []
+        for assignment in current.assignments:
+            if assignment.edge_id != edge_id:
+                assignments.append(assignment)
+                continue
+            assignments.append(planner.EdgePortAssignment(
+                edge_id,
+                planner.PlannedEndpoint(
+                    assignment.exit.node_id, assignment.exit.side,
+                    assignment.exit.offset if exit_offset is None else exit_offset,
+                    assignment.exit.source,
+                ),
+                planner.PlannedEndpoint(
+                    assignment.entry.node_id, assignment.entry.side,
+                    assignment.entry.offset if entry_offset is None else entry_offset,
+                    assignment.entry.source,
+                ),
+            ))
+        by_edge = {assignment.edge_id: assignment for assignment in assignments}
+        components = tuple(
+            planner.ComponentPlan(
+                component.key,
+                component.edge_ids,
+                component.attempts,
+                tuple(sorted(by_edge[item].assignment_key for item in component.edge_ids)),
+            )
+            for component in current.components
+        )
+        return planner.PortPlan(
+            current.status, tuple(assignments), current.issues, current.attempts,
+            current.candidate_pairs, current.budget, components,
+            current.max_component_attempts, current.components_solved,
+        )
+
+    def clearance_profile(self, edge=None, assignment=None, *, target_style=None, edge_style=None):
+        edge = self.edge if edge is None else edge
+        assignment = self.assignment() if assignment is None else assignment
+        target = self.nodes[edge["to"]]
+        bounds = self.routing.core_geometry.node_bounds_in_pool(
+            target, self.lanes[target["lane"]]
+        )
+        return {
+            "edge_style": edge_style or self.adapter.edge_style(
+                edge.get("type", "flow"),
+                assignment.exit.side,
+                assignment.entry.side,
+                assignment.exit.offset,
+                assignment.entry.offset,
+            ),
+            "target_style": target_style or (
+                "rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;"
+                "fontColor=#333333;strokeColor=#666666;fontSize=12;"
+            ),
+            "target_type": target["semantic"].get("type", "process"),
+            "target_bounds": bounds,
+        }
 
     def test_views_preserve_optional_fields_raw_values_order_and_current_geometry(self):
         records = self.raw_nodes()
@@ -212,6 +281,675 @@ class RoutingModuleTests(unittest.TestCase):
         self.assertEqual(routed["points"], [(144.0, 56.0), (144.0, 130.0), (260.0, 130.0)])
         self.assertEqual(routed["full_path"], [(120, 56.0), (144.0, 56.0), (144.0, 130.0), (260.0, 130.0), (260, 204.0)])
 
+    def test_fixed_port_routing_rejects_unsafe_base_without_allocator_or_context_writes(self):
+        context = self.routing.new_routing_context([], [self.edge], self.nodes)
+        before = copy.deepcopy(context)
+        allocator = self.ports.PortAllocator()
+        assignment = self.assignment(exit_offset=0.9, entry_offset=0.1)
+        with mock.patch.object(self.routing, "route_candidates", return_value=[]), \
+             mock.patch.object(self.routing, "automatic_polyline_is_safe", return_value=False), \
+             mock.patch.object(self.ports, "allocate_port_pair", side_effect=AssertionError("allocator called")):
+            outcome = self.routing.route_edge_at_ports(
+                self.edge, assignment, self.lanes, self.nodes, context
+            )
+        self.assertIsInstance(outcome, self.routing.RouteFailure)
+        self.assertEqual(outcome.code, "routing/no-safe-route")
+        self.assertTrue(outcome.locked)
+        self.assertEqual(context, before)
+        self.assertEqual(allocator.occupied, {})
+        mismatch = self.routing.route_edge_at_ports(
+            self.edge, self.assignment(), self.lanes, self.nodes, context
+        )
+        self.assertEqual(mismatch.code, "routing/port-assignment-mismatch")
+        self.assertTrue(mismatch.locked)
+
+    def test_automatic_candidates_reject_measured_arrowhead_clearance_violations(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_side": "right", "entry_side": "left",
+        }
+        assignment = self.assignment()
+        short = [(120.0, 40.0), (250.0, 40.0), (250.0, 220.0), (260.0, 220.0)]
+        clear = [(120.0, 40.0), (220.0, 40.0), (220.0, 220.0), (260.0, 220.0)]
+        with mock.patch.object(self.routing, "route_candidates", return_value=[short, clear]), \
+             mock.patch.object(self.routing, "automatic_polyline_is_safe", return_value=True):
+            outcome = self.routing.route_edge_at_ports(
+                edge,
+                assignment,
+                self.lanes,
+                self.nodes,
+                clearance_profile=self.clearance_profile(edge, assignment),
+                require_clearance=True,
+            )
+        self.assertIsInstance(outcome, self.routing.RouteDecision)
+        self.assertEqual(outcome.routed["full_path"], clear)
+        evidence = outcome.routed["arrowhead_clearance"]
+        self.assertEqual(evidence["status"], self.clearance.STATUS_COMPLETE)
+        self.assertEqual(evidence["terminal_run_px"], 40.0)
+        self.assertFalse(evidence["violation"])
+        with mock.patch.object(self.routing, "route_candidates", return_value=[short]), \
+             mock.patch.object(self.routing, "automatic_polyline_is_safe", return_value=True):
+            blocked = self.routing.route_edge_at_ports(
+                edge,
+                assignment,
+                self.lanes,
+                self.nodes,
+                clearance_profile=self.clearance_profile(edge, assignment),
+                require_clearance=True,
+            )
+        self.assertIsInstance(blocked, self.routing.RouteFailure)
+        self.assertEqual(blocked.code, "routing/arrowhead-clearance")
+        self.assertFalse(blocked.locked)
+
+    def test_unavailable_or_missing_clearance_routes_without_becoming_a_checked_pass(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_side": "right", "entry_side": "left",
+        }
+        assignment = self.assignment()
+        candidate = [(120.0, 40.0), (220.0, 40.0), (220.0, 220.0), (260.0, 220.0)]
+        unavailable = self.clearance_profile(
+            edge, assignment, target_style="shape=note;whiteSpace=wrap;html=1;"
+        )
+        for profile in (None, unavailable):
+            with self.subTest(profile=profile), \
+                 mock.patch.object(self.routing, "route_candidates", return_value=[candidate]), \
+                 mock.patch.object(self.routing, "automatic_polyline_is_safe", return_value=True):
+                outcome = self.routing.route_edge_at_ports(
+                    edge,
+                    assignment,
+                    self.lanes,
+                    self.nodes,
+                    clearance_profile=profile,
+                    require_clearance=True,
+                )
+            self.assertIsInstance(outcome, self.routing.RouteDecision)
+            evidence = outcome.routed["arrowhead_clearance"]
+            self.assertEqual(evidence["status"], self.clearance.STATUS_NOT_AVAILABLE)
+            self.assertIsNone(evidence["violation"])
+
+    def test_explicit_waypoints_bypass_clearance_gating_without_rewrite(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_side": "right", "entry_side": "left",
+            "waypoints": [(250, 40), (250, 40), (250, 220)],
+        }
+        assignment = self.assignment()
+        before = copy.deepcopy(edge)
+        outcome = self.routing.route_edge_at_ports(
+            edge,
+            assignment,
+            self.lanes,
+            self.nodes,
+            clearance_profile=self.clearance_profile(
+                edge, assignment, target_style="shape=note;"
+            ),
+            require_clearance=True,
+        )
+        self.assertIsInstance(outcome, self.routing.RouteDecision)
+        self.assertEqual(outcome.routed["points"], [(250.0, 40.0), (250.0, 40.0), (250.0, 220.0)])
+        self.assertNotIn("arrowhead_clearance", outcome.routed)
+        self.assertEqual(edge, before)
+
+    def test_batch_reads_clearance_profiles_from_context(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_side": "right", "entry_side": "left",
+        }
+        assignment = self.assignment()
+        context = self.routing.new_routing_context([], [edge], self.nodes)
+        context["arrowhead_clearance_profiles"] = {
+            "e": self.clearance_profile(edge, assignment)
+        }
+        result = self.routing.plan_route_batch(
+            [edge], self.lanes, self.nodes, routing_context=context
+        )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(
+            result.decisions[0].routed["arrowhead_clearance"]["status"],
+            self.clearance.STATUS_COMPLETE,
+        )
+        missing = self.routing.plan_route_batch(
+            [edge], self.lanes, self.nodes, clearance_profiles={}
+        )
+        self.assertEqual(missing.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(
+            missing.decisions[0].routed["arrowhead_clearance"]["status"],
+            self.clearance.STATUS_NOT_AVAILABLE,
+        )
+
+    def test_measured_clearance_failure_replans_a_variable_port_component(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_side": "right", "entry_side": "left",
+        }
+        profile = self.clearance_profile(edge, self.assignment())
+        first_ports = []
+
+        def measured(points, **kwargs):
+            endpoint_pair = (points[0], points[-1])
+            if not first_ports:
+                first_ports.append(endpoint_pair)
+            violation = endpoint_pair == first_ports[0]
+            return self.clearance.ClearanceMeasurement(
+                status=self.clearance.STATUS_COMPLETE,
+                profile_id=self.clearance.PROFILE_ID,
+                terminal_run_px=10.0 if violation else 24.0,
+                minimum_terminal_run_px=self.clearance.CLEARANCE_THRESHOLD_PX,
+                violation=violation,
+            )
+
+        with mock.patch.object(
+            self.clearance, "measure_arrowhead_clearance", side_effect=measured
+        ):
+            result = self.routing.plan_route_batch(
+                [edge], self.lanes, self.nodes,
+                clearance_profiles={"e": profile},
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 2)
+        self.assertEqual(sum(result.component_replans.values()), 1)
+        self.assertFalse(
+            result.decisions[0].routed["arrowhead_clearance"]["violation"]
+        )
+
+    def test_back_route_with_sufficient_gutter_keeps_internal_slot_and_clearance(self):
+        lanes = {
+            "target": {"geometry": {"x": 0.0, "y": 0.0, "width": 220.0, "height": 420.0}},
+            "source": {"geometry": {"x": 220.0, "y": 0.0, "width": 220.0, "height": 420.0}},
+        }
+        nodes = {
+            "history": {
+                "lane": "target", "geometry": {"x": 40.0, "y": 80.0, "width": 132.0, "height": 42.0},
+                "semantic": {"rank": "1", "type": "process"},
+            },
+            "decision": {
+                "lane": "source", "geometry": {"x": 62.0, "y": 250.0, "width": 96.0, "height": 72.0},
+                "semantic": {"rank": "2", "type": "decision"},
+            },
+        }
+        edge = {
+            "id": "back", "from": "decision", "to": "history",
+            "route": "back", "exit_side": "left", "entry_side": "left",
+        }
+        target_bounds = self.routing.core_geometry.node_bounds_in_pool(
+            nodes["history"], lanes["target"]
+        )
+        profile = {
+            "edge_style": self.adapter.edge_style("flow", "left", "left", 0.5, 0.5),
+            "target_style": (
+                "rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;"
+                "strokeColor=#666666;fontSize=12;"
+            ),
+            "target_type": "process",
+            "target_bounds": target_bounds,
+        }
+        result = self.routing.plan_route_batch(
+            [edge], lanes, nodes, clearance_profiles={"back": profile}
+        )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        path = result.decisions[0].routed["full_path"]
+        internal_vertical = [
+            segment[0][0]
+            for segment in zip(path, path[1:])
+            if self.routing.core_geometry.segment_axis(segment) == "vertical"
+            and 16.0 <= segment[0][0] < target_bounds["left"]
+        ]
+        self.assertTrue(internal_vertical)
+        self.assertGreaterEqual(
+            result.decisions[0].routed["arrowhead_clearance"]["terminal_run_px"],
+            16.0 - self.routing.core_geometry.GEOMETRY_TOLERANCE,
+        )
+
+    def test_back_route_chooses_the_available_right_gutter_for_explicit_node_geometry(self):
+        lanes = {
+            "a": {"geometry": {"x": 0.0, "y": 0.0, "width": 220.0, "height": 420.0}}
+        }
+        nodes = {
+            "history": {
+                "lane": "a", "geometry": {"x": 20.0, "y": 80.0, "width": 160.0, "height": 42.0},
+                "semantic": {"rank": "1", "type": "process"},
+            },
+            "retry": {
+                "lane": "a", "geometry": {"x": 20.0, "y": 250.0, "width": 160.0, "height": 42.0},
+                "semantic": {"rank": "2", "type": "process"},
+            },
+        }
+        edge = {"id": "retry", "from": "retry", "to": "history", "type": "retry"}
+        self.assertEqual(
+            self.routing.preferred_sides(
+                edge, "back", nodes["retry"], nodes["history"], lanes
+            ),
+            ("right", "right"),
+        )
+        target_bounds = self.routing.core_geometry.node_bounds_in_pool(
+            nodes["history"], lanes["a"]
+        )
+        profile = {
+            "edge_style": self.adapter.edge_style("retry", "right", "right", 0.5, 0.5),
+            "target_style": (
+                "rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;"
+                "strokeColor=#666666;fontSize=12;"
+            ),
+            "target_type": "process",
+            "target_bounds": target_bounds,
+        }
+        result = self.routing.plan_route_batch(
+            [edge], lanes, nodes, clearance_profiles={"retry": profile}
+        )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        routed = result.decisions[0].routed
+        self.assertEqual((routed["exit_side"], routed["entry_side"]), ("right", "right"))
+        vertical_x = [
+            segment[0][0]
+            for segment in zip(routed["full_path"], routed["full_path"][1:])
+            if self.routing.core_geometry.segment_axis(segment) == "vertical"
+        ]
+        self.assertTrue(any(196.0 <= value < 204.0 for value in vertical_x))
+
+    def test_batch_replans_after_primary_ports_have_no_safe_route(self):
+        edge = {"id": "e", "from": "s", "to": "t", "route": "forward"}
+        real_route = self.routing.route_edge_at_ports
+        seen = []
+
+        def route_at_ports(candidate_edge, assignment, lanes, nodes, context, **kwargs):
+            seen.append((assignment.exit.offset, assignment.entry.offset))
+            if len(seen) == 1:
+                return self.routing.RouteFailure(
+                    "routing/no-safe-route", candidate_edge["id"], "primary ports blocked"
+                )
+            return real_route(candidate_edge, assignment, lanes, nodes, context, **kwargs)
+
+        planner = self.routing.port_planner
+        with mock.patch.object(self.routing, "route_edge_at_ports", side_effect=route_at_ports), \
+             mock.patch.object(planner, "replan_port_plan", wraps=planner.replan_port_plan) as replan:
+            result = self.routing.plan_route_batch(
+                [edge], self.lanes, self.nodes,
+                main_path=["s", "t"],
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 2)
+        self.assertEqual(seen[0], (0.5, 0.5))
+        self.assertNotEqual(seen[1], seen[0])
+        self.assertEqual(sum(result.component_replans.values()), 1)
+        component_identifier = replan.call_args.args[1]
+        rejected_signatures = replan.call_args.kwargs["rejected_assignment_signatures"]
+        self.assertNotEqual(rejected_signatures[0], component_identifier)
+        self.assertEqual(len(rejected_signatures[0]), 1)
+        self.assertEqual(len(rejected_signatures[0][0]), 7)
+
+    def test_compact_side_to_top_route_uses_the_free_band_between_nodes(self):
+        lanes = {
+            "requester": {"geometry": {"x": 0.0, "y": 36.0, "width": 180.0, "height": 644.0}},
+            "workspace": {"geometry": {"x": 180.0, "y": 36.0, "width": 330.0, "height": 644.0}},
+        }
+        nodes = {
+            "classify": {
+                "lane": "workspace",
+                "geometry": {"x": 38.0, "y": 196.0, "width": 96.0, "height": 72.0},
+                "semantic": {"rank": "3", "type": "decision"},
+            },
+            "update": {
+                "lane": "workspace",
+                "geometry": {"x": 23.0, "y": 291.0, "width": 132.0, "height": 42.0},
+                "semantic": {"rank": "4", "type": "process"},
+            },
+        }
+        edge = {
+            "id": "e3", "from": "classify", "to": "update",
+            "route": "forward", "exit_side": "left", "entry_side": "top",
+            "branch": "positive", "flow_role": "main",
+        }
+        result = self.routing.plan_route_batch(
+            [edge], lanes, nodes, main_path=["classify", "update"],
+            v3_semantics=True,
+        )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 1)
+        path = result.decisions[0].routed["full_path"]
+        self.assertEqual(path[0], (218.0, 268.0))
+        self.assertEqual(path[-1], (269.0, 327.0))
+        self.assertGreaterEqual(path[-1][1] - path[-2][1], 16.0)
+        self.assertTrue(
+            self.routing.automatic_polyline_is_safe(
+                path, lanes, nodes, "classify", "update"
+            )
+        )
+
+    def test_main_path_zigzag_feedback_focuses_the_second_plan_on_aligned_ports(self):
+        lanes = {"a": {"geometry": {"x": 0.0, "y": 0.0, "width": 220.0, "height": 400.0}}}
+        nodes = {
+            "start": {
+                "lane": "a", "geometry": {"x": 92.0, "y": 90.0, "width": 36.0, "height": 36.0},
+                "semantic": {"rank": "1", "type": "start"},
+            },
+            "step": {
+                "lane": "a", "geometry": {"x": 10.0, "y": 183.0, "width": 132.0, "height": 42.0},
+                "semantic": {"rank": "2", "type": "process"},
+            },
+        }
+        edge = {"id": "main", "from": "start", "to": "step", "route": "forward"}
+        result = self.routing.plan_route_batch(
+            [edge], lanes, nodes, main_path=["start", "step"]
+        )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 2)
+        assignment = result.decisions[0].assignment
+        source_x = 92.0 + 36.0 * assignment.exit.offset
+        target_x = 10.0 + 132.0 * assignment.entry.offset
+        self.assertLess(abs(source_x - target_x), 0.001)
+        self.assertEqual(
+            self.routing.core_geometry.bend_count(
+                result.decisions[0].routed["full_path"]
+            ),
+            0,
+        )
+        self.assertEqual(assignment.exit.offset, 0.5)
+        self.assertEqual(assignment.exit.source, "derived")
+        self.assertEqual(assignment.entry.source, "derived")
+
+    def test_single_explicit_exit_offset_keeps_entry_available_for_replan(self):
+        edge = {
+            "id": "e", "from": "s", "to": "t", "route": "forward",
+            "exit_offset": 0.5,
+        }
+        real_route = self.routing.route_edge_at_ports
+        seen = []
+
+        def first_assignment_blocked(candidate_edge, assignment, lanes, nodes, context, **kwargs):
+            seen.append((assignment.exit.offset, assignment.entry.offset))
+            if len(seen) == 1:
+                return self.routing.RouteFailure(
+                    "routing/no-safe-route", candidate_edge["id"], "primary entry blocked"
+                )
+            return real_route(candidate_edge, assignment, lanes, nodes, context, **kwargs)
+
+        with mock.patch.object(
+            self.routing, "route_edge_at_ports", side_effect=first_assignment_blocked
+        ):
+            result = self.routing.plan_route_batch(
+                [edge], self.lanes, self.nodes, main_path=["s", "t"]
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 2)
+        self.assertEqual([pair[0] for pair in seen], [0.5, 0.5])
+        self.assertNotEqual(seen[0][1], seen[1][1])
+
+    def test_batch_rejects_repeated_assignment_with_bounded_replans(self):
+        edge = {"id": "e", "from": "s", "to": "t", "route": "forward"}
+
+        def blocked(candidate_edge, assignment, lanes, nodes, context, **kwargs):
+            return self.routing.RouteFailure(
+                "routing/no-safe-route", candidate_edge["id"], "blocked"
+            )
+
+        replans = []
+
+        def same_plan(preparation, current, failed_edge_id, rejected):
+            replans.append((failed_edge_id, len(rejected)))
+            return current
+
+        with mock.patch.object(self.routing, "route_edge_at_ports", side_effect=blocked):
+            result = self.routing.plan_route_batch(
+                [edge], self.lanes, self.nodes, replanner=same_plan
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_FAILED)
+        self.assertEqual(result.failure.code, "routing/port-plan-exhausted")
+        self.assertEqual(result.batch_replays, 1)
+        self.assertEqual(len(replans), 6)
+        self.assertEqual(sum(result.component_replans.values()), 6)
+        self.assertEqual(result.failure.evidence["component"], result.failure.component_key)
+        self.assertEqual(result.failure.evidence["assignment"], result.failure.assignment_key)
+        self.assertEqual(result.failure.evidence["rejected_assignments"], 1)
+        self.assertIn("allocate-distinct-port", result.failure.supported_fixes)
+        self.assertIn("reroute-edge", result.failure.supported_fixes)
+
+    def test_port_plan_failures_expose_status_specific_fixes_and_budget_evidence(self):
+        planner = self.routing.port_planner
+        cases = (
+            (
+                planner.PLAN_CONSTRAINT_CONFLICT,
+                "routing/port-plan-conflict",
+                "allocate-distinct-port",
+            ),
+            (
+                planner.PLAN_CAPACITY_EXHAUSTED,
+                "routing/port-capacity",
+                "increase-lane-width",
+            ),
+            (
+                planner.PLAN_CANDIDATE_EXHAUSTED,
+                "routing/port-plan-exhausted",
+                "reroute-edge",
+            ),
+        )
+        for status, code, expected_fix in cases:
+            with self.subTest(status=status):
+                plan = planner.PortPlan(
+                    status,
+                    (),
+                    (planner.PortPlanIssue(code, "failed", ("e",), "s", "bottom"),),
+                    3,
+                    7,
+                    planner.PlannerBudget(),
+                )
+                result = self.routing._port_plan_failure(plan)
+                self.assertEqual(result.failure.code, code)
+                self.assertEqual(result.failure.evidence["plan_status"], status)
+                self.assertEqual(result.failure.evidence["attempts"], 3)
+                self.assertEqual(result.failure.evidence["candidate_pairs"], 7)
+                self.assertEqual(result.failure.evidence["node"], "s")
+                self.assertEqual(result.failure.evidence["side"], "bottom")
+                self.assertIn(expected_fix, result.failure.supported_fixes)
+
+    def test_route_search_budget_failure_exposes_replay_evidence_and_fixes(self):
+        edge = {"id": "e", "from": "s", "to": "t", "route": "forward"}
+
+        def blocked(candidate_edge, assignment, lanes, nodes, context, **kwargs):
+            return self.routing.RouteFailure(
+                "routing/no-safe-route", candidate_edge["id"], "blocked"
+            )
+
+        def new_plan(preparation, current, failed_edge_id, rejected):
+            return self.alternate_plan(
+                current, failed_edge_id, exit_offset=0.2, entry_offset=0.2
+            )
+
+        with mock.patch.object(self.routing, "route_edge_at_ports", side_effect=blocked):
+            result = self.routing.plan_route_batch(
+                [edge], self.lanes, self.nodes,
+                replanner=new_plan,
+                route_budget=self.routing.RouteSearchBudget(
+                    max_component_replans=6, max_batch_replays=1
+                ),
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_FAILED)
+        self.assertEqual(result.failure.code, "routing/route-search-budget")
+        self.assertEqual(result.failure.evidence["batch_replays"], 1)
+        self.assertEqual(result.failure.evidence["max_batch_replays"], 1)
+        self.assertEqual(sum(result.failure.evidence["component_replans"].values()), 1)
+        self.assertEqual(
+            result.failure.supported_fixes, ("reroute-edge", "increase-lane-width")
+        )
+
+    def test_failed_batch_trial_does_not_leak_context_into_replay(self):
+        self.nodes["m"] = {
+            "lane": "a", "geometry": {"x": 20, "y": 120, "width": 100, "height": 40},
+            "semantic": {"rank": "2", "type": "process"},
+        }
+        self.nodes["t"]["semantic"]["rank"] = "3"
+        edges = [
+            {"id": "first", "from": "s", "to": "m", "route": "forward"},
+            {"id": "second", "from": "m", "to": "t", "route": "forward"},
+        ]
+        supplied = self.routing.new_routing_context(["s", "m", "t"], edges, self.nodes)
+        supplied_before = copy.deepcopy(supplied)
+        calls = []
+
+        def route_at_ports(edge, assignment, lanes, nodes, context, **kwargs):
+            calls.append((edge["id"], tuple(sorted(context["paths"]))))
+            if edge["id"] == "second" and sum(edge_id == "second" for edge_id, _ in calls) == 1:
+                return self.routing.RouteFailure("routing/no-safe-route", "second", "blocked")
+            routed = {
+                "points": [], "route": "forward",
+                "exit_side": assignment.exit.side, "entry_side": assignment.entry.side,
+                "exit_offset": assignment.exit.offset, "entry_offset": assignment.entry.offset,
+                "full_path": [(0.0, 0.0), (0.0, 20.0)], "label_choice": None,
+            }
+            return self.routing.RouteDecision(edge["id"], assignment, routed)
+
+        def replan(preparation, current, failed_edge_id, rejected):
+            return self.alternate_plan(current, failed_edge_id, exit_offset=0.2, entry_offset=0.2)
+
+        with mock.patch.object(self.routing, "route_edge_at_ports", side_effect=route_at_ports):
+            result = self.routing.plan_route_batch(
+                edges, self.lanes, self.nodes, main_path=["s", "m", "t"],
+                routing_context=supplied, replanner=replan,
+            )
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(calls, [
+            ("first", ()), ("second", ("first",)),
+            ("first", ()), ("second", ("first",)),
+        ])
+        self.assertEqual(supplied, supplied_before)
+
+    def test_mutable_edge_discards_its_seeded_route_label_and_endpoints(self):
+        edge = {"id": "e", "from": "s", "to": "t", "route": "forward"}
+        fresh = self.routing.plan_route_batch([edge], self.lanes, self.nodes)
+        supplied = self.routing.new_routing_context([], [edge], self.nodes)
+        supplied["paths"]["e"] = [(0.0, 0.0), (500.0, 0.0), (500.0, 400.0)]
+        supplied["endpoints"]["e"] = ("s", "t")
+        supplied["labels"]["e"] = {"left": 0.0, "right": 500.0, "top": 0.0, "bottom": 400.0}
+        before = copy.deepcopy(supplied)
+        seeded = self.routing.plan_route_batch(
+            [edge], self.lanes, self.nodes, routing_context=supplied
+        )
+        self.assertEqual(fresh.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(seeded.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(seeded.decisions[0].routed, fresh.decisions[0].routed)
+        self.assertEqual(supplied, before)
+
+    def test_batch_routes_main_before_forward_before_return_and_links_reciprocals(self):
+        self.nodes["u"] = {
+            "lane": "a", "geometry": {"x": 380, "y": 200, "width": 100, "height": 40},
+            "semantic": {"rank": "2", "type": "process"},
+        }
+        edges = [
+            {"id": "return", "from": "t", "to": "s", "route": "back", "label": "request"},
+            {"id": "branch", "from": "s", "to": "u", "route": "forward", "label": "response"},
+            {"id": "main", "from": "s", "to": "t", "route": "forward", "label": "retry"},
+        ]
+        result = self.routing.plan_route_batch(
+            edges, self.lanes, self.nodes, main_path=["s", "t"]
+        )
+        self.assertEqual(result.routing_order, ("main", "branch", "return"))
+        self.assertEqual(result.linked_edge_pairs, (("main", "return"),))
+        changed = [{**edge, "label": "completely different"} for edge in edges]
+        changed_result = self.routing.plan_route_batch(
+            changed, self.lanes, self.nodes, main_path=["s", "t"]
+        )
+        self.assertEqual(changed_result.routing_order, result.routing_order)
+        self.assertEqual(changed_result.linked_edge_pairs, result.linked_edge_pairs)
+        lanes = {
+            "client": {"geometry": {"x": 0, "y": 0, "width": 240, "height": 400}},
+            "service": {"geometry": {"x": 240, "y": 0, "width": 240, "height": 400}},
+        }
+        nodes = {
+            "caller": {"lane": "client", "geometry": {"x": 60, "y": 80, "width": 120, "height": 40},
+                       "semantic": {"rank": "1", "type": "process"}},
+            "callee": {"lane": "service", "geometry": {"x": 60, "y": 200, "width": 120, "height": 40},
+                       "semantic": {"rank": "2", "type": "process"}},
+        }
+        request = {"id": "request", "from": "caller", "to": "callee", "route": "auto",
+                   "type": "call", "flow_role": "main", "label": "Retry"}
+        response = {"id": "response", "from": "callee", "to": "caller", "route": "auto",
+                    "type": "return", "flow_role": "response", "label": "Approved"}
+        semantic = self.routing.plan_route_batch(
+            [response, request], lanes, nodes, main_path=["caller", "callee"]
+        )
+        self.assertEqual(semantic.linked_edge_pairs, (("request", "response"),))
+        self.assertEqual(semantic.routing_order, ("request", "response"))
+        self.assertEqual(self.routing.inferred_spec_route_class(request, nodes), "forward")
+        self.assertEqual(self.routing.inferred_spec_route_class(response, nodes), "back")
+        self.assertEqual((request["type"], response["type"]), ("call", "return"))
+
+    def test_frozen_batch_requires_seeded_path_and_locked_ports(self):
+        edge = {"id": "e", "from": "s", "to": "t", "route": "forward"}
+        missing = self.routing.plan_route_batch(
+            [edge], self.lanes, self.nodes, mutable_edge_ids=set(),
+            locked_offsets={"e": (0.5, 0.5)},
+        )
+        self.assertEqual(missing.failure.code, "routing/frozen-route-missing")
+        context = self.routing.new_routing_context([], [edge], self.nodes)
+        context["paths"]["e"] = [(120.0, 40.0), (260.0, 220.0)]
+        context["endpoints"]["e"] = ("s", "t")
+        seeded = self.routing.plan_route_batch(
+            [edge], self.lanes, self.nodes, mutable_edge_ids=set(),
+            locked_offsets={"e": (0.5, 0.5)}, routing_context=context,
+        )
+        self.assertEqual(seeded.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(seeded.decisions, ())
+
+    def test_fixed_port_route_preserves_explicit_waypoints_and_defers_quality_diagnostics(self):
+        assignment = self.assignment()
+        cases = (
+            (None, []),
+            ([], []),
+            ([(180, 40), (180, 40), (180, 220)], [(180.0, 40.0), (180.0, 40.0), (180.0, 220.0)]),
+            ([(160, 40), (180, 40), (180, 220)], [(160.0, 40.0), (180.0, 40.0), (180.0, 220.0)]),
+        )
+        for values, expected in cases:
+            edge = {**self.edge, "exit_offset": 0.5, "entry_offset": 0.5, "waypoints": values}
+            before = copy.deepcopy(edge)
+            outcome = self.routing.route_edge_at_ports(
+                edge, assignment, self.lanes, self.nodes
+            )
+            self.assertIsInstance(outcome, self.routing.RouteDecision)
+            self.assertEqual(outcome.routed["points"], expected)
+            self.assertEqual(edge, before)
+        non_orthogonal = {**self.edge, "exit_offset": 0.5, "entry_offset": 0.5,
+                          "waypoints": [(150, 70)]}
+        outcome = self.routing.route_edge_at_ports(
+            non_orthogonal, assignment, self.lanes, self.nodes
+        )
+        self.assertIsInstance(outcome, self.routing.RouteDecision)
+        self.assertEqual(outcome.routed["points"], [(150.0, 70.0)])
+        self.assertEqual(non_orthogonal["waypoints"], [(150, 70)])
+        self.nodes["blocker"] = {
+            "lane": "a", "geometry": {"x": 150, "y": 100, "width": 60, "height": 60},
+            "semantic": {"rank": "2", "type": "process"},
+        }
+        crossing = {**self.edge, "exit_offset": 0.5, "entry_offset": 0.5,
+                    "waypoints": [(180, 40), (180, 220)]}
+        outcome = self.routing.route_edge_at_ports(
+            crossing, assignment, self.lanes, self.nodes
+        )
+        self.assertIsInstance(outcome, self.routing.RouteDecision)
+        self.assertEqual(outcome.routed["points"], [(180.0, 40.0), (180.0, 220.0)])
+
+    def test_independent_batch_needs_one_replay_and_no_conflict_budget(self):
+        lanes, nodes, edges = {}, {}, []
+        for index in range(40):
+            lane_id = f"lane-{index:02d}"
+            source_id = f"source-{index:02d}"
+            target_id = f"target-{index:02d}"
+            edge_id = f"edge-{index:02d}"
+            lanes[lane_id] = {"geometry": {"x": index * 220, "y": 0, "width": 200, "height": 400}}
+            nodes[source_id] = {
+                "lane": lane_id, "geometry": {"x": 50, "y": 40, "width": 100, "height": 40},
+                "semantic": {"rank": "1", "type": "process"},
+            }
+            nodes[target_id] = {
+                "lane": lane_id, "geometry": {"x": 50, "y": 220, "width": 100, "height": 40},
+                "semantic": {"rank": "2", "type": "process"},
+            }
+            edges.append({"id": edge_id, "from": source_id, "to": target_id, "route": "forward"})
+        result = self.routing.plan_route_batch(edges, lanes, nodes)
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(result.batch_replays, 1)
+        self.assertEqual(result.component_replans, {})
+        self.assertEqual(len(result.decisions), 40)
+
     def test_candidate_ties_keep_raw_scores_and_stable_rounded_coordinates(self):
         p1 = [(120, 56.0), (1.12341, 60.0), (260, 204.0)]
         p2 = [(120, 56.0), (1.12344, 60.0), (260, 204.0)]
@@ -296,7 +1034,10 @@ class RoutingModuleTests(unittest.TestCase):
             loaded = []
             for name in ("first", "second"):
                 destination = Path(temporary) / name
-                for relative in EXPECTED_SKILL_FILES:
+                isolated_files = set(EXPECTED_SKILL_FILES)
+                isolated_files.add("scripts/swimlane_core/port_planner.py")
+                isolated_files.add("scripts/swimlane_core/clearance.py")
+                for relative in sorted(isolated_files):
                     target = destination / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(TOOL.parent.parent / relative, target)

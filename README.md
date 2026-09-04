@@ -140,7 +140,7 @@ Geometry-preserving semantic patch
 
 ![Create and update workflows](docs/illustrations/product-swimlane-readme/create-update.png)
 
-The engine supports a confirmed top-to-bottom main path, decisions, cross-lane calls, returns, retries, same-rank interactions, and optional horizontal phases. It routes the main path first and keeps exceptional traffic visually distinct where geometry allows.
+The engine supports a confirmed top-to-bottom main path, decisions, cross-lane calls, returns, retries, same-rank interactions, and optional horizontal phases. It plans mutable connector ports as one bounded batch, routes the main path first, and keeps exceptional traffic visually distinct where geometry allows.
 
 ## Edit → inspect → patch
 
@@ -157,7 +157,7 @@ Use the same tool version for a patch and its comparison. In 0.6.0, reviewing a 
 
 ## Validation and reliability
 
-Strict validation checks the semantic model, main-path continuity, decisions, retries, phases, fixed-aspect nodes, text fit, ports, lane-boundary clearance, node crossings, short segments, excessive bends, hairpins, reciprocal ambiguity, label placement, connector overlap, and phase Z-order.
+Strict validation checks the semantic model, main-path continuity, decisions, retries, phases, fixed-aspect nodes, text fit, ports, lane-boundary clearance, node crossings, short segments, excessive bends, hairpins, reciprocal ambiguity, supported arrowhead terminal-run clearance, label placement, connector overlap, and phase Z-order. Arrowhead coverage can be `partial` or `not_available` for unsupported styles or shapes; that is incomplete evidence, not an inferred pass.
 
 ![Validation and visual review provide separate evidence](docs/illustrations/product-swimlane-readme/quality-gate.png)
 

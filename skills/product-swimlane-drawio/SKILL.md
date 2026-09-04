@@ -67,7 +67,7 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 
 - Route the confirmed `main_path` before ordinary branches and returns so its channels remain visually dominant.
 - Keep every downward main-path continuation bottom-to-top, including a main path that crosses into another lane. Do not send a decision's normal continuation through a side hook merely because its target is in another lane.
-- Allocate source and target ports as a pair. Prefer the center (`0.5`) of the selected source and target sides whenever those ports are free; only move to secondary offsets for an actual port conflict or explicit override. Treat endpoint alignment as secondary to balanced attachment points.
+- Plan source and target ports across the complete mutable edge batch, then allocate each pair together. Prefer the center (`0.5`) of the selected source and target sides whenever those ports are free and yield a valid route; move to secondary offsets for an actual conflict, route failure, main-path continuity, or explicit override. Keep successful unrelated port components stable when one component is replanned.
 - Route returns and retries after forward paths, using independent return channels; retain explicit waypoints unchanged.
 - Keep decision outcomes semantically explicit and let the script select safe route/label candidates. Use manual ports or waypoints only after diagnostic or visual evidence identifies a need.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
@@ -87,6 +87,7 @@ Require strict validation to have no warnings. It checks:
 - Connectors crossing nodes.
 - Connector segments crossing, overlapping, or becoming non-orthogonal.
 - Internal segments shorter than 16 pixels, unnecessary bends, hairpins, near-parallel crowding, and ambiguous reciprocal channels.
+- Calibrated arrowhead terminal-run clearance for supported default Draw.io connector and target styles; unsupported rendering states remain `not_available`, not passed.
 - Same-lane main-path zigzags.
 - Edge labels without a clear carrier or overlapping nodes, connectors, or other labels.
 - Phase backgrounds above editable content, opaque lane bodies hiding phase bands, or interactive phase cells.
@@ -145,7 +146,7 @@ If diagnostics offer no safe authorized fix, a correction makes no progress, or 
 - Preserve stable IDs across revisions.
 - Report the inspected input SHA-256, input managed state, drift acceptance status, requested semantic IDs, dependent lane shifts, and automatically rerouted edges from the patch receipt.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
-- Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
+- Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `arrowhead_clearance`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat partial or `not_available` arrowhead coverage as incomplete evidence, not a pass. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.
 
 ## Package neutrality
