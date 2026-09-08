@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
-## [0.7.0] - 2026-09-08 (release preparation; not published)
+## [0.7.0] - 2026-09-08
 
 - Preserve saved routes for label-only patches and require declared reroutes when node/lane edits invalidate them.
 - Measure labels from current native geometry, with estimated bounds and explicit unsupported coverage.
@@ -16,7 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Keep saved-file command and severity conventions, while allowing cross-lane automatic returns to omit the former target-lane vertical corridor. Existing v2/v3 saved files can therefore have different warnings or strict results. Same-lane return checks and explicit or saved geometry protections remain.
 - Remove target-lane-only detours from cross-lane returns, prefer outward return pairs before mixed-side loops, and, for v3 same-lane downward decision branches whose bottom is not reserved by the main path, prefer the bottom exit.
 
-This entry records a locally verified candidate; no 0.7.0 tag, release, publication, or installation has been created.
+This release is based on the locally verified candidate and is published with the v0.7.0 tag.
 
 ## [0.6.5] - 2026-09-04
 
