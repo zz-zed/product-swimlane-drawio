@@ -7,19 +7,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "7bbb180946c4221bdd19de66f86cb8d082759bd7d21f9c3eb02c8623fc8b29ec"
+          "sha256": "3b33537880ac235e65d60fb0e4ff08cabbd15c320c2b01d228f18d285c059cf3"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "7b3851abbe5f9db5f405bfef6485079ae39e0aed4334f5c11645d4915d2c10ee"
+          "sha256": "084629d91e618e7a632799312fbb4670cf7f8ec4839c72e40172fb25f8f93390"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "42989a057d79f3e8e496564f3c0ffc80a61e82d263b671b16e0341dd45e51e3c"
+          "sha256": "91e7e8726bc38b164482bf6c4fcd3c88e0f299c17dec988b74b9f483e817b547"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "9566f87f4c1f058d73491c7efc69879e07d0beb5377994bd7175d35f0ba71c15"
+          "sha256": "77767143aa55daaa96a8af0e31766dbac52ddc1237cdabbefe93f17b94225621"
         },
         "compare": {
           "exit_code": 0,
@@ -27,20 +27,20 @@
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "840e9b05a6523cec8ee4d8c2c21c9d2e12b08648643e8029b6d39e49e9ee52b5"
+          "sha256": "7d40c2d03370bb3fae435eaf3c4011ee82dd6fb8e32e53c330f09c390809c0c0"
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "25f6b895838f9c7a98a28677c6923500028feb3846f65cf0b706707a01b0d9ea"
+          "sha256": "d2fc0ce2cb465609f9ecaa90c87723dbddb0b038b659bb6f89f7be9f2696664e"
         }
       },
       "before": {
-        "bytes": 7508,
-        "canonical_sha256": "8ab23887f5f8d45940b854ce8edd6d94d29271da123800e822c453ad5f5bc47d"
+        "bytes": 7498,
+        "canonical_sha256": "9f5ed125f1bf401077adf2b624a6bb323bda7523cf395bd9d718bd58985c2efc"
       },
       "after": {
-        "bytes": 7509,
-        "canonical_sha256": "77e7b77372ff85b157c0873d2d162e820c028f562be5be25ba5b786338dfedff"
+        "bytes": 7499,
+        "canonical_sha256": "4c95d1b12a3778a7746c58bbee9bf8cb8e0b52e705d7a153a8b3d0dfb033a930"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
@@ -53,19 +53,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "10a52010be33a1c0d8e55d8c834e02d13c26be479348676081544f9c0d1e2ad0"
+          "sha256": "9d5bf42023d01dd033fff0cd4c70c303d5d4cac3a0852bf65c5c48e1ddda08ba"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "6302f2e3e6525c5c494c54cebb8bf2334815faae47ab5aab1dcf47296a721fe0"
+          "sha256": "76e6a73df16f8ea40569c5f147e3af412cbf28b82d1a98d24272a42cbbf589df"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "9406b243849806573c75dad2bd501b819c9b5b0953eafeba23b2480f22d1f0bc"
+          "sha256": "261fed6c696976b0e7625fa5aa0e9b92a3d8a179c887b69a57f86343c0ea0150"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "590fd909f6835fac53a44e16cf4e57e5f4309c93c44a7d5135e62eddd95a435e"
+          "sha256": "5f3d08788e1902dec87ac20f672235c0a1b0f4416174da5031047a719e6d1041"
         },
         "compare": {
           "exit_code": 0,
@@ -73,20 +73,20 @@
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "0b38b76014d6a812631ef11cdf13adf8f6bc7813d190014db92170665a2d3e7c"
+          "sha256": "0c6650a9f16e0645ad0ef744d02220d443adb1467d246c9da6562f87ed86270c"
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "f0fa2c3ed2e3b50aa6f465cb9b007eed8c3708d16c1323722f3ee3908d42e7b8"
+          "sha256": "eb0b42c5fcfbd18f1943349c97992e7bec86c2bb4ee14987005f3b6a39a2d593"
         }
       },
       "before": {
-        "bytes": 7508,
-        "canonical_sha256": "f2c8db6fb50b241e770064d795ada84a614232046d234d1600ea2129fa45f970"
+        "bytes": 7498,
+        "canonical_sha256": "8ad025292b08d4d0016d7402763cde4ddf5786f4c716031fcda2af1a87977158"
       },
       "after": {
-        "bytes": 7509,
-        "canonical_sha256": "e76e61109d9f19649abbcd679d3138483581d40560fdd255efd38b7e6856abdd"
+        "bytes": 7499,
+        "canonical_sha256": "74bf885217828b4d5c62107381a12f4ac03ca9a28d07db4d1ddf2eba9bd20e51"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
@@ -99,19 +99,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "8c489ee7a0f93a720e9a778029802f38a73eedd4555dfffb043e8913d31f8f80"
+          "sha256": "576948235dcd72eaddaa0c558b2e9330fdc68ecb20d41be5da6c00598710d566"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "25a70029b6b2874a51d27f7a2ff5dfcbd051e440d07f15a3a9e092c0d0cb9ac9"
+          "sha256": "892cf823ad6e2c2b8dc588ed511c398863ecf64541fbcfd7fa65ba24e752c986"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "76c927053d387aab467304075f8f3da15c34a4342a5d7e9b8197034acc55e44c"
+          "sha256": "1b9902705cd4f69d2d9dcf7bf3d26dbd54c0c5a035752fdd53d3411417237756"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "ee0b40c5a2f867fd42edf756b31f5e8f849669f9ca79239043241dfa8016b36f"
+          "sha256": "1fc520114cae8d7636ab49c8831aa5bfa6aa2dcfc3976acbb0660e097759b991"
         },
         "compare": {
           "exit_code": 0,
@@ -119,20 +119,20 @@
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "f443dcf433dd072d6d08d90415c9fe86b5987c65a723976ec55b7ea41150f846"
+          "sha256": "c29438ab0126e64e3fe20d837be89079d12ea374f8de72049788eb9e2b63b711"
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "b5c003c8797fcfed371b05475763bcac259d87a27d8bbf3ce7d6a3b0e593c088"
+          "sha256": "369b8ce072bbe6dff16e3e55557e3bdda7e98986b9dad0b715e99be62ae42029"
         }
       },
       "before": {
-        "bytes": 7728,
-        "canonical_sha256": "d4783fea7d3363e7c3c9ba1d79e80fa6c74d7fc556e92f717b6ba022a0ba0a51"
+        "bytes": 7718,
+        "canonical_sha256": "4c61a698aa7a399ab0fc597cbec22e500e2fcf5db4091891a18a445ff3b1c04d"
       },
       "after": {
-        "bytes": 7729,
-        "canonical_sha256": "d79fe821944060942544aade74c404e3dbe7da25bb13d9969458a58b93ef5a8b"
+        "bytes": 7719,
+        "canonical_sha256": "54cfc8ef10efa606b04fa6b6a3ad16b03024af53d810f2e70ca20bc5cfb1bb18"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
@@ -145,19 +145,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "92943d3f9e6e6a67cf70cbf591677e96c28d79fbfccab17c931de43c7167c7dd"
+          "sha256": "39431728f5b7e61ec8e1dc7d8abf0b8047e597f5cf8d41213dbccfea55034258"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "ff5b043ebb096968bc719c85e5e2c4c635cdcae0798077a8099f88c2e267b726"
+          "sha256": "c92e2c110437f3dda04f775126841a006b66e9ab4ef5b8d418191328ab6044c1"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "c596568aa57010745087cbf0ae01a5071172e0fe3b524a4cc5ea84f0940ae35e"
+          "sha256": "e0af85104bdee4059e3990d9f79a89c135c4f3e490b75626753b6da7cff5b3f6"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "8ceb7257e17de0a40821ba0ac1beae69b5c66cf764e9452534eb5cf9c3aab834"
+          "sha256": "17b79c6183789031102fdbccf18642c10553ee61d70d619d5d8f7ba599951759"
         },
         "compare": {
           "exit_code": 0,
@@ -165,20 +165,20 @@
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "40d866c80f2fef62a71db46266b1ed70f6a33be87eca77e849810c6e4591469c"
+          "sha256": "845814228d4e4f9131ef912fc660b9c4a7ea7dc2a2051b884dd7d8a982810b3d"
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "b7ab8f2dd365e40bb4a5fd1bac7e8dde14ba0f70b3260f612bf4c5e53fb9f12f"
+          "sha256": "b232cebf087e7ae919f565ee394da2568c94332ed4c688a8a6769635505d6fd6"
         }
       },
       "before": {
-        "bytes": 9843,
-        "canonical_sha256": "2466b333a7373df0a60a954ce1c2ae2050ae3b206334690a04a86b6e5fe88386"
+        "bytes": 9831,
+        "canonical_sha256": "ed22d7f0b63b2987309bc5daaeda6ea4acd7ee63437f3535cba552258a96c7d9"
       },
       "after": {
-        "bytes": 9844,
-        "canonical_sha256": "821c6cd5f85970ccfc3ca5a7a8eba99416e297fbc8aae5eab77e8a16618d3a75"
+        "bytes": 9832,
+        "canonical_sha256": "d461b75f2dd204060b4193107bd2a765444c141db785595f59d0207edbf7cd27"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
@@ -191,19 +191,19 @@
       "commands": {
         "build": {
           "exit_code": 0,
-          "sha256": "a2405c4ade2db69d59c330dfbbd9b8b68c56e27750c435710b7a79c301535c61"
+          "sha256": "a994937e7843a3e39b303bac4a8d27178562f029a4e3451d895dc7829c91bef9"
         },
         "inspect": {
           "exit_code": 0,
-          "sha256": "a0ae5dd7ec24c9bf278fb7df3c07b088c2add6365d635187845fd77198ddd973"
+          "sha256": "d924082dc0dcad3477822115a63559469d05a116d27bac2db40f8671624dd7cc"
         },
         "validate-strict": {
           "exit_code": 0,
-          "sha256": "332ff85450c3eb27b4ff027335f9013195377a5e8f7f05da8e7f205b5e2ff080"
+          "sha256": "0cf80c51dfcfb498e36a8c9877e3946d16556d9c88bb6f5c9c38236d87daafef"
         },
         "patch": {
           "exit_code": 0,
-          "sha256": "6c84324ed907a9f8d77c543c274db5ea65dbe469a69dbc6fb0d9a9527e3dc619"
+          "sha256": "8b0fb84e6aaba26361d51ba82e8a385c01fc1505c35fed6e43a11bf945941a58"
         },
         "compare": {
           "exit_code": 0,
@@ -211,20 +211,20 @@
         },
         "reject-stale-input": {
           "exit_code": 2,
-          "sha256": "255945d43be1cfeadad69cd343314880cbe4d071b84acf7d4caba5a8df63af4d"
+          "sha256": "80525f15f59e4a1db41c8ec731f20ae338da6a2c4d8750f4123fc7aea199f004"
         },
         "build-strict": {
           "exit_code": 0,
-          "sha256": "d16831840315b67c62c0e9e165a6dbfb0bd99b5cb97df55ccd7d9faa56866ad3"
+          "sha256": "f1fb70fbf67328af5e806f572185c9471c53956a0212838bb7bb9438c27a9235"
         }
       },
       "before": {
-        "bytes": 12720,
-        "canonical_sha256": "57df6944e12a5a6c7068eac28ada99f23861ec3df9c5a23ca0866222ebff678e"
+        "bytes": 12703,
+        "canonical_sha256": "b691212b2675c03ca02bfb14b860998077d8bbe527d066206f6c79e127f9a2a7"
       },
       "after": {
-        "bytes": 12721,
-        "canonical_sha256": "f841b8106123154daa1886c04e1b51afce66689bc601f8b442f936a1434baec3"
+        "bytes": 12704,
+        "canonical_sha256": "cf6b34cf1e6b2c094bd640aa1100f6b515a20e36440452e54f3f79385038682a"
       },
       "stale_output_exists": false,
       "input_unchanged": true,
@@ -237,96 +237,91 @@
       "commands": {
         "build": {
           "exit_code": 2,
-          "sha256": "c64edcb012491297d63b6882e933ab814c2e49ba8ad29231821e3b8600209957"
+          "sha256": "9ad1612a6ceec3f4847ac1c6ba490e151776b47a2b79eb043918a4bcbc76f0f3"
         },
         "build-strict": {
           "exit_code": 2,
-          "sha256": "c64edcb012491297d63b6882e933ab814c2e49ba8ad29231821e3b8600209957"
+          "sha256": "9ad1612a6ceec3f4847ac1c6ba490e151776b47a2b79eb043918a4bcbc76f0f3"
         }
       },
       "strict_output_exists": false,
       "candidate_files": [],
       "diagnostics": [
         {
-          "code": "routing/port-plan-exhausted",
+          "code": "routing/port-capacity",
           "severity": "error",
-          "message": "No unrejected port assignment is available for the failed route component",
+          "message": "n1:bottom has no continuous interval for e1",
           "evidence": {
-            "component": [
-              [
-                "n1",
-                "bottom"
-              ],
-              [
-                "n1",
-                "left"
-              ],
-              [
-                "n2",
-                "bottom"
-              ],
-              [
-                "n2",
-                "left"
-              ],
-              [
-                "n2",
-                "top"
-              ],
-              [
-                "n3",
-                "top"
-              ]
+            "plan_status": "capacity_exhausted",
+            "attempts": 0,
+            "candidate_pairs": 0,
+            "budget": {
+              "max_endpoint_candidates": 12,
+              "max_backtracks_per_group": 6,
+              "max_attempts": 256
+            },
+            "node": "n1",
+            "side": "bottom",
+            "edges": [
+              "e1"
             ],
-            "assignment": [
-              [
-                "e1",
-                "n1",
-                "bottom",
-                0.378788,
-                "n2",
-                "top",
-                0.5
+            "planning": {
+              "version": 1,
+              "candidate_evaluations": 14,
+              "label_pair_attempts": 0,
+              "history": [
+                {
+                  "replay": 1,
+                  "failure": "layout/main-path-zigzag",
+                  "reason": null,
+                  "edges": [
+                    "e1"
+                  ],
+                  "closure": [
+                    "e1",
+                    "e2",
+                    "locked",
+                    "retry"
+                  ],
+                  "sides": {
+                    "e1": [
+                      "bottom",
+                      "top"
+                    ],
+                    "e2": [
+                      "bottom",
+                      "top"
+                    ],
+                    "locked": [
+                      "bottom",
+                      "top"
+                    ],
+                    "retry": [
+                      "left",
+                      "left"
+                    ]
+                  }
+                }
               ],
-              [
-                "e2",
-                "n2",
-                "bottom",
-                0.5,
-                "n3",
-                "top",
-                0.378788
-              ],
-              [
-                "locked",
-                "n1",
-                "bottom",
-                0.5,
-                "n3",
-                "top",
-                0.5
-              ],
-              [
-                "retry",
-                "n2",
-                "left",
-                0.5,
-                "n1",
-                "left",
-                0.35
-              ]
-            ],
-            "rejected_assignments": 4,
-            "batch_replays": 4,
+              "history_count": 1,
+              "truncated": false,
+              "budgets": {
+                "max_component_replans": 6,
+                "max_batch_replays": 64,
+                "max_path_candidates": 128,
+                "max_candidate_evaluations": 8192,
+                "max_label_pairs": 32,
+                "max_batch_label_pairs": 128
+              }
+            },
+            "batch_replays": 2,
             "component_replans": {
-              "(('n1', 'bottom'), ('n1', 'left'), ('n2', 'bottom'), ('n2', 'left'), ('n2', 'top'), ('n3', 'top'))": 6
+              "('e1', 'e2', 'locked', 'retry')": 1
             }
           },
           "supported_fixes": [
-            "allocate-distinct-port",
-            "align-ports",
-            "reroute-edge",
-            "increase-lane-width"
+            "increase-lane-width",
+            "allocate-distinct-port"
           ],
           "subject": {
             "kind": "edge",

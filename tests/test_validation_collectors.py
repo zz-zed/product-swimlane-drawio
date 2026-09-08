@@ -277,26 +277,29 @@ class ValidationCollectorTests(unittest.TestCase):
         ])
         self.assertEqual([item["subject"]["id"] for item in diagnostics], ["a", "a", "a"])
 
-    def test_label_quality_keeps_stored_blank_label_and_previous_duplicate_choice(self):
+    def test_blank_label_ignores_stale_bounds_and_unmeasurable_label_warns(self):
         c = self.contracts
         edge = ET.Element("mxCell", {"value": "", c.DATA_LABEL_LEFT: "0", c.DATA_LABEL_TOP: "0", c.DATA_LABEL_WIDTH: "20", c.DATA_LABEL_HEIGHT: "20", c.DATA_LABEL_SEGMENT: "bad"})
         labels = {}
         bounds = {"node": dict(left=5, right=15, top=5, bottom=15)}
-        diagnostics = self.collect("_collect_edge_label_quality", edge, "same", [], bounds, labels)
-        self.assertEqual(self.codes(diagnostics), ["text/edge-label-node-overlap"])
-        self.assertEqual(labels["same"][0], 0)
-        previous = copy.deepcopy(labels)
-        self.assertEqual(self.collect("_collect_edge_label_quality", ET.Element("mxCell"), "same", [], bounds, labels), [])
-        self.assertEqual(labels, previous)
-        self.assertEqual(self.collect("_collect_edge_label_quality", ET.Element("mxCell", {"value": "Label"}), "new", [], {}, labels)[0]["evidence"], {"label": "Label"})
+        self.assertEqual(self.collect("_collect_edge_label_quality", edge, "same", [], bounds, labels), [])
+        self.assertEqual(labels, {})
+        diagnostics = self.collect("_collect_edge_label_quality", ET.Element("mxCell", {"value": "Label"}), "new", [], {}, labels)
+        self.assertEqual(self.codes(diagnostics), ["text/edge-label-geometry-unavailable"])
+        self.assertEqual(diagnostics[0]["evidence"]["reason"], "missing_or_ambiguous_geometry")
 
-    def test_label_fallback_uses_first_candidate_without_collision_selection(self):
-        edge = ET.Element("mxCell", {"value": "Label", self.contracts.DATA_LABEL_LEFT: "bad"})
-        points = [(0, 0), (100, 0)]
-        choice = self.validation.effective_label_bounds(edge, points)
-        self.assertEqual(choice, (0, {"left": 29.15, "right": 70.85, "top": -23.0, "bottom": -5.0, "width": 41.7, "height": 18.0}))
-        diagnostics = self.collect("_collect_edge_label_quality", edge, "edge", points, {"node": choice[1]}, {})
-        self.assertEqual(self.codes(diagnostics), ["text/edge-label-node-overlap"])
+    def test_native_label_uses_saved_offset_without_candidate_fallback(self):
+        edge = self.edges["e0"]
+        edge.set("value", "Label")
+        points = self.document.edge_polyline(edge, self.lanes, self.nodes)
+        scene = {"lanes": self.lanes, "nodes": self.nodes, "pool": self.pool}
+        geom = edge.find("mxGeometry")
+        ET.SubElement(geom, "mxPoint", {"as": "offset", "x": "35", "y": "17"})
+        measured = self.document.edge_label_measurement(edge, points, scene)
+        choice = self.validation.effective_label_bounds(edge, points, scene)
+        self.assertEqual(choice, (measured["carrier_segment"], measured["bounds"]))
+        self.assertEqual(measured["position"], (155, 172))
+        self.assertIsNone(self.validation.effective_label_bounds(edge, points))
 
     def test_label_path_and_pair_checks_keep_carrier_exclusion_and_sorted_evidence(self):
         box = dict(left=0, right=20, top=0, bottom=20, width=20, height=20)
@@ -340,6 +343,10 @@ class ValidationCollectorTests(unittest.TestCase):
         edge.set(c.DATA_WAYPOINTS_ORIGIN, "explicit")
         edge.set("value", "Label")
         edge.attrib.update({c.DATA_LABEL_LEFT: "100", c.DATA_LABEL_TOP: "70", c.DATA_LABEL_WIDTH: "40", c.DATA_LABEL_HEIGHT: "30", c.DATA_LABEL_SEGMENT: "bad"})
+        # Native offset now places the label on n0; cached bounds are ignored.
+        geom = edge.find("mxGeometry")
+        geom.set("relative", "0")
+        ET.SubElement(geom, "mxPoint", {"as": "offset", "x": "0", "y": "-46.5"})
         before = ET.tostring(self.tree.getroot())
         emitted = []
         original = c.make_diagnostic
@@ -351,12 +358,12 @@ class ValidationCollectorTests(unittest.TestCase):
             report = self.validation.validate_tree(self.tree)
         self.assertEqual(self.codes(emitted), [
             "integrity/model-hash-mismatch", "routing/short-segment", "routing/excessive-bends",
-            "routing/hairpin", "text/edge-label-node-overlap", "routing/node-crossing",
+            "routing/hairpin", "text/edge-label-no-clear-span", "text/edge-label-node-overlap", "routing/node-crossing",
             "text/edge-label-edge-overlap", "layout/main-path-zigzag",
         ])
         self.assertEqual(report["short_segments"], 1)
         self.assertEqual(report["main_path_bends"], 4)
-        self.assertEqual(report["label_conflicts"], 2)
+        self.assertEqual(report["label_conflicts"], 3)
         self.assertEqual(ET.tostring(self.tree.getroot()), before)
 
     def test_validator_readonly_explicit_empty_repeated_and_collinear_points(self):

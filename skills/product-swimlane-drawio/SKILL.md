@@ -69,7 +69,10 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 - Keep every downward main-path continuation bottom-to-top, including a main path that crosses into another lane. Do not send a decision's normal continuation through a side hook merely because its target is in another lane.
 - Plan source and target ports across the complete mutable edge batch, then allocate each pair together. Prefer the center (`0.5`) of the selected source and target sides whenever those ports are free and yield a valid route; move to secondary offsets for an actual conflict, route failure, main-path continuity, or explicit override. Keep successful unrelated port components stable when one component is replanned.
 - Route returns and retries after forward paths, using independent return channels; retain explicit waypoints unchanged.
+- Across lanes, prefer a clear direct elbow or outer return corridor without adding a vertical leg solely to enter the target lane. Within one lane, retain the internal return corridor. In v3, a same-lane downward decision branch uses a free bottom exit before a side hook; reserved main-path and explicit ports remain protected.
 - Keep decision outcomes semantically explicit and let the script select safe route/label candidates. Use manual ports or waypoints only after diagnostic or visual evidence identifies a need.
+- Automatic candidates must pass shared geometry checks and native-path/label preflight before scoring. Side, port, path and batch-label repairs are bounded; an exhausted search is a failure, not a low-quality output.
+- Read optional `evidence.planning` for the failed stage, native reason, blockers and budget. Automatic planning can fail before final validation even without `--strict`; an empty label does not hide an unsupported native path. Saved-file commands and diagnostic severity conventions remain, but saved v2/v3 cross-lane automatic returns can have different warnings or strict results because their target-lane vertical corridor is no longer required.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
 - Never simplify or silently rewrite explicit waypoints. Diagnose their quality issues and require an intentional edit instead.
 
@@ -89,7 +92,7 @@ Require strict validation to have no warnings. It checks:
 - Internal segments shorter than 16 pixels, unnecessary bends, hairpins, near-parallel crowding, and ambiguous reciprocal channels.
 - Calibrated arrowhead terminal-run clearance for supported default Draw.io connector and target styles; unsupported rendering states remain `not_available`, not passed.
 - Same-lane main-path zigzags.
-- Edge labels without a clear carrier or overlapping nodes, connectors, or other labels.
+- Edge labels without a clear carrier or overlapping nodes, connectors, or other labels. Current native label geometry is used; unsupported styles report `text/edge-label-geometry-unavailable`, which fails strict validation. Estimated text bounds are not pixel-accurate visual evidence.
 - Phase backgrounds above editable content, opaque lane bodies hiding phase bands, or interactive phase cells.
 
 Treat automated validation and visual review as separate evidence:
@@ -124,10 +127,10 @@ Treat automated validation and visual review as separate evidence:
    ```
 
    `compare` is a separate delivery gate: require exit code 0 and `preserved: true`. Strict validation alone does not authorize handoff. An undeclared geometry, attribute, add/delete, unknown-content, or sibling-order difference blocks delivery.
-6. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes.
+6. A label-only update freezes saved ports and waypoints, including GUI edits still marked `automatic`. It first keeps the saved label position, then tries positions on that same path. If none fits, shorten the text, move the label, or explicitly request that edge reroute. Use `update_edges` with `reroute: true` to change ports or routing without moving nodes; an existing task request to adjust the route supplies this intent. Explicit waypoints remain protected even with `reroute: true`; replace them only by providing `waypoints` in the patch.
 7. When changing an existing node type, explicitly reroute every incident edge in the same patch. Do not leave old port semantics attached to a new shape.
 8. For a new v3 node, use `slot` or `anchor` when that intent is known. The patcher preserves existing node-local geometry, expands right-side lane space when necessary, and reports downstream lane shifts separately.
-9. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. The tool reroutes only incident edges that become invalid and reports their IDs.
+9. Use `--allow-geometry-updates` only when the user explicitly requests moving or resizing existing nodes. If a node or lane change invalidates a saved route, explicitly declare the affected edge reroute; geometry permission alone does not authorize changing that route.
 10. Keep valid manual waypoints and all unrelated geometry unchanged. If a lane change affects an edge with explicit waypoints, report it for visual review; never rewrite the waypoints silently.
 11. Keep the input unchanged until the user approves replacement. Do not use `--force` without explicit replacement intent.
 12. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
@@ -144,7 +147,7 @@ If diagnostics offer no safe authorized fix, a correction makes no progress, or 
 - When phases use `bands`, keep semantic Z-order as phase backgrounds, lanes, nodes, then connectors; make lane bodies transparent. When phases use `rail`, reserve the left label column and keep lane bodies opaque. Phase cells remain non-interactive in both modes.
 - Prefer three to five lanes per page; split dense exception detail when necessary.
 - Preserve stable IDs across revisions.
-- Report the inspected input SHA-256, input managed state, drift acceptance status, requested semantic IDs, dependent lane shifts, and automatically rerouted edges from the patch receipt.
+- Lead the handoff with the file, actual changes, validation, and outstanding visual evidence. Attach the input SHA-256, managed state, drift acceptance, requested IDs, dependent lane shifts, `label_updated_edges`, `label_repositioned_edges`, `rerouted_edges`, and `saved_routes` as receipt details.
 - Report the output path, byte count, and SHA-256 digest from the atomic-delivery receipt.
 - Report `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `arrowhead_clearance`, `manual_waypoints_preserved`, and `visual_review` from the QA receipt. Treat partial or `not_available` arrowhead coverage as incomplete evidence, not a pass. Treat `manual_waypoints_preserved: null` as not applicable because no pre-existing explicit waypoints were checked; never present it as a successful preservation measurement.
 - Deliver `.drawio` as the editable source. Treat SVG, PNG, or PDF as optional previews.

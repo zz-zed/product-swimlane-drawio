@@ -48,6 +48,7 @@ class EndpointRequest:
     minimum_offset: float = 0.05
     maximum_offset: float = 0.95
     minimum_gap_px: float = 16.0
+    supported_offsets: tuple[float, ...] | None = None
 
     @property
     def hard_offset(self) -> float | None:
@@ -218,6 +219,7 @@ def collect_port_requests(
     locked_offsets: dict[str, tuple[float | None, float | None]] | None = None,
     offset_limits: dict[str, dict[str, dict[str, float]]] | None = None,
     minimum_gap_px: float = 16.0,
+    supported_offsets=None,
 ) -> tuple[EdgePortRequest, ...]:
     """Collect input provenance without changing the input edges or geometry."""
     edge_list = tuple(edges)
@@ -258,6 +260,7 @@ def collect_port_requests(
                 locked_offset=float(locked_exit) if locked_exit is not None else None,
                 minimum_offset=float(exit_limits.get("min", 0.05)),
                 maximum_offset=float(exit_limits.get("max", 0.95)),
+                supported_offsets=(supported_offsets or {}).get(edge_id, {}).get("exit"),
                 **common,
             ),
             EndpointRequest(
@@ -266,6 +269,7 @@ def collect_port_requests(
                 locked_offset=float(locked_entry) if locked_entry is not None else None,
                 minimum_offset=float(entry_limits.get("min", 0.05)),
                 maximum_offset=float(entry_limits.get("max", 0.95)),
+                supported_offsets=(supported_offsets or {}).get(edge_id, {}).get("entry"),
                 **common,
             ),
         ))
@@ -534,6 +538,10 @@ def _pair_offsets_compatible(first, first_value, second, second_value, tolerance
 
 def _validation_issue(endpoints) -> PortPlanIssue | None:
     for endpoint in endpoints:
+        if (endpoint.supported_offsets is not None and endpoint.hard_offset is not None
+                and endpoint.hard_offset not in endpoint.supported_offsets):
+            return PortPlanIssue("routing/port-plan-conflict", "Explicit or locked offset is outside the supported native endpoint domain",
+                                 (endpoint.edge_id,), endpoint.node_id, endpoint.side)
         if endpoint.endpoint not in {"exit", "entry"} or endpoint.side not in ports.PORT_SIDES:
             return PortPlanIssue("routing/port-plan-conflict", f"Unsupported endpoint for edge {endpoint.edge_id}", (endpoint.edge_id,), endpoint.node_id, endpoint.side)
         if (
@@ -570,6 +578,17 @@ def _hard_conflict(groups) -> PortPlanIssue | None:
 
 def _capacity_issue(groups) -> PortPlanIssue | None:
     for (node_id, side), group in sorted(groups.items()):
+        # A calibrated singleton endpoint domain can prove a finite conflict
+        # before the search spends its bounded attempts on impossible pairs.
+        singles = [(endpoint, endpoint.hard_offset if endpoint.hard_offset is not None
+                    else endpoint.supported_offsets[0]) for endpoint in group
+                   if endpoint.hard_offset is not None or endpoint.supported_offsets is not None
+                   and len(endpoint.supported_offsets) == 1]
+        for index, (first, a) in enumerate(singles):
+            for second, b in singles[index + 1:]:
+                if not _pair_offsets_compatible(first, a, second, b, core_geometry.GEOMETRY_TOLERANCE / 100):
+                    return PortPlanIssue("routing/port-capacity", "Supported endpoint domains conflict on one side",
+                                         tuple(sorted((first.edge_id, second.edge_id))), node_id, side)
         variable = [endpoint for endpoint in group if endpoint.hard_offset is None and not endpoint.allow_reuse]
         if not variable:
             continue
@@ -657,6 +676,8 @@ def _endpoint_candidates(endpoint, groups, center_owners, budget) -> list[float]
         _pair_offsets_compatible(endpoint, value, item, item.hard_offset, tolerance)
         for item in locks
     )]
+    if endpoint.supported_offsets is not None:
+        values = [value for value in values if value in endpoint.supported_offsets]
     return values
 
 

@@ -176,6 +176,15 @@ def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
     )
 
 
+def write_supported_neutral_patch(directory: Path) -> Path:
+    """Keep preservation setup in the calibrated path domain; retain the source fixture."""
+    value = json.loads((FIXTURES / "neutral-patch.json").read_text(encoding="utf-8"))
+    next(node for node in value["nodes"] if node["id"] == "note-new")["type"] = "process"
+    path = directory / "supported-neutral-patch.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
 def write_linear_v2_spec(path: Path, *, long_label: bool = False) -> None:
     label = "多语言文字" * 20 if long_label else "Step"
     path.write_text(
@@ -386,7 +395,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.6.5")
+        self.assertEqual(codex_plugin["version"], "0.7.0")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -673,7 +682,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.6.5")
+        self.assertEqual(report["tool_version"], "0.7.0")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -886,7 +895,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.6.5")
+            self.assertEqual(upgraded["tool_version"], "0.7.0")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -1243,7 +1252,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             before = self.build_diagram(directory)
-            changes = FIXTURES / "neutral-patch.json"
+            changes = write_supported_neutral_patch(directory)
             after = directory / "rank-expanded.drawio"
             run_tool(
                 "patch",
@@ -1592,7 +1601,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             directory = Path(temp)
             before = self.build_diagram(directory)
             after = directory / "neutral-updated.drawio"
-            changes = FIXTURES / "neutral-patch.json"
+            changes = write_supported_neutral_patch(directory)
             run_tool(
                 "patch",
                 "--input",
@@ -1614,6 +1623,25 @@ class DiagramWorkflowTests(unittest.TestCase):
                 str(changes),
             )
             self.assertTrue(json.loads(compare.stdout)["preserved"])
+
+    def test_empty_label_note_connections_fail_without_changing_input_or_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            before = self.build_diagram(directory)
+            original = before.read_bytes()
+            output = directory / "unsupported-note.drawio"
+            sentinel = b"existing output survives native profile failure"
+            output.write_bytes(sentinel)
+            result = run_tool("patch", "--input", str(before), "--changes",
+                              str(FIXTURES / "neutral-patch.json"), "--output", str(output),
+                              "--force", check=False)
+            self.assertNotEqual(result.returncode, 0)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["diagnostics"][0]["code"], "routing/no-safe-route")
+            self.assertEqual(report["diagnostics"][0]["evidence"]["planning"]["reason"], "native_profile_unavailable")
+            self.assertIn("unsupported_terminal_shape", result.stdout)
+            self.assertEqual(before.read_bytes(), original)
+            self.assertEqual(output.read_bytes(), sentinel)
 
     def test_build_rejects_unknown_fields_with_structured_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1702,7 +1730,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             codes = {item["code"] for item in report["validation"]["diagnostics"]}
             self.assertIn("interoperability/unmanaged-edges", codes)
 
-    def test_geometry_update_repairs_only_invalid_incident_edges(self) -> None:
+    def test_geometry_update_requires_declared_incident_reroutes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             spec = directory / "linear.json"
@@ -1715,6 +1743,29 @@ class DiagramWorkflowTests(unittest.TestCase):
                 json.dumps({"update_nodes": [{"id": "step", "x": 10}]}),
                 encoding="utf-8",
             )
+            refused = run_tool("patch", "--input", str(before), "--changes", str(patch),
+                               "--output", str(after), "--allow-geometry-updates", check=False)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("patch/route-update-required", refused.stdout)
+            self.assertFalse(after.exists())
+            patch.write_text(json.dumps({"update_nodes": [{"id": "step", "x": 10}],
+                                         "update_edges": [{"id": "edge-a", "reroute": True},
+                                                          {"id": "edge-b", "reroute": True}]}))
+            original_bytes = before.read_bytes()
+            unsupported = run_tool("patch", "--input", str(before), "--changes", str(patch),
+                                   "--output", str(after), "--allow-geometry-updates", check=False)
+            self.assertNotEqual(unsupported.returncode, 0)
+            failure = json.loads(unsupported.stdout)["diagnostics"][0]
+            self.assertEqual(failure["code"], "routing/no-safe-route")
+            self.assertEqual(failure["evidence"]["planning"]["reason"], "native_profile_unavailable")
+            self.assertIn("editor_router_additional_turns_required", unsupported.stdout)
+            self.assertFalse(after.exists())
+            self.assertEqual(before.read_bytes(), original_bytes)
+            # x=10 needs (110-10)/132, whose writer-rounded port leaves a
+            # residual. x=11 admits the exact .75 offset at the same x=110 axis.
+            patch.write_text(json.dumps({"update_nodes": [{"id": "step", "x": 11}],
+                                         "update_edges": [{"id": "edge-a", "reroute": True},
+                                                          {"id": "edge-b", "reroute": True}]}))
             result = run_tool(
                 "patch",
                 "--input",
@@ -1726,7 +1777,8 @@ class DiagramWorkflowTests(unittest.TestCase):
                 "--allow-geometry-updates",
             )
             report = json.loads(result.stdout)
-            self.assertEqual(report["patch_receipt"]["auto_rerouted_edges"], ["edge-a", "edge-b"])
+            self.assertEqual(report["patch_receipt"]["auto_rerouted_edges"], [])
+            self.assertEqual(report["patch_receipt"]["rerouted_edges"], ["edge-a", "edge-b"])
             self.assertEqual(report["warnings"], [])
             compare = run_tool(
                 "compare",
@@ -1830,7 +1882,7 @@ class DiagramWorkflowTests(unittest.TestCase):
                 "--input",
                 str(before),
                 "--changes",
-                str(FIXTURES / "neutral-patch.json"),
+                str(write_supported_neutral_patch(directory)),
                 "--output",
                 str(expanded),
             )
@@ -2422,7 +2474,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(float(pool.attrib["data-row-gap"]), 96.0)
 
-    def test_back_route_prefers_target_lane_internal_gutter(self) -> None:
+    def test_cross_lane_back_route_can_use_shorter_external_corridor(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             spec = directory / "adjacent-decision.json"
@@ -2437,8 +2489,10 @@ class DiagramWorkflowTests(unittest.TestCase):
             vertical_x = {point["x"] for point in back["waypoints"]}
             self.assertEqual(len(vertical_x), 1)
             corridor_x = vertical_x.pop()
-            self.assertGreaterEqual(corridor_x - 180.0, 16.0)
-            self.assertLess(corridor_x, 204.0)
+            # Cross-lane returns can stay outside the target lane instead of
+            # adding a second vertical leg solely to satisfy lane ownership.
+            self.assertGreaterEqual(abs(corridor_x - 180.0), 16.0)
+            self.assertEqual(len(back["waypoints"]), 2)
             validation = report["validation"]
             self.assertTrue(validation["valid"])
             self.assertEqual(validation["warnings"], [])
@@ -2469,14 +2523,11 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             back = next(edge for edge in report["edges"] if edge["id"] == "edge-back")
             corridor_x = back["waypoints"][0]["x"]
-            self.assertGreaterEqual(corridor_x - lanes["lane-b"]["x"], 16.0)
-            self.assertLess(
-                corridor_x,
-                lanes["lane-b"]["x"] + nodes["history"]["x"] - 16.0,
-            )
+            self.assertGreaterEqual(abs(corridor_x - lanes["lane-b"]["x"]), 16.0)
+            self.assertEqual(len(back["waypoints"]), 2)
             self.assertEqual(report["validation"]["warnings"], [])
 
-    def test_back_route_outside_target_lane_is_diagnosed_when_gutter_is_unavailable(
+    def test_cross_lane_back_does_not_need_gutter_but_same_lane_diagnostic_remains(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2489,10 +2540,34 @@ class DiagramWorkflowTests(unittest.TestCase):
             history.update({"x": 4, "width": 172})
             spec.write_text(json.dumps(value), encoding="utf-8")
 
-            result = run_tool("build", "--spec", str(spec), "--output", str(output))
-            report = json.loads(result.stdout)
-            codes = {diagnostic["code"] for diagnostic in report["diagnostics"]}
+            original_spec = spec.read_bytes()
+            result = run_tool("build", "--spec", str(spec), "--output", str(output), "--strict")
+            self.assertEqual(json.loads(result.stdout)["diagnostics"], [])
+            self.assertEqual(spec.read_bytes(), original_spec)
+            report = json.loads(run_tool("inspect", "--input", str(output)).stdout)
+            saved_history = next(node for node in report["nodes"] if node["id"] == "history")
+            self.assertEqual((saved_history["x"], saved_history["width"]), (4., 172.))
+
+            # The corridor rule continues to apply to a same-lane saved route.
+            supported_spec = directory / "same-lane.json"
+            same_lane_output = directory / "same-lane.drawio"
+            write_boundary_spec(supported_spec, include_forward=False)
+            run_tool("build", "--spec", str(supported_spec), "--output", str(same_lane_output))
+            output = same_lane_output
+            tree = ET.parse(output)
+            lane = next(cell for cell in tree.iter("mxCell") if cell.get("data-semantic-id") == "lane-b")
+            outside_x = float(lane.find("mxGeometry").get("x")) - 20
+            back = next(cell for cell in tree.iter("mxCell") if cell.get("data-semantic-id") == "retry")
+            self.assertEqual(back.get("data-waypoints-origin"), "automatic")
+            points = back.findall("./mxGeometry/Array[@as='points']/mxPoint")
+            self.assertTrue(points)
+            for point in points:
+                point.set("x", str(outside_x))
+            tree.write(output, encoding="utf-8", xml_declaration=False)
+            non_strict = run_tool("validate", "--input", str(output))
+            codes = {item["code"] for item in json.loads(non_strict.stdout)["diagnostics"]}
             self.assertIn("routing/back-corridor-outside-target-lane", codes)
+            self.assertNotEqual(run_tool("validate", "--input", str(output), "--strict", check=False).returncode, 0)
 
     def test_explicit_waypoints_are_not_simplified(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2709,7 +2784,26 @@ class DiagramWorkflowTests(unittest.TestCase):
             build = json.loads(
                 run_tool("build", "--spec", str(spec), "--output", str(output)).stdout
             )
-            codes = {item["code"] for item in build["diagnostics"]}
+            self.assertEqual(build["diagnostics"], [])
+            self.assertEqual(run_tool("validate", "--input", str(output), "--strict").returncode, 0)
+            # Construct a saved-XML negative case independently of automatic
+            # routing quality. The two known straight tracks are 13.2px apart.
+            tree = ET.parse(output)
+            forward = next(cell for cell in tree.iter("mxCell") if cell.get("data-semantic-id") == "forward")
+            tool = load_tool_module()
+            for key, value in (("exitX", "0.5"), ("exitY", "1"), ("entryX", "0.5"), ("entryY", "0")):
+                tool.document.set_style_option(forward, key, value)
+            tool.document.set_edge_points(forward, [], action="replace_explicit")
+            geom = forward.find("mxGeometry")
+            geom.set("relative", "1")
+            geom.set("x", "0")
+            geom.set("y", "0")
+            for offset in geom.findall("./mxPoint[@as='offset']"):
+                offset.set("x", "0")
+                offset.set("y", "0")
+            tree.write(output, encoding="utf-8", xml_declaration=False)
+            non_strict = run_tool("validate", "--input", str(output))
+            codes = {item["code"] for item in json.loads(non_strict.stdout)["diagnostics"]}
             self.assertIn("routing/near-parallel-conflict", codes)
             self.assertIn("routing/reciprocal-ambiguity", codes)
             self.assertIn("text/edge-label-no-clear-span", codes)
@@ -2794,6 +2888,21 @@ class DiagramWorkflowTests(unittest.TestCase):
                         "data-label-segment": "1",
                     }
                 )
+            for edge in (edges["edge-a"], edges["edge-b"]):
+                geometry = edge.find("mxGeometry")
+                geometry.set("relative", "0")
+                # Endpoints are read directly from the neutral input geometry.
+                source = tree.find(".//mxCell[@id='" + edge.get("source") + "']/mxGeometry")
+                target = tree.find(".//mxCell[@id='" + edge.get("target") + "']/mxGeometry")
+                sx = float(source.get("x")) + float(source.get("width"))/2
+                tx = float(target.get("x")) + float(target.get("width"))/2
+                sy = float(source.get("y")) + float(source.get("height")) + 36
+                ty = float(target.get("y")) + 36
+                offset = geometry.find("./mxPoint[@as='offset']")
+                if offset is None:
+                    offset = ET.SubElement(geometry, "mxPoint", {"as": "offset"})
+                offset.set("x", str(110 - (sx+tx)/2))
+                offset.set("y", str(204 - (sy+ty)/2))
             tree.write(output, encoding="utf-8", xml_declaration=False)
 
             validate = run_tool(

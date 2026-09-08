@@ -14,22 +14,12 @@ from . import (
 EXCESSIVE_HEIGHT_TOLERANCE = 8.0
 
 
-def effective_label_bounds(
-    cell: ET.Element,
-    points: list[tuple[float, float]],
-) -> tuple[int, dict[str, float]] | None:
-    stored = document.stored_label_bounds(cell)
-    if stored is not None:
-        try:
-            segment_index = int(cell.attrib.get(contracts.DATA_LABEL_SEGMENT, "0"))
-        except ValueError:
-            segment_index = 0
-        return segment_index, stored
-    candidates = labels.label_box_candidates(points, cell.attrib.get("value", ""))
-    if not candidates:
+def effective_label_bounds(cell, points, scene=None):
+    """Compatibility projection of the authoritative native measurement."""
+    measured = document.edge_label_measurement(cell, points, scene)
+    if measured["status"] != "available":
         return None
-    segment_index, box, _ = candidates[0]
-    return segment_index, box
+    return measured["carrier_segment"], measured["bounds"]
 
 
 def _collect_schema_integrity(pool, root, schema_version, add):
@@ -490,6 +480,19 @@ def _collect_node_overlaps(node_bounds, add):
                 )
 
 
+def _routing_quality_edge(cell, edge_id):
+    """Extract only plain metadata required by shared geometric predicates."""
+    return {
+        "id": edge_id,
+        "from": cell.attrib.get(contracts.DATA_FROM),
+        "to": cell.attrib.get(contracts.DATA_TO),
+        "route": cell.attrib.get(contracts.DATA_ROUTE),
+        "waypoints_origin": cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN, "unknown"),
+        "exit_port": document.port_from_style(cell, "exit"),
+        "entry_port": document.port_from_style(cell, "entry"),
+    }
+
+
 def _collect_edge_path_shape(
     cell,
     edge_id,
@@ -501,134 +504,71 @@ def _collect_edge_path_shape(
     internal_boundaries,
     add,
 ):
-    short_segments = [
-        (index, core_geometry.segment_length(segment))
-        for index, segment in enumerate(segments[1:-1], start=1)
-        if core_geometry.segment_length(segment) < routing_policy.MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
-    ]
-    if short_segments:
-        waypoint_origin = cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN, "unknown")
-        add(
-            "routing/short-segment",
-            "warning",
-            f"Connector contains an internal segment shorter than {contracts.number(routing_policy.MIN_INTERNAL_SEGMENT)} px: {edge_id}",
-            subject={"kind": "edge", "id": edge_id},
-            evidence={
-                "segments": [
-                    {"index": index, "length": length}
-                    for index, length in short_segments
-                ],
-                "minimum": routing_policy.MIN_INTERNAL_SEGMENT,
-                "waypoints_origin": waypoint_origin,
-            },
-            supported_fixes=(
-                ["edit-explicit-waypoints"]
-                if waypoint_origin == "explicit"
-                else ["reroute-edge", "increase-rank-spacing"]
-            ),
-        )
-    bends = core_geometry.bend_count(points)
-    simpler_forward_route = False
-    if (
-        cell.attrib.get(contracts.DATA_ROUTE) == "forward"
-        and bends > 2
-    ):
-        source_id = cell.attrib.get(contracts.DATA_FROM)
-        target_id = cell.attrib.get(contracts.DATA_TO)
-        exit_port = document.port_from_style(cell, "exit")
-        entry_port = document.port_from_style(cell, "entry")
-        if source_id in nodes and target_id in nodes and exit_port and entry_port:
-            source_bounds = node_bounds[source_id]
-            target_bounds = node_bounds[target_id]
-            pool_width = max(
-                record["geometry"]["x"] + record["geometry"]["width"]
-                for record in lanes.values()
+    edge = _routing_quality_edge(cell, edge_id)
+    issues = routing.path_shape_issues(
+        edge, points, document.routing_lane_views(lanes), document.routing_node_views(nodes),
+        node_bounds, internal_boundaries,
+    )
+    for issue in issues:
+        if issue.code == "routing/short-segment":
+            waypoint_origin = issue.evidence["waypoints_origin"]
+            add(
+                issue.code, "warning",
+                f"Connector contains an internal segment shorter than {contracts.number(routing_policy.MIN_INTERNAL_SEGMENT)} px: {edge_id}",
+                subject={"kind": "edge", "id": edge_id}, evidence=issue.evidence,
+                supported_fixes=(
+                    ["edit-explicit-waypoints"] if waypoint_origin == "explicit"
+                    else ["reroute-edge", "increase-rank-spacing"]
+                ),
             )
-            pool_height = max(
-                record["geometry"]["y"] + record["geometry"]["height"]
-                for record in lanes.values()
+        elif issue.code == "routing/excessive-bends":
+            add(
+                issue.code, "warning", f"Forward connector has unnecessary bends: {edge_id}",
+                subject={"kind": "edge", "id": edge_id}, evidence=issue.evidence,
+                supported_fixes=["reroute-edge", "align-ports"],
             )
-            simple_candidates = routing.route_candidates(
-                "forward",
-                points[0],
-                points[-1],
-                exit_port[0],
-                entry_port[0],
-                source_bounds,
-                target_bounds,
-                lanes[nodes[target_id]["lane"]]["geometry"],
-                pool_width,
-                pool_height,
-                internal_boundaries,
-                [],
+        elif issue.code == "routing/hairpin":
+            add(
+                issue.code, "warning", f"Connector contains a short-distance hairpin: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                supported_fixes=["reroute-edge", "align-ports"],
             )
-            simpler_forward_route = any(
-                core_geometry.bend_count(candidate) <= 2
-                and not routing.path_has_hairpin(candidate)
-                and all(
-                    core_geometry.segment_length(segment)
-                    >= routing_policy.MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
-                    for segment in list(zip(candidate, candidate[1:]))[1:-1]
-                )
-                and routing.automatic_polyline_is_safe(
-                    candidate,
-                    document.routing_lane_views(lanes),
-                    document.routing_node_views(nodes),
-                    source_id,
-                    target_id,
-                )
-                for candidate in simple_candidates
-            )
-    if simpler_forward_route:
-        add(
-            "routing/excessive-bends",
-            "warning",
-            f"Forward connector has unnecessary bends: {edge_id}",
-            subject={"kind": "edge", "id": edge_id},
-            evidence={"bends": bends, "maximum": 2},
-            supported_fixes=["reroute-edge", "align-ports"],
-        )
-    if routing.path_has_hairpin(points):
-        add(
-            "routing/hairpin",
-            "warning",
-            f"Connector contains a short-distance hairpin: {edge_id}",
-            subject={"kind": "edge", "id": edge_id},
-            supported_fixes=["reroute-edge", "align-ports"],
-        )
 
 
 def _collect_edge_label_quality(
-    cell,
-    edge_id,
-    points,
-    node_bounds,
-    edge_label_bounds,
-    add,
+    cell, edge_id, points, node_bounds, edge_label_bounds, add,
+    *, scene=None, measurements=None,
 ):
-    label = cell.attrib.get("value", "")
-    label_choice = effective_label_bounds(cell, points)
-    if label.strip() and label_choice is None:
+    measured = document.edge_label_measurement(cell, points, scene)
+    if measurements is not None:
+        measurements[edge_id] = measured
+    if measured["status"] == "not_available":
         add(
-            "text/edge-label-no-clear-span",
-            "warning",
-            f"Edge label has no clear carrier segment: {edge_id}",
+            "text/edge-label-geometry-unavailable", "warning",
+            f"Native edge label geometry is unavailable: {edge_id}",
             subject={"kind": "edge", "id": edge_id},
-            evidence={"label": label},
-            supported_fixes=["reroute-edge", "increase-rank-spacing", "increase-lane-width"],
+            evidence={"reason": measured["reason"], "profile": measured["profile"],
+                      "bounds_quality": measured["bounds_quality"]},
+            supported_fixes=["use-supported-label-style", "review-native-label-geometry"],
         )
-    elif label_choice is not None:
-        edge_label_bounds[edge_id] = label_choice
-        _, label_box = label_choice
+    elif measured["status"] == "available":
+        label_box = measured["bounds"]
+        edge_label_bounds[edge_id] = measured["carrier_segment"], label_box
+        if not measured["carrier_usable"]:
+            add(
+                "text/edge-label-no-clear-span", "warning",
+                f"Edge label has no clear carrier segment: {edge_id}",
+                subject={"kind": "edge", "id": edge_id},
+                evidence={"label": cell.attrib.get("value", ""), "position": measured["position"]},
+                supported_fixes=["move-edge-label", "shorten-label", "reroute-edge"],
+            )
         overlapping_nodes = sorted(
-            node_id
-            for node_id, bounds in node_bounds.items()
+            node_id for node_id, bounds in node_bounds.items()
             if core_geometry.bounds_overlap(label_box, bounds, gap=1.0)
         )
         if overlapping_nodes:
             add(
-                "text/edge-label-node-overlap",
-                "warning",
+                "text/edge-label-node-overlap", "warning",
                 f"Edge label overlaps a node: {edge_id}",
                 subject={"kind": "edge", "id": edge_id},
                 evidence={"nodes": overlapping_nodes},
@@ -644,62 +584,29 @@ def _collect_edge_segment_quality(
     node_bounds,
     add,
 ):
-    for segment_index, segment in enumerate(segments):
-        axis = core_geometry.segment_axis(segment)
-        if axis == "diagonal":
-            add(
-                "routing/non-orthogonal",
-                "warning",
-                f"Non-orthogonal connector segment: {edge_id}",
-                subject={"kind": "edge", "id": edge_id},
-                supported_fixes=["reroute-edge"],
-            )
-            continue
-        if axis == "vertical":
-            x = segment[0][0]
-            if any(abs(x - boundary) < core_geometry.GEOMETRY_TOLERANCE for boundary in internal_boundaries):
-                add(
-                    "routing/lane-boundary-overlap",
-                    "warning",
-                    f"Connector overlaps a lane boundary: {edge_id}",
-                    subject={"kind": "edge", "id": edge_id},
-                    evidence={"x": x},
-                    supported_fixes=["reroute-edge", "change-routing-zone"],
-                )
-            elif any(
-                abs(x - boundary) < routing_policy.LANE_BOUNDARY_CLEARANCE
-                for boundary in internal_boundaries
-            ):
-                nearest = min(abs(x - boundary) for boundary in internal_boundaries)
-                add(
-                    "routing/lane-boundary-clearance",
-                    "warning",
-                    "Connector is too close to a lane boundary "
-                    f"(< {contracts.number(routing_policy.LANE_BOUNDARY_CLEARANCE)} px): {edge_id}",
-                    subject={"kind": "edge", "id": edge_id},
-                    evidence={"distance": nearest, "minimum": routing_policy.LANE_BOUNDARY_CLEARANCE},
-                    supported_fixes=["reroute-edge", "change-routing-zone"],
-                )
-        for node_id, bounds in node_bounds.items():
-            if (
-                node_id == cell.attrib.get(contracts.DATA_FROM)
-                and segment_index == 0
-            ):
-                continue
-            if (
-                node_id == cell.attrib.get(contracts.DATA_TO)
-                and segment_index == len(segments) - 1
-            ):
-                continue
-            if core_geometry.segment_crosses_bounds(segment, bounds):
-                add(
-                    "routing/node-crossing",
-                    "warning",
-                    f"Connector crosses node: {edge_id} -> {node_id}",
-                    subject={"kind": "edge", "id": edge_id},
-                    evidence={"node": node_id},
-                    supported_fixes=["reroute-edge"],
-                )
+    messages = {
+        "routing/non-orthogonal": f"Non-orthogonal connector segment: {edge_id}",
+        "routing/lane-boundary-overlap": f"Connector overlaps a lane boundary: {edge_id}",
+        "routing/lane-boundary-clearance": (
+            "Connector is too close to a lane boundary "
+            f"(< {contracts.number(routing_policy.LANE_BOUNDARY_CLEARANCE)} px): {edge_id}"
+        ),
+    }
+    for issue in routing.segment_quality_issues(
+        _routing_quality_edge(cell, edge_id), segments, internal_boundaries, node_bounds,
+    ):
+        message = messages.get(issue.code)
+        if issue.code == "routing/node-crossing":
+            message = f"Connector crosses node: {edge_id} -> {issue.evidence['node']}"
+        add(
+            issue.code, "warning", message,
+            subject={"kind": "edge", "id": edge_id}, evidence=issue.evidence,
+            supported_fixes=(
+                ["reroute-edge", "change-routing-zone"]
+                if issue.code in {"routing/lane-boundary-overlap", "routing/lane-boundary-clearance"}
+                else ["reroute-edge"]
+            ),
+        )
 
 
 def _collect_back_corridor_quality(
@@ -711,113 +618,46 @@ def _collect_back_corridor_quality(
     node_bounds,
     add,
 ):
-    if (
-        cell.attrib.get(contracts.DATA_ROUTE) == "back"
-        and cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "automatic"
+    for issue in routing.back_corridor_issues(
+        _routing_quality_edge(cell, edge_id), segments, document.routing_lane_views(lanes),
+        document.routing_node_views(nodes), node_bounds,
     ):
-        target_id = cell.attrib.get(contracts.DATA_TO)
-        entry_port = document.port_from_style(cell, "entry")
-        if target_id in nodes and entry_port and entry_port[0] in {"left", "right"}:
-            target = nodes[target_id]
-            target_lane = lanes[target["lane"]]["geometry"]
-            target_bounds = node_bounds[target_id]
-            safe_gap = routing_policy.LANE_BOUNDARY_CLEARANCE - core_geometry.GEOMETRY_TOLERANCE
-            vertical_x_values = [
-                segment[0][0]
-                for segment in segments
-                if core_geometry.segment_axis(segment) == "vertical"
-            ]
-            if entry_port[0] == "left":
-                internal_corridor = any(
-                    target_lane["x"] + safe_gap <= x < target_bounds["left"]
-                    for x in vertical_x_values
-                )
-            else:
-                lane_right = target_lane["x"] + target_lane["width"]
-                internal_corridor = any(
-                    target_bounds["right"] < x <= lane_right - safe_gap
-                    for x in vertical_x_values
-                )
-            if not internal_corridor:
-                add(
-                    "routing/back-corridor-outside-target-lane",
-                    "warning",
-                    f"Automatic back route borrows space outside the target lane: {edge_id}",
-                    subject={"kind": "edge", "id": edge_id},
-                    evidence={
-                        "target_lane": target["lane"],
-                        "entry_side": entry_port[0],
-                        "vertical_x": vertical_x_values,
-                    },
-                    supported_fixes=["increase-target-lane-gutter", "set-explicit-waypoints"],
-                )
+        add(
+            issue.code, "warning",
+            f"Automatic back route borrows space outside the target lane: {edge_id}",
+            subject={"kind": "edge", "id": edge_id}, evidence=issue.evidence,
+            supported_fixes=["increase-target-lane-gutter", "set-explicit-waypoints"],
+        )
 
 
 def _collect_edge_pair_quality(edge_segments, edge_cells_by_id, add):
     edge_ids = sorted(edge_segments)
     for index, first_id in enumerate(edge_ids):
         for second_id in edge_ids[index + 1 :]:
-            if any(
-                core_geometry.segments_conflict(first_segment, second_segment)
-                for first_segment in edge_segments[first_id]
-                for second_segment in edge_segments[second_id]
+            messages = {
+                "routing/edge-conflict": f"Connector segments cross or overlap: {first_id} / {second_id}",
+                "routing/near-parallel-conflict": f"Connector segments run too close in parallel: {first_id} / {second_id}",
+                "routing/reciprocal-ambiguity": f"Forward and return connectors share or crowd the same corridor: {first_id} / {second_id}",
+            }
+            fixes = {
+                "routing/edge-conflict": ["reroute-edge"],
+                "routing/near-parallel-conflict": ["separate-routing-corridors", "reroute-edge"],
+                "routing/reciprocal-ambiguity": ["separate-forward-and-return-corridors"],
+            }
+            for issue in routing.edge_pair_issues(
+                _routing_quality_edge(edge_cells_by_id[first_id], first_id), edge_segments[first_id],
+                _routing_quality_edge(edge_cells_by_id[second_id], second_id), edge_segments[second_id],
             ):
                 add(
-                    "routing/edge-conflict",
-                    "warning",
-                    f"Connector segments cross or overlap: {first_id} / {second_id}",
-                    subject={"kind": "edge", "id": first_id},
-                    evidence={"other_edge": second_id},
-                    supported_fixes=["reroute-edge"],
-                )
-            first_cell = edge_cells_by_id[first_id]
-            second_cell = edge_cells_by_id[second_id]
-            near_parallel = any(
-                routing.segments_near_parallel(first_segment, second_segment)
-                for first_segment in edge_segments[first_id]
-                for second_segment in edge_segments[second_id]
-            )
-            if near_parallel:
-                add(
-                    "routing/near-parallel-conflict",
-                    "warning",
-                    f"Connector segments run too close in parallel: {first_id} / {second_id}",
-                    subject={"kind": "edge", "id": first_id},
-                    evidence={"other_edge": second_id, "minimum": routing_policy.NEAR_PARALLEL_CLEARANCE},
-                    supported_fixes=["separate-routing-corridors", "reroute-edge"],
-                )
-            reciprocal = (
-                first_cell.attrib.get(contracts.DATA_FROM) == second_cell.attrib.get(contracts.DATA_TO)
-                and first_cell.attrib.get(contracts.DATA_TO) == second_cell.attrib.get(contracts.DATA_FROM)
-            )
-            if reciprocal and (
-                near_parallel
-                or any(
-                    core_geometry.segments_conflict(first_segment, second_segment)
-                    for first_segment in edge_segments[first_id]
-                    for second_segment in edge_segments[second_id]
-                )
-            ):
-                add(
-                    "routing/reciprocal-ambiguity",
-                    "warning",
-                    f"Forward and return connectors share or crowd the same corridor: {first_id} / {second_id}",
-                    subject={"kind": "edge", "id": first_id},
-                    evidence={"other_edge": second_id},
-                    supported_fixes=["separate-forward-and-return-corridors"],
+                    issue.code, "warning", messages[issue.code],
+                    subject={"kind": "edge", "id": first_id}, evidence=issue.evidence,
+                    supported_fixes=fixes[issue.code],
                 )
 
 
 def _collect_label_path_conflicts(edge_label_bounds, edge_segments, add):
     for edge_id, (carrier_index, label_box) in edge_label_bounds.items():
-        overlaps = []
-        for other_id, segments in edge_segments.items():
-            for index, segment in enumerate(segments):
-                if other_id == edge_id and index == carrier_index:
-                    continue
-                if core_geometry.segment_intersects_box(segment, label_box, gap=1.0):
-                    overlaps.append(other_id)
-                    break
+        overlaps = labels.label_path_conflicts(edge_id, carrier_index, label_box, edge_segments)
         if overlaps:
             add(
                 "text/edge-label-edge-overlap",
@@ -833,7 +673,9 @@ def _collect_label_pair_conflicts(edge_label_bounds, add):
     label_ids = sorted(edge_label_bounds)
     for index, first_id in enumerate(label_ids):
         for second_id in label_ids[index + 1:]:
-            if core_geometry.bounds_overlap(edge_label_bounds[first_id][1], edge_label_bounds[second_id][1], gap=2.0):
+            if labels.label_pair_conflicts(
+                first_id, edge_label_bounds[first_id][1], {second_id: edge_label_bounds[second_id][1]},
+            ):
                 add(
                     "text/edge-label-edge-overlap",
                     "warning",
@@ -1164,9 +1006,11 @@ def _summarize_validation(
     edge_cells_by_id,
     edge_points,
     clearance_measurements=None,
+    label_measurements=None,
 ):
     if clearance_measurements is None:
         clearance_measurements = {}
+    label_measurements = label_measurements or {}
     unique_diagnostics: list[dict] = []
     seen_diagnostics: set[str] = set()
     for diagnostic in diagnostics:
@@ -1263,7 +1107,9 @@ def _summarize_validation(
         "unmanaged_edges": len(unmanaged_edges),
         "main_path_bends": main_path_bends,
         "short_segments": diagnostic_codes.count("routing/short-segment"),
-        "label_conflicts": sum(code.startswith("text/edge-label-") for code in diagnostic_codes),
+        "label_conflicts": sum(code in {"text/edge-label-node-overlap", "text/edge-label-edge-overlap",
+                                        "text/edge-label-no-clear-span"} for code in diagnostic_codes),
+        "label_geometry": label_geometry_summary(label_measurements),
         "reciprocal_ambiguities": diagnostic_codes.count("routing/reciprocal-ambiguity"),
         "arrowhead_clearance": {
             "rule_version": clearance.RULE_VERSION,
@@ -1353,6 +1199,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     edge_points: dict[str, list[tuple[float, float]]] = {}
     edge_label_bounds: dict[str, tuple[int, dict[str, float]]] = {}
     edge_cells_by_id: dict[str, ET.Element] = {}
+    label_measurements = {}
     for cell in edge_cells:
         edge_id = cell.attrib.get(contracts.DATA_SEMANTIC_ID, cell.attrib.get("id", "unknown"))
         points = document.edge_polyline(cell, lanes, nodes)
@@ -1367,6 +1214,7 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         )
         _collect_edge_label_quality(
             cell, edge_id, points, node_bounds, edge_label_bounds, add,
+            scene={"lanes": lanes, "nodes": nodes, "pool": pool}, measurements=label_measurements,
         )
         _collect_edge_segment_quality(
             cell, edge_id, segments, internal_boundaries, node_bounds, add,
@@ -1379,7 +1227,12 @@ def validate_tree(tree: ET.ElementTree) -> dict:
         edge_cells, edge_points, nodes, node_bounds, add,
     )
     _collect_edge_pair_quality(edge_segments, edge_cells_by_id, add)
-    _collect_label_path_conflicts(edge_label_bounds, edge_segments, add)
+    label_segments = {
+        edge_id: list(zip(measured["path"], measured["path"][1:]))
+        if measured.get("path_available") else edge_segments[edge_id]
+        for edge_id, measured in label_measurements.items()
+    }
+    _collect_label_path_conflicts(edge_label_bounds, label_segments, add)
     _collect_label_pair_conflicts(edge_label_bounds, add)
     _collect_semantic_diagnostics(
         schema_version, pool, root, nodes, edge_cells, unmanaged_edges,
@@ -1387,5 +1240,17 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     )
     return _summarize_validation(
         diagnostics, pool, schema_version, integrity, lanes, nodes, edge_cells,
-        unmanaged_edges, edge_cells_by_id, edge_points, clearance_measurements,
+        unmanaged_edges, edge_cells_by_id, edge_points, clearance_measurements, label_measurements,
     )
+
+
+def label_geometry_summary(measurements):
+    """Coverage is distinct from measured conflicts and estimated text accuracy."""
+    checked = sorted(key for key, value in measurements.items() if value["status"] == "available")
+    unavailable = sorted(key for key, value in measurements.items() if value["status"] == "not_available")
+    not_applicable = sorted(key for key, value in measurements.items() if value["status"] == "not_applicable")
+    status = ("partial" if checked else "not_available") if unavailable else ("complete" if checked else "not_applicable")
+    return {"status": status, "checked_count": len(checked), "checked_edges": checked,
+            "unavailable_count": len(unavailable), "unavailable_edges": unavailable,
+            "not_applicable_count": len(not_applicable), "not_applicable_edges": not_applicable,
+            "bounds_quality": "estimated" if checked else None}

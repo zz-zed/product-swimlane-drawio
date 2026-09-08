@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import xml.etree.ElementTree as ET
 
 from . import contracts, document, geometry as core_geometry, labels, ports, routing
@@ -63,6 +64,67 @@ def arrowhead_clearance_profiles(
     return profiles
 
 
+def native_label_profiles(edges, pool, lanes, nodes, *, existing_edges=None,
+                          explicit_by_edge=None, points_actions_by_edge=None):
+    """Capture the actual authorized writer inputs without modifying the scene.
+
+    Existing geometry, parent and unsupported payload remain visible to native
+    capability checks. Only fields the route writer will replace are projected;
+    saved, non-mutable XML is measured separately by seed_routing_context.
+    """
+    profiles = {}
+    scene = {"pool": pool, "lanes": lanes, "nodes": nodes}
+    for edge in edges:
+        edge_id = edge["id"]
+        current = (existing_edges or {}).get(edge_id)
+        # An effective saved-edge spec contains defaults as well as authored
+        # updates; only an explicit map may authorize text/type replacement.
+        explicit = (explicit_by_edge or {}).get(edge_id, set(edge) if current is None else set())
+        if current is None:
+            cell = ET.Element("mxCell", {
+                "parent": pool.get("id", ""), "value": str(edge.get("label", "")),
+                "style": edge_style(edge.get("type", "flow"), "bottom", "top", .5, .5),
+            })
+            document.geometry(cell, relative=1)
+        else:
+            cell = copy.deepcopy(current)
+            # Install the same eight keys in the writer's order. This also
+            # captures resetting native Dx/Dy to zero and deduplicating keys;
+            # the pure candidate projector substitutes only the selected X/Y.
+            saved_style = document.style_values(cell.get("style", ""))
+            for key, default in (("exitX", "0.5"), ("exitY", "1"),
+                                 ("exitDx", "0"), ("exitDy", "0"),
+                                 ("entryX", "0.5"), ("entryY", "0"),
+                                 ("entryDx", "0"), ("entryDy", "0")):
+                value = default if key.endswith(("Dx", "Dy")) else saved_style.get(key, default)
+                document.set_style_option(cell, key, value)
+            if "type" in explicit:
+                document.set_style_option(cell, "dashed", "1" if edge.get("type") == "async" else "0")
+            if "label" in explicit:
+                cell.set("value", str(edge.get("label", "")))
+            action = (points_actions_by_edge or {}).get(edge_id, "replace_automatic")
+            if action not in {"preserve_existing", "replace_explicit", "replace_automatic"}:
+                raise ValueError(f"Unsupported edge points action: {action}")
+            if cell.find("mxGeometry") is None and action != "preserve_existing":
+                document.geometry(cell, relative=1)
+        # The writer always retargets the native and semantic endpoint IDs.
+        cell.attrib.update({
+            "source": nodes[edge["from"]]["cell"].get("id", ""),
+            "target": nodes[edge["to"]]["cell"].get("id", ""),
+            contracts.DATA_FROM: edge["from"], contracts.DATA_TO: edge["to"],
+        })
+        profiles[edge_id] = document.extract_native_label_profile(cell, scene=scene)
+    return profiles
+
+
+def apply_label_plan(records, decisions, choices):
+    """Write only a successful batch's authorized native label positions."""
+    by_id = {decision.edge_id: decision for decision in decisions}
+    for edge_id, choice in choices.items():
+        decision = by_id[edge_id]
+        set_edge_label_position(records[edge_id], decision.routed["native_path"], choice)
+
+
 def set_edge_label_position(
     cell: ET.Element,
     full_path: list[tuple[float, float]],
@@ -80,8 +142,6 @@ def set_edge_label_position(
     if geom is None:
         return
     existing_offset = geom.find("./mxPoint[@as='offset']")
-    if existing_offset is not None:
-        geom.remove(existing_offset)
     if label_choice is None:
         return
     segment_index, box = label_choice
@@ -94,20 +154,18 @@ def set_edge_label_position(
             contracts.DATA_LABEL_SEGMENT: str(segment_index),
         }
     )
-    midpoint = labels.polyline_midpoint(full_path)
-    desired = (
-        box["left"] + box["width"] / 2,
-        box["top"] + box["height"] / 2,
-    )
-    ET.SubElement(
-        geom,
-        "mxPoint",
-        {
-            "as": "offset",
-            "x": contracts.number(desired[0] - midpoint[0]),
-            "y": contracts.number(desired[1] - midpoint[1]),
-        },
-    )
+    # Reset both native relative components when installing an authorized
+    # absolute offset; otherwise a saved x/y drag would be applied twice.
+    geom.set("relative", "1")
+    if "x" in geom.attrib:
+        geom.set("x", "0")
+    if "y" in geom.attrib:
+        geom.set("y", "0")
+    _, planned_offset = labels.candidate_label_geometry(full_path, label_choice)
+    if existing_offset is None:
+        existing_offset = ET.SubElement(geom, "mxPoint", {"as": "offset"})
+    existing_offset.set("x", planned_offset["x"])
+    existing_offset.set("y", planned_offset["y"])
 
 
 def reflow_automatic_edge_labels(
@@ -123,6 +181,12 @@ def reflow_automatic_edge_labels(
         edge_id: document.edge_polyline(cell, lanes, nodes)
         for edge_id, cell in records.items()
     }
+    measured_labels = {
+        edge_id: document.edge_label_measurement(cell, paths[edge_id], {"lanes": lanes, "nodes": nodes, "pool": pool})
+        for edge_id, cell in records.items()
+    }
+    paths = {edge_id: measured_labels[edge_id].get("path") if measured_labels[edge_id].get("path_available") else path
+             for edge_id, path in paths.items()}
     node_boxes = [
         core_geometry.node_bounds_in_pool(record, lanes[record["lane"]])
         for record in nodes.values()
@@ -161,6 +225,8 @@ def reflow_automatic_edge_labels(
             (preferred_sides or {}).get(edge_id),
             container,
             cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back",
+            size=(measured_labels[edge_id]["bounds"]["width"], measured_labels[edge_id]["bounds"]["height"])
+            if measured_labels[edge_id]["status"] == "available" else None,
         )
         set_edge_label_position(cell, path, choice)
         if choice is not None:
@@ -296,8 +362,13 @@ def reflow_mutable_edge_labels(
     nodes: dict[str, dict],
     mutable_edge_ids: set[str],
     preferred_sides: dict[str, str] | None = None,
+    *,
+    preserve_position: bool = False,
+    exclude_obstacles: set[str] | None = None,
 ) -> None:
     """Reflow only mutated labels; pre-existing labels are hard obstacles."""
+    if not mutable_edge_ids:
+        return
     records = document.edge_records(root)
     paths = {edge_id: document.edge_polyline(cell, lanes, nodes) for edge_id, cell in records.items()}
     node_boxes = [core_geometry.node_bounds_in_pool(record, lanes[record["lane"]]) for record in nodes.values()]
@@ -308,16 +379,67 @@ def reflow_mutable_edge_labels(
         edge_id, cell = item
         pair = (cell.attrib.get(contracts.DATA_FROM), cell.attrib.get(contracts.DATA_TO))
         return (0 if pair in main_pairs else 2 if cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back" else 1, edge_id)
-    assigned = [box for edge_id, cell in records.items() if edge_id not in mutable_edge_ids for box in [document.stored_label_bounds(cell)] if box is not None]
+    scene = {"lanes": lanes, "nodes": nodes, "pool": pool}
+    excluded = exclude_obstacles or set()
+    assigned = []
+    for edge_id, cell in records.items():
+        if edge_id in mutable_edge_ids or edge_id in excluded:
+            continue
+        measured = document.edge_label_measurement(cell, paths[edge_id], scene)
+        require_label_geometry(edge_id, measured)
+        if measured["status"] == "available":
+            assigned.append(measured["bounds"])
     for edge_id, cell in sorted(records.items(), key=order):
         if edge_id not in mutable_edge_ids:
             continue
         path = paths.get(edge_id, [])
-        other_segments = [segment for other_id, other_path in paths.items() if other_id != edge_id for segment in zip(other_path, other_path[1:])]
-        choice = labels.choose_label_box(path, cell.attrib.get("value", ""), node_boxes, other_segments, assigned, (preferred_sides or {}).get(edge_id), container, cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back")
-        set_edge_label_position(cell, path, choice)
+        if not cell.get("value", "").strip():
+            continue
+        measured = document.edge_label_measurement(cell, path, scene)
+        require_label_geometry(edge_id, measured)
+        if measured["status"] == "not_applicable":
+            continue
+        native_path = measured.get("path") or path
+        other_segments = [segment for other_id, other_path in paths.items() if other_id != edge_id and other_id not in excluded for segment in zip(other_path, other_path[1:])]
+        def clear(box, carrier):
+            return (container["left"] <= box["left"] and box["right"] <= container["right"]
+                    and container["top"] <= box["top"] and box["bottom"] <= container["bottom"]
+                    and not any(core_geometry.bounds_overlap(box, obstacle, gap=2.0) for obstacle in node_boxes + assigned)
+                    and not any(core_geometry.segment_intersects_box(segment, box, gap=2.0) for segment in other_segments)
+                    and not any(index != carrier and core_geometry.segment_intersects_box(segment, box, gap=2.0)
+                                for index, segment in enumerate(zip(native_path, native_path[1:]))))
+        if preserve_position and measured["status"] == "available" and measured.get("carrier_usable") and clear(measured["bounds"], measured["carrier_segment"]):
+            assigned.append(measured["bounds"])
+            continue
+        choice = labels.choose_label_box(native_path, cell.attrib.get("value", ""), node_boxes, other_segments, assigned, (preferred_sides or {}).get(edge_id), container, cell.attrib.get(contracts.DATA_ROUTE, "auto") == "back", size=(measured["bounds"]["width"], measured["bounds"]["height"]))
+        if choice is None:
+            raise contracts.DiagramError(
+                "Edge label has no clear span on its saved path",
+                code="text/edge-label-no-clear-span", subject={"kind": "edge", "id": edge_id},
+                evidence={"label": cell.get("value", ""), "path_frozen": True},
+                supported_fixes=["shorten-edge-label", "move-edge-label", "declare-edge-reroute"],
+            )
+        set_edge_label_position(cell, native_path, choice)
+        actual = document.edge_label_measurement(cell, path, scene)
+        require_label_geometry(edge_id, actual)
+        if not clear(actual["bounds"], actual.get("carrier_segment")):
+            raise contracts.DiagramError(
+                "Repositioned native label has no clear span on its saved path",
+                code="text/edge-label-no-clear-span", subject={"kind": "edge", "id": edge_id},
+                supported_fixes=["shorten-edge-label", "move-edge-label", "declare-edge-reroute"],
+            )
         if choice is not None:
-            assigned.append(choice[1])
+            assigned.append(actual["bounds"])
+
+
+def require_label_geometry(edge_id: str, measured: dict) -> None:
+    if measured["status"] == "not_available":
+        raise contracts.DiagramError(
+            "Saved label geometry is unavailable for spatial planning",
+            code="text/edge-label-geometry-unavailable", subject={"kind": "edge", "id": edge_id},
+            evidence={"reason": measured.get("reason"), "bounds_quality": measured.get("bounds_quality")},
+            supported_fixes=["use-supported-label-style", "review-native-label"],
+        )
 
 
 def seed_routing_context(
@@ -327,6 +449,8 @@ def seed_routing_context(
     nodes: dict[str, dict],
     *,
     exclude: set[str] | None = None,
+    require_measurable: bool = True,
+    pool: ET.Element | None = None,
 ) -> None:
     excluded = exclude or set()
     for edge_id, cell in edges.items():
@@ -340,9 +464,14 @@ def seed_routing_context(
             cell.attrib.get(contracts.DATA_FROM),
             cell.attrib.get(contracts.DATA_TO),
         )
-        label_bounds = document.stored_label_bounds(cell)
-        if label_bounds is not None:
-            context.setdefault("labels", {})[edge_id] = label_bounds
+        measured = document.edge_label_measurement(cell, path, {"lanes": lanes, "nodes": nodes, "pool": pool})
+        if require_measurable:
+            require_label_geometry(edge_id, measured)
+        if measured["status"] == "available":
+            context.setdefault("labels", {})[edge_id] = measured["bounds"]
+            # Only saved labels are hard route obstacles. Labels selected in
+            # the current batch may still be reflowed after its routes exist.
+            context.setdefault("frozen_label_obstacles", {})[edge_id] = dict(measured["bounds"])
 
 
 def reserve_existing_ports(

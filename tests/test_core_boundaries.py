@@ -26,8 +26,9 @@ from release_check import EXPECTED_SKILL_FILES
 SKILL = ROOT / "skills" / "product-swimlane-drawio"
 TOOL = SKILL / "scripts" / "drawio_swimlane.py"
 CORE = TOOL.parent / "swimlane_core"
-DOCUMENT_FUNCTIONS = set("graph_root find_pool native_cell lane_node_records phase_records edge_records semantic_cells parse_geometry style_values port_from_style edge_waypoints edge_polyline stored_label_bounds node_center_in_pool geometry set_style_option set_edge_points unmanaged_root_entries graph_root_preserves_space unmanaged_cell_signatures element_signature comparison_attributes sibling_order_changes write_tree file_receipt ensure_different ensure_output_available values_from_pool read_tree routing_node_views routing_lane_views read_main_path unmanaged_edge_specs read_lane_order json_attribute managed_metadata_error managed_id_list_attribute".split())
+DOCUMENT_FUNCTIONS = set("graph_root find_pool native_cell lane_node_records phase_records edge_records semantic_cells parse_geometry style_values port_from_style edge_waypoints edge_polyline stored_label_bounds node_center_in_pool geometry set_style_option set_edge_points unmanaged_root_entries graph_root_preserves_space unmanaged_cell_signatures element_signature comparison_attributes sibling_order_changes write_tree file_receipt ensure_different ensure_output_available values_from_pool read_tree routing_node_views routing_lane_views read_main_path unmanaged_edge_specs read_lane_order json_attribute managed_metadata_error managed_id_list_attribute _payload_text_rules cell_payload_signatures cell_payload_changes serialization_signature route_mutable_opaque_guard native_label_inputs edge_label_measurement".split())
 METADATA_FUNCTIONS = set("managed_groups_attribute semantic_model_document semantic_model_hash managed_artifact_summary refresh_managed_metadata".split())
+DOCUMENT_FUNCTIONS.add("extract_native_label_profile")
 
 
 def copy_skill_package(destination: Path) -> None:
@@ -238,7 +239,7 @@ class CoreBoundaryTests(unittest.TestCase):
             "swimlane_core.port_planner", "swimlane_core.ports", "swimlane_core.routing_policy",
         })
         assert_only_allowed_imports(adapter, {
-            "xml.etree.ElementTree", "swimlane_core.contracts", "swimlane_core.document",
+            "copy", "xml.etree.ElementTree", "swimlane_core.contracts", "swimlane_core.document",
             "swimlane_core.geometry", "swimlane_core.labels", "swimlane_core.ports",
             "swimlane_core.routing",
         })
@@ -248,7 +249,7 @@ class CoreBoundaryTests(unittest.TestCase):
         })
         assert_only_allowed_imports(geometry, {"swimlane_core.contracts"})
         assert_only_allowed_imports(document, {
-            "hashlib", "json", "os", "pathlib", "tempfile", "xml.etree.ElementTree",
+            "hashlib", "json", "os", "pathlib", "tempfile", "xml.etree.ElementTree", "copy", "math", "swimlane_core.labels",
             "swimlane_core.contracts", "swimlane_core.geometry",
         })
         assert_only_allowed_imports(metadata, {
@@ -265,7 +266,8 @@ class CoreBoundaryTests(unittest.TestCase):
         assert_only_allowed_imports(routing_policy, set())
         assert_only_allowed_imports(ports, {"swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.routing_policy"})
         assert_only_allowed_imports(port_planner, {"dataclasses", "swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.ports"})
-        assert_only_allowed_imports(labels, {"unicodedata", "swimlane_core.geometry"})
+        assert_only_allowed_imports(labels, {"unicodedata", "math", "re", "copy", "json", "hashlib",
+                                            "swimlane_core.geometry", "swimlane_core.contracts"})
         self.assertEqual({node.name for node in sizing.body if isinstance(node, ast.FunctionDef)},
                          {"estimated_text_lines", "recommended_process_height", "node_size"})
         self.assertEqual({node.name for node in ports.body if isinstance(node, ast.FunctionDef)},
@@ -274,7 +276,11 @@ class CoreBoundaryTests(unittest.TestCase):
         self.assertEqual({node.name for node in port_planner.body if isinstance(node, ast.ClassDef)},
                          {"PlannerBudget", "EndpointRequest", "EdgePortRequest", "PlannedEndpoint", "EdgePortAssignment", "PortPlanIssue", "ComponentPlan", "PortPlanPreparation", "PortPlan"})
         self.assertEqual({node.name for node in labels.body if isinstance(node, ast.FunctionDef)},
-                         {"edge_label_size", "label_box_candidates", "choose_label_box", "polyline_midpoint"})
+                         {"edge_label_size", "label_box_candidates", "choose_label_box", "polyline_midpoint", "native_label_anchor", "_native_style_reason", "measure_native_label", "native_fixed_segment_path",
+                          "ordered_label_box_candidates", "_native_style_values", "_native_port_from_style",
+                          "resolve_native_label_inputs", "candidate_label_geometry", "project_candidate_native_inputs",
+                          "preflight_candidate", "label_path_conflicts", "label_pair_conflicts",
+                          "label_placement_conflicts", "plan_label_batch"})
         for tree, functions in ((document, DOCUMENT_FUNCTIONS), (metadata, METADATA_FUNCTIONS)):
             self.assertEqual({node.name for node in tree.body if isinstance(node, ast.FunctionDef)}, functions)
             self.assertTrue(functions.isdisjoint(entry_functions))
@@ -282,7 +288,7 @@ class CoreBoundaryTests(unittest.TestCase):
         self.assertEqual(len({name for name in validation_functions if name.startswith("_collect_")}), 20)
         self.assertEqual({name for name in validation_functions if not name.startswith("_collect_")},
                          {"effective_label_bounds", "_clearance_evidence",
-                          "_summarize_validation", "validate_tree"})
+                          "_summarize_validation", "validate_tree", "label_geometry_summary", "_routing_quality_edge"})
         self.assertTrue(validation_functions.isdisjoint(entry_functions))
         owners = {}
         for path in [TOOL, *sorted(CORE.glob("*.py"))]:

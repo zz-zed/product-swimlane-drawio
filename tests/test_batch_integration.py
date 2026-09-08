@@ -190,9 +190,9 @@ class BatchIntegrationTests(unittest.TestCase):
         tree = self.tool.build_tree(linear_spec())
         root = self.document.graph_root(tree)
         first = self.edge(root, "first")
-        first.attrib["style"] = "vendorBefore=1;" + first.attrib["style"] + "vendorAfter=2;"
+        first.attrib["style"] = "strokeColor=#123456;" + first.attrib["style"] + "labelBorderColor=#654321;"
         before = first.attrib["style"].split(";")
-        self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "label": "Changed", "reroute": True}]}, allow_geometry_updates=False)
+        self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
         after = self.edge(root, "first").attrib["style"].split(";")
         anchors = {"exitX", "exitY", "exitDx", "exitDy", "entryX", "entryY", "entryDx", "entryDy"}
         self.assertEqual([part for part in before if part.split("=", 1)[0] not in anchors], [part for part in after if part.split("=", 1)[0] not in anchors])
@@ -205,6 +205,25 @@ class BatchIntegrationTests(unittest.TestCase):
         self.assertEqual(profile["edge_style"], self.edge(root, "first").attrib["style"])
         self.assertEqual(profile["target_style"], nodes["step"]["cell"].attrib["style"])
         self.assertEqual(profile["target_type"], nodes["step"]["cell"].attrib[self.contracts.DATA_NODE_TYPE])
+
+    def test_unknown_style_reroute_is_refused_without_discarding_native_tokens(self):
+        tree = self.tool.build_tree(linear_spec())
+        root = self.document.graph_root(tree)
+        first = self.edge(root, "first")
+        first.attrib["style"] = "vendorBefore=1;" + first.attrib["style"] + "vendorAfter=2;"
+        original = {edge_id: ET.tostring(self.edge(root, edge_id)) for edge_id in ("first", "second")}
+        pool = self.document.find_pool(tree)
+        lanes, nodes = self.document.lane_node_records(root, pool)
+        profiles = self.adapter.native_label_profiles(
+            [self.adapter.existing_edge_spec(first)], pool, lanes, nodes,
+            existing_edges={"first": first})
+        self.assertEqual(profiles["first"]["edge_style"], first.attrib["style"])
+        with self.assertRaises(self.contracts.DiagramError) as caught:
+            self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
+        self.assertEqual(caught.exception.code, "routing/no-safe-route")
+        self.assertEqual(caught.exception.evidence["planning"]["reason"], "native_profile_unavailable")
+        self.assertIn("unsupported_style:vendorAfter,vendorBefore", json.dumps(caught.exception.evidence))
+        self.assertEqual({edge_id: ET.tostring(self.edge(root, edge_id)) for edge_id in original}, original)
 
     def test_new_edge_attribute_order_matches_canonical_history_for_all_schema_versions(self):
         specs = []

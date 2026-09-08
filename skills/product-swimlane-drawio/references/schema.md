@@ -111,11 +111,11 @@ Edge fields:
 - `allow_port_reuse`: optional boolean; default `false`.
 - `waypoints`: optional pool-local `{ "x": number, "y": number }` objects or two-number arrays.
 
-Use automatic routing first. It plans endpoint ports for the complete mutable edge batch, routes `main_path` edges before ordinary branches and returns, removes duplicate and collinear points, and scores orthogonal candidates by bends, length, short segments, unrelated-lane intrusion, obstacle clearance, reciprocal separation, main-path continuity, label capacity, and supported arrowhead terminal-run clearance. A failed route rejects that conflict component's paired assignment and tries the next bounded assignment without disturbing successful unrelated components. A downward main-path edge prefers a bottom-to-top connection even when it crosses into another lane. For every selected side pair, automatic routing prefers centered `0.5 -> 0.5` attachment points when they yield a valid route and moves to secondary offsets for an actual conflict, failed route, main-path continuity, or explicit override; it does not trade balanced endpoints for marginally shorter alignment alone. A true exception branch exits toward its target lane. A same-lane outcome that terminates directly below a decision exits from the decision bottom instead of creating a side hook.
+Use automatic routing first. It plans endpoint ports for the complete mutable edge batch, routes `main_path` edges before ordinary branches and returns, removes duplicate and collinear points, and scores orthogonal candidates by bends, length, short segments, unrelated-lane intrusion, obstacle clearance, reciprocal separation, main-path continuity, label capacity, and supported arrowhead terminal-run clearance. A failed route rejects that conflict component's paired assignment and tries the next bounded assignment without disturbing successful unrelated components. A downward main-path edge prefers a bottom-to-top connection even when it crosses into another lane. For every selected side pair, automatic routing prefers centered `0.5 -> 0.5` attachment points when they yield a valid route and moves to secondary offsets for an actual conflict, failed route, main-path continuity, or explicit override; it does not trade balanced endpoints for marginally shorter alignment alone. A true exception branch exits toward its target lane. In v3, a same-lane downward decision branch whose bottom is not reserved by the main path exits from the decision bottom instead of creating a side hook.
 
 Assign the same rank to a decision and a cross-lane side outcome when the intended reading is a horizontal handoff; v3 aligns their centers. For a directly following same-lane terminal, keep the terminal on the lane's main axis so the automatic route is a straight bottom-to-top connection.
 
-Returns and retries use a separate target-lane outer-side slot when possible. An adjacent-lane retry leaves toward the target but enters through the target's outer side, keeping the normal facing request/response corridor clear. The outer source side and bottom corridor remain available for longer returns that must avoid intervening lanes. A new build widens an automatic target lane when the slot does not fit, then recomputes later lanes and automatic routes. Existing diagrams and nodes with explicit `x` coordinates keep their geometry; if no internal gutter remains, validation diagnoses the borrowed lane. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified or silently rewritten; strict validation still reports their routing defects.
+Returns and retries keep a separate, collision-free corridor. Same-lane returns retain the internal target-lane gutter rule. Cross-lane returns may use a clear direct elbow or an outer source-side corridor; they do not need an extra vertical leg inside the target lane. Before trying opposite source/target sides that can force a large loop, the finite side search tries an outward same-side pair. In v3, a same-lane downward decision branch to a process prefers bottom-to-top when the bottom is not reserved for another main continuation; explicit ports remain authoritative. Existing build-time lane expansion is unchanged, and saved geometry is never moved to shorten a route. Add explicit ports or waypoints only after a structured diagnostic or visual-review issue. Explicit waypoints are never simplified or silently rewritten; strict validation still reports their routing defects.
 
 Automatic edge labels prefer the longest clear independent horizontal segment, with a clear vertical segment as a fallback. The route planner accounts for node and connector bounds, then performs a global label reflow after all routes exist. Automatic rank spacing and decision width grow only when the default compact grid cannot provide a clear carrier or contain multilingual content, unless the specification explicitly fixes the corresponding geometry.
 
@@ -154,11 +154,11 @@ Patch rules:
 - Deleting a lane requires explicitly deleting every owned node. The same patch must reconcile incident edges, any affected `main_path`, and groups; otherwise it fails with a dependency diagnostic. At least one lane must remain.
 - Group additions, updates, and deletions are supported for v3 dependency reconciliation. Group membership remains mirrored on member nodes and is revalidated after the patch.
 - A patch-added v3 node consumes `slot` and `anchor` intent. It must not occupy an existing lane/rank/slot. Right-side placement may widen the lane and shift later lanes; left-side placement that would require moving existing user geometry is rejected unless explicit geometry is supplied.
-- Updating an edge label recomputes automatic label placement and may choose another automatic route. Explicit waypoints remain byte-for-byte equivalent in geometry.
-- `reroute: true` or any routing field recomputes that edge.
+- Updating only an edge label preserves saved ports, waypoint contents/order and route-origin fields. The saved native label position is tried first; any necessary label move stays on that path. Empty or unchanged text does not trigger repositioning. `automatic` origin does not establish that a user never edited the saved route.
+- `reroute: true` or an effective routing-field change authorizes recomputing that edge. `reroute: false` and identical values do not. Existing explicit waypoints survive `reroute: true`; only a supplied `waypoints` array replaces them, including an explicit empty array. Repeated and collinear explicit points are preserved.
 - Changing a node type requires every surviving incident edge to be explicitly rerouted in the same patch.
 - Existing node geometry requires `--allow-geometry-updates`.
-- Moving or resizing a node automatically reroutes only incident edges whose routes become invalid.
+- A node or lane operation that invalidates a saved route requires an explicit route update for that edge; otherwise `patch/route-update-required` refuses the candidate. A still-valid saved path is preserved.
 - Valid manual waypoints and unrelated geometry remain unchanged. A lane change that moves an endpoint lane reports affected explicit-waypoint edges for visual review without rewriting them.
 - Unknown cells anchor their relative sibling drawing order during phase normalization. Managed cells may be sorted between those anchors, not across them; a conflict with safe phase layering is rejected without output. Unknown content still requires review and is not silently promoted to managed content.
 - Deleting a node requires explicitly listing every incident edge in `delete_edges`.
@@ -173,7 +173,7 @@ Inspect a compatible file before patching:
 python3 "<skill-root>/scripts/drawio_swimlane.py" inspect --input "<current.drawio>"
 ```
 
-The result includes the input path, byte count, SHA-256 digest, schema version, main path, phases, lane order, node geometry, edge ports, waypoints, artifact-integrity state, and current validation. Its `arrowhead_clearance` summary identifies the rule version, coverage status, checked/unavailable/not-applicable edges, and measurable violations. `partial` or `not_available` is incomplete evidence, not success. Connectors manually redrawn in Draw.io without Skill metadata appear under `unmanaged_edges` with their recoverable source, target, label, ports, and waypoints. Validation reports `interoperability/unmanaged-edges`; source/target topology is still considered when checking reachability and main-path continuity, but the missing stable edge ID is not silently recreated.
+The result includes the input path, byte count, SHA-256 digest, schema version, main path, phases, lane order, node geometry, edge ports, waypoints, each edge's `label_geometry`, artifact-integrity state, and current validation. Its `arrowhead_clearance` summary identifies the rule version, coverage status, checked/unavailable/not-applicable edges, and measurable violations. `partial` or `not_available` is incomplete evidence, not success. Connectors manually redrawn in Draw.io without Skill metadata appear under `unmanaged_edges` with their recoverable source, target, label, ports, and waypoints. Validation reports `interoperability/unmanaged-edges`; source/target topology is still considered when checking reachability and main-path continuity, but the missing stable edge ID is not silently recreated.
 
 Validation keeps the legacy `errors` and `warnings` arrays and also returns structured diagnostics:
 
@@ -190,7 +190,58 @@ Validation keeps the legacy `errors` and `warnings` arrays and also returns stru
 
 Strict validation fails when warnings remain. Routing diagnostics include short internal segments, unnecessary bends, hairpins, near-parallel crowding, reciprocal ambiguity, lane-boundary and node conflicts, and same-lane main-path zigzags. Text diagnostics include missing clear edge-label carriers and label overlap with nodes, connectors, or other labels. Layout diagnostics treat phase bands above editable content, opaque phase-bearing lanes, and interactive phase cells as hard errors.
 
+Automatic build/reroute candidates now pass shared geometric checks and the
+existing native measurement profile before scoring. A finite coordinator can
+retry automatic sides, offsets, paths and label positions while preserving
+explicit choices and frozen geometry. The limits are 6 repairs per original
+port component, 64 batch replays, 128 distinct paths per port pair, 8192 path
+evaluations overall, 32 trials per label pair and 128 label-pair trials overall.
+The default native label position is eligible only when explicitly measured
+and checked alongside the finite carrier candidates; a failed placement never
+silently falls back to a default offset.
+
+Failures may include optional `evidence.planning` with stage, reason, blockers,
+counts and budgets. `routing/no-safe-route` with `native_profile_unavailable`
+retains the native reason; `candidate_space_exhausted` means the declared finite
+domain was exhausted. `routing/route-search-budget` identifies a search limit;
+port-domain failures retain their port diagnostic. These early failures also
+apply to non-strict automatic generation. Saved-file commands and diagnostic
+severity conventions remain, but v2/v3 saved automatic cross-lane returns no
+longer require a vertical leg inside the target lane and can therefore have
+different warnings or strict results. These changes do not extend the
+supported native profile. No unsuccessful batch is written, and successful
+top-level receipts retain their existing shape.
+
 Build and patch outputs also include an atomic-delivery receipt with path, byte count, and SHA-256 digest. Standard delivery uses `--strict`; if warnings remain, the command exits without writing the requested output. Successful receipts expose `strict_mode` and `quality_gate_passed`. Patch output includes requested lane/node/edge changes, lane order, dependent lane shifts, automatic reroutes, affected explicit-waypoint edges, and the inspected input integrity evidence. The QA receipt includes `main_path_bends`, `short_segments`, `label_conflicts`, `reciprocal_ambiguities`, `arrowhead_clearance`, `manual_waypoints_preserved`, `manual_waypoints_checked`, and `visual_review`. Waypoint preservation is measured only by patch against pre-existing explicit waypoint sets; it is `null` when no explicit waypoint was applicable. Arrowhead coverage is a calibrated deterministic check for supported rendering profiles; `partial` and `not_available` must remain explicit. In this runtime, raw `visual_review` is always `not_available`; a clean strict result, preview export, later Agent image inspection, or human review does not change that raw field. Report those later review layers separately.
+
+### Native edge labels and patch receipts
+
+`label_geometry` reads native `mxGeometry` relative x/y, offset, text, style and
+reconstructed editor path. Generation-time `data-label-*` caches are never
+current-position evidence. A measurement is `available`, `not_available`, or
+`not_applicable` (no visible label); available bounds have `bounds_quality:
+estimated`. The aggregate coverage is `complete`, `partial`, `not_available`,
+or `not_applicable`, with checked, unavailable and not-applicable edge counts
+and IDs. Complete coverage means supported geometry, not pixel-perfect text.
+
+The supported profile covers plain ASCII and basic/extension-A CJK text in default Helvetica,
+8–24 px fonts, explicit LF/CRLF line breaks, default orthogonal connectors with the
+default block marker or no marker, straight facing terminals and reconstructible
+saved hint paths. Default rectangular terminals and centered decision/circle
+ports are supported. Rich HTML, wrapping constraints, rotation, named styles,
+other scripts, Arial/custom fonts, the html=0 renderer, off-center
+curved/diamond perimeters and unmodeled router cases
+are unavailable. `text/edge-label-geometry-unavailable` is a strict-failing
+warning. Spatial planning refuses an unmeasurable frozen label; it cannot be
+silently omitted from obstacles. Inspect and validate are read-only.
+
+Patch receipts separate actual `label_updated_edges`, `label_repositioned_edges`
+and `rerouted_edges`. `saved_routes` reports the frozen existing-edge count,
+preservation result (null when none apply), and changed IDs. The older
+`manual_waypoints_checked` / `manual_waypoints_preserved` fields retain their
+explicit-waypoint scope. A node/lane move can alter absolute endpoint positions
+without rewriting saved ports or points; dependency shifts remain separately
+reported.
 
 ## Artifact integrity
 
@@ -202,6 +253,20 @@ list raw parent IDs and before/after raw cell-ID sequences of shared siblings;
 `preserved=false` and CLI exit 1. A declared patch is replayed to distinguish
 supported additions/deletions from unexplained ordering changes. Reordering
 XML entries across different parents alone is not a drawing-order change.
+
+Managed cell content is also compared as ordered native payload, including
+repeated geometry, extension subtrees, attributes, mixed text/tails and inherited
+`xml:space`. Optional `changed_cell_content` / `unexpected_cell_content` entries
+identify semantic ID, kind, native path and change. Unexpected content or an
+independent saved-edge preservation violation makes `preserved=false`.
+Formatting whitespace between known structures may be normalized; opaque text
+is retained. ElementTree comments/processing instructions and arbitrary-document
+byte-level losslessness are outside this contract.
+
+Build and patch serialize a working copy to a candidate in the target directory,
+parse and check the actual candidate before atomic replacement. Patch also runs
+the independent preservation guard and same-version compare. Any failure keeps
+the input and existing output intact.
 
 Generated files carry a versioned semantic-model hash. The hash covers the stable process meaning required for safe patching:
 

@@ -644,6 +644,7 @@ class V3LayoutTests(unittest.TestCase):
                                 "label": "Review item",
                             }
                         ],
+                        "update_edges": [{"id": "e2", "reroute": True}],
                         "edges": [
                             {
                                 "id": "review-branch",
@@ -1076,7 +1077,7 @@ class V3LayoutTests(unittest.TestCase):
                     "flow_role": "branch",
                     "exit_side": "right",
                     "entry_side": "left",
-                    "waypoints": [{"x": 190, "y": 208}],
+                    "waypoints": [{"x": 190, "y": 204}],
                 }
             )
             spec_path = root / "spec.json"

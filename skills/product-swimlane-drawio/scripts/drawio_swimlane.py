@@ -1497,6 +1497,7 @@ def build_tree(spec: dict) -> ET.ElementTree:
     routing_context["arrowhead_clearance_profiles"] = (
         routing_adapter.arrowhead_clearance_profiles(compiled_edges, lanes, nodes)
     )
+    routing_context["native_label_profiles"] = routing_adapter.native_label_profiles(compiled_edges, pool, lanes, nodes)
     batch = routing.plan_route_batch(
         compiled_edges, document.routing_lane_views(lanes), document.routing_node_views(nodes),
         main_path=spec.get("main_path", []), mutable_edge_ids={edge["id"] for edge in compiled_edges},
@@ -1508,13 +1509,11 @@ def build_tree(spec: dict) -> ET.ElementTree:
     for edge in routing.edge_routing_order(compiled_edges, spec.get("main_path", []), document.routing_node_views(nodes)):
         create_edge_cell(root, pool, edge, lanes, nodes, routing_context=routing_context,
                          decision=decisions[edge["id"]], explicit_fields=explicit_by_edge[edge["id"]])
-    routing_adapter.reflow_automatic_edge_labels(
-        root,
-        pool,
-        lanes,
-        nodes,
-        routing_context.get("label_sides", {}),
-    )
+    routing_adapter.apply_label_plan(document.edge_records(root), batch.decisions, batch.label_choices)
+    unplanned_labels = {edge["id"] for edge in compiled_edges} - set(batch.label_choices)
+    if unplanned_labels:
+        routing_adapter.reflow_mutable_edge_labels(root, pool, lanes, nodes, unplanned_labels,
+                          routing_context.get("label_sides", {}))
     normalize_phase_layering(root, pool)
     tree = ET.ElementTree(mxfile)
     metadata.refresh_managed_metadata(tree)
@@ -1904,8 +1903,105 @@ def patch_node_automatic_x(
     return x
 
 
+def edge_route_update_requested(cell: ET.Element, update: dict) -> bool:
+    """Only an effective route edit or explicit true reroute grants authority."""
+    if update.get("reroute") is True:
+        return True
+    current = routing_adapter.existing_edge_spec(cell)
+    for field in ROUTING_FIELDS - {"reroute"}:
+        if field not in update:
+            continue
+        if field == "waypoints":
+            requested = [
+                (float(point["x"]), float(point["y"])) if isinstance(point, dict)
+                else (float(point[0]), float(point[1])) for point in update[field]
+            ]
+            if (requested != document.edge_waypoints(cell)
+                    or cell.get(contracts.DATA_WAYPOINTS_ORIGIN) != "explicit"):
+                return True
+        elif update[field] != current.get(field):
+            return True
+    return False
+
+
+def saved_edge_preservation_guard(before: ET.ElementTree, candidate: ET.ElementTree, changes: dict) -> dict:
+    """Check saved XML independently of patch replay and route planning.
+
+    The only removable projection is declared text/label position or two
+    descriptive metadata fields. Every point (including duplicates), native
+    port, origin marker and opaque child remains in the protected projection.
+    """
+    document.route_mutable_opaque_guard(before, candidate, changes)
+    before_edges = document.edge_records(document.graph_root(before))
+    after_edges = document.edge_records(document.graph_root(candidate))
+    updates = {item["id"]: item for item in changes.get("update_edges", [])}
+    deleted = set(changes.get("delete_edges", []))
+    frozen = {
+        edge_id for edge_id, cell in before_edges.items()
+        if edge_id not in deleted and not edge_route_update_requested(cell, updates.get(edge_id, {}))
+    }
+    left, right = copy.deepcopy(before), copy.deepcopy(candidate)
+    left_edges = document.edge_records(document.graph_root(left))
+    right_edges = document.edge_records(document.graph_root(right))
+    changed_routes = []
+    for edge_id in sorted(frozen):
+        old, new = left_edges[edge_id], right_edges.get(edge_id)
+        if new is None:
+            changed_routes.append(edge_id)
+            continue
+        update = updates.get(edge_id, {})
+        label_changed = "label" in update and str(update["label"]) != before_edges[edge_id].get("value", "")
+        for cell in (old, new):
+            for field, attribute in (("flow_role", contracts.DATA_FLOW_ROLE), ("outcome", contracts.DATA_OUTCOME)):
+                if field in update:
+                    cell.attrib.pop(attribute, None)
+            if label_changed:
+                cell.attrib.pop("value", None)
+                for key in (contracts.DATA_LABEL_LEFT, contracts.DATA_LABEL_TOP,
+                            contracts.DATA_LABEL_WIDTH, contracts.DATA_LABEL_HEIGHT,
+                            contracts.DATA_LABEL_SEGMENT):
+                    cell.attrib.pop(key, None)
+                # Only the first native geometry's known label coordinates
+                # may change. Duplicate geometry and extension payload stay.
+                geometry = cell.find("mxGeometry")
+                if geometry is not None:
+                    for key in ("x", "y", "relative"):
+                        geometry.attrib.pop(key, None)
+                    offset = geometry.find("./mxPoint[@as='offset']")
+                    if offset is None:
+                        offset = ET.SubElement(geometry, "mxPoint", {"as": "offset"})
+                    for key in ("x", "y"):
+                        offset.attrib.pop(key, None)
+    differences = document.cell_payload_changes(left, right)
+    affected = {item["semantic_id"] for item in differences
+                if item["kind"] == "edge" and item["semantic_id"] in frozen}
+    affected.update(edge_id for edge_id in frozen & right_edges.keys()
+                    if document.comparison_attributes(left_edges[edge_id]) !=
+                       document.comparison_attributes(right_edges[edge_id]))
+    for edge_id, old in before_edges.items():
+        if (edge_id in after_edges and old.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
+                and "waypoints" not in updates.get(edge_id, {})):
+            old_payload = document.cell_payload_signatures(before)[f"edge:{edge_id}"]
+            new_payload = document.cell_payload_signatures(candidate)[f"edge:{edge_id}"]
+            def point_payload(payload):
+                return {path: value for path, value in payload.items() if "/Array[" in path}
+            if point_payload(old_payload) != point_payload(new_payload):
+                affected.add(edge_id)
+    # Payload comparison includes attributes; the explicit missing case is
+    # retained because content diff helpers only compare shared semantic IDs.
+    violations = sorted(set(changed_routes) | set(affected))
+    if violations:
+        raise contracts.DiagramError(
+            "Patch changed protected saved edge content",
+            code="patch/preservation-violation", evidence={"edges": violations, "differences": differences},
+            supported_fixes=["retain-saved-edge", "declare-edge-reroute"],
+        )
+    return {"checked": len(frozen), "preserved": True if frozen else None, "changed_edges": []}
+
+
 def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool) -> dict:
     validate_patch_spec(changes)
+    before_patch = copy.deepcopy(tree)
     pool = document.find_pool(tree)
     root = document.graph_root(tree)
     values = document.values_from_pool(pool, DEFAULTS)
@@ -1986,8 +2082,8 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
     explicit_type_reroutes = {
         update["id"]
         for update in edge_updates
-        if update.get("reroute") is True
-        or any(key in update for key in ROUTING_FIELDS if key != "reroute")
+        if update["id"] in existing_edges
+        and edge_route_update_requested(existing_edges[update["id"]], update)
     }
     for update in changes.get("update_nodes", []):
         node_id = update["id"]
@@ -2045,9 +2141,9 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         if requested_geometry and not allow_geometry_updates:
             raise contracts.DiagramError("Existing geometry update requires --allow-geometry-updates")
         if requested_geometry:
-            moved_node_ids.add(semantic_id)
             geom = cell.find("mxGeometry")
             assert geom is not None
+            previous_geometry = document.parse_geometry(cell)
             kind = cell.attrib.get(contracts.DATA_NODE_TYPE, "process")
             geometry_update = dict(update)
             if kind in sizing.FIXED_ASPECT_NODE_TYPES:
@@ -2070,6 +2166,8 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 if key in geometry_update:
                     geom.attrib[key] = contracts.number(geometry_update[key])
             nodes[semantic_id]["geometry"] = document.parse_geometry(cell)
+            if nodes[semantic_id]["geometry"] != previous_geometry:
+                moved_node_ids.add(semantic_id)
 
     new_nodes = changes.get("nodes", [])
     schema_version = pool.attrib.get(contracts.DATA_SCHEMA_VERSION, "1")
@@ -2215,11 +2313,12 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             raise contracts.DiagramError(f"Cannot update missing edge: {update['id']}", code="patch/missing-edge")
 
     explicit_reroute_ids = {
-        update["id"]
-        for update in edge_updates
-        if "label" in update or update.get("reroute") or any(
-            key in update for key in ROUTING_FIELDS if key != "reroute"
-        )
+        update["id"] for update in edge_updates
+        if edge_route_update_requested(existing_edges[update["id"]], update)
+    }
+    label_updated_ids = {
+        update["id"] for update in edge_updates
+        if "label" in update and str(update["label"]) != existing_edges[update["id"]].get("value", "")
     }
     changed_lane_ids = {item["id"] for item in lane_shifts}
     lane_impacted_edge_ids = {
@@ -2237,19 +2336,25 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         for edge_id in lane_impacted_edge_ids
         if existing_edges[edge_id].attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) == "explicit"
     )
-    auto_reroute_ids = {
+    before_lanes, before_nodes = document.lane_node_records(
+        document.graph_root(before_patch), document.find_pool(before_patch),
+    )
+    before_edges = document.edge_records(document.graph_root(before_patch))
+    spatial_scene_changed = bool(moved_node_ids or changed_lane_ids or new_nodes)
+    invalid_frozen_routes = {
         edge_id
         for edge_id, cell in existing_edges.items()
-        if cell.attrib.get(contracts.DATA_WAYPOINTS_ORIGIN) != "explicit"
-        and (
-            edge_id in lane_impacted_edge_ids
-            or (
-                cell.attrib.get(contracts.DATA_FROM) in moved_node_ids
-                or cell.attrib.get(contracts.DATA_TO) in moved_node_ids
-            )
-            and not routing_adapter.edge_route_is_locally_valid(cell, lanes, nodes)
-        )
+        if spatial_scene_changed and edge_id not in explicit_reroute_ids
+        and routing_adapter.edge_route_is_locally_valid(before_edges[edge_id], before_lanes, before_nodes)
+        and not routing_adapter.edge_route_is_locally_valid(cell, lanes, nodes)
     }
+    if invalid_frozen_routes:
+        raise contracts.DiagramError(
+            "Node or lane changes invalidate saved routes; declare the affected edge reroutes",
+            code="patch/route-update-required", evidence={"edges": sorted(invalid_frozen_routes)},
+            supported_fixes=["add-update-edges-reroute", "retain-node-lane-geometry"],
+        )
+    auto_reroute_ids: set[str] = set()
     reroute_ids = explicit_reroute_ids | auto_reroute_ids
     update_by_id = {update["id"]: update for update in edge_updates}
     effective_main_path = list(changes.get("main_path", document.read_main_path(pool)))
@@ -2266,6 +2371,16 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         updated_specs[semantic_id] = edge
 
     new_edges = changes.get("edges", [])
+    # Resolve text changes on a detached scene before reserving frozen label
+    # obstacles. A failed batch must not leak partial edge text/geometry.
+    staged_root = copy.deepcopy(root)
+    staged_edges = document.edge_records(staged_root)
+    for edge_id in label_updated_ids - reroute_ids:
+        staged_edges[edge_id].set("value", str(update_by_id[edge_id]["label"]))
+    routing_adapter.reflow_mutable_edge_labels(
+        staged_root, pool, lanes, nodes, label_updated_ids - reroute_ids,
+        preserve_position=True, exclude_obstacles=reroute_ids,
+    )
     routing_context = routing.new_routing_context(
         effective_main_path,
         [*updated_specs.values(), *new_edges],
@@ -2279,30 +2394,19 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         )
     )
     routing_adapter.seed_routing_context(
-        routing_context,
-        existing_edges,
-        lanes,
-        nodes,
-        exclude=reroute_ids,
+        routing_context, staged_edges, lanes, nodes, exclude=reroute_ids,
+        require_measurable=bool(reroute_ids or new_edges), pool=pool,
     )
     for edge in new_edges:
         if edge["id"] in existing_edges:
             raise contracts.DiagramError(f"Edge already exists: {edge['id']}")
     mutable_edge_ids = set(reroute_ids) | {edge["id"] for edge in new_edges}
     all_specs = [*updated_specs.values(), *new_edges]
-    batch = routing.plan_route_batch(
-        all_specs, document.routing_lane_views(lanes), document.routing_node_views(nodes),
-        main_path=effective_main_path, mutable_edge_ids=mutable_edge_ids,
-        routing_context=routing_context,
-        v3_semantics=pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION,
-    )
-    if batch.status != routing.ROUTE_COMPLETE:
-        raise route_batch_error(batch)
-    decisions = {decision.edge_id: decision for decision in batch.decisions}
-    # No edge XML has been changed before this point.  Existing records retain
-    # their unrelated style tokens/geometry children; additions are appended.
+    # Share the exact explicit-field and point-preservation decisions between
+    # native preflight and final writeback; compiled defaults are not updates.
+    reroute_explicit_fields = {}
+    reroute_points_actions = {}
     for edge_id in sorted(reroute_ids):
-        edge = updated_specs[edge_id]
         update = update_by_id.get(edge_id, {})
         existing_explicit = {
             field for field, marker in (
@@ -2313,12 +2417,40 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
                 ("entry_offset", contracts.DATA_ENTRY_OFFSET_EXPLICIT),
             ) if existing_edges[edge_id].attrib.get(marker) in {"explicit", "1"}
         }
-        explicit = existing_explicit | set(update)
-        points_action = (
+        reroute_explicit_fields[edge_id] = existing_explicit | set(update)
+        reroute_points_actions[edge_id] = (
             "replace_explicit" if "waypoints" in update
             else "preserve_existing" if "waypoints" in existing_explicit
             else "replace_automatic"
         )
+    routing_context["native_label_profiles"] = routing_adapter.native_label_profiles(
+        [edge for edge in all_specs if edge["id"] in mutable_edge_ids], pool, lanes, nodes,
+        existing_edges=existing_edges,
+        explicit_by_edge=reroute_explicit_fields, points_actions_by_edge=reroute_points_actions,
+    )
+    batch = routing.plan_route_batch(
+        all_specs, document.routing_lane_views(lanes), document.routing_node_views(nodes),
+        main_path=effective_main_path, mutable_edge_ids=mutable_edge_ids,
+        routing_context=routing_context,
+        v3_semantics=pool.attrib.get(contracts.DATA_SCHEMA_VERSION) == contracts.V3_SCHEMA_VERSION,
+    )
+    if batch.status != routing.ROUTE_COMPLETE:
+        raise route_batch_error(batch)
+    decisions = {decision.edge_id: decision for decision in batch.decisions}
+    for edge_id in label_updated_ids - reroute_ids:
+        existing_edges[edge_id].attrib.clear()
+        existing_edges[edge_id].attrib.update(staged_edges[edge_id].attrib)
+        existing_edges[edge_id][:] = [copy.deepcopy(child) for child in staged_edges[edge_id]]
+    for edge_id, update in update_by_id.items():
+        for field, attribute in (("flow_role", contracts.DATA_FLOW_ROLE), ("outcome", contracts.DATA_OUTCOME)):
+            if field in update:
+                existing_edges[edge_id].set(attribute, str(update[field]))
+    # No edge XML has been changed before this point.  Existing records retain
+    # their unrelated style tokens/geometry children; additions are appended.
+    for edge_id in sorted(reroute_ids):
+        edge = updated_specs[edge_id]
+        explicit = reroute_explicit_fields[edge_id]
+        points_action = reroute_points_actions[edge_id]
         routing_adapter.apply_route_decision(
             existing_edges[edge_id], edge, decisions[edge_id], lanes, nodes,
             existing=True, explicit_fields=explicit, points_action=points_action,
@@ -2329,9 +2461,11 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
             root, pool, edge, lanes, nodes, routing_context=routing_context,
             decision=decisions[edge["id"]], explicit_fields=set(edge),
         )
+    routing_adapter.apply_label_plan(document.edge_records(root), batch.decisions, batch.label_choices)
     routing_adapter.reflow_mutable_edge_labels(
-        root, pool, lanes, nodes, mutable_edge_ids,
+        root, pool, lanes, nodes, mutable_edge_ids - set(batch.label_choices),
         routing_context.get("label_sides", {}),
+        preserve_position=True,
     )
 
     phases = document.phase_records(root, pool)
@@ -2389,6 +2523,27 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         if edge_id not in deleted_edge_ids
     }
     final_edges = document.edge_records(root)
+    saved_routes = saved_edge_preservation_guard(before_patch, tree, changes)
+    original_edges = document.edge_records(document.graph_root(before_patch))
+    def label_position(cell):
+        geometry = cell.find("mxGeometry")
+        if geometry is None:
+            return None
+        return (tuple((key, geometry.get(key)) for key in ("x", "y", "relative")),
+                document.element_signature(geometry.find("./mxPoint[@as='offset']")))
+    label_repositioned_ids = sorted(
+        edge_id for edge_id in (label_updated_ids | reroute_ids)
+        if label_position(original_edges[edge_id]) != label_position(final_edges[edge_id])
+    )
+    rerouted_ids = sorted(
+        edge_id for edge_id in reroute_ids
+        if (original_edges[edge_id].get("source"), original_edges[edge_id].get("target"),
+            document.port_from_style(original_edges[edge_id], "exit"), document.port_from_style(original_edges[edge_id], "entry"),
+            document.edge_waypoints(original_edges[edge_id])) !=
+           (final_edges[edge_id].get("source"), final_edges[edge_id].get("target"),
+            document.port_from_style(final_edges[edge_id], "exit"), document.port_from_style(final_edges[edge_id], "entry"),
+            document.edge_waypoints(final_edges[edge_id]))
+    )
     manual_waypoints_preserved = (
         all(
             edge_id in final_edges
@@ -2417,6 +2572,10 @@ def patch_tree(tree: ET.ElementTree, changes: dict, allow_geometry_updates: bool
         ),
         "updated_nodes": sorted(update["id"] for update in changes.get("update_nodes", [])),
         "updated_edges": sorted(update["id"] for update in edge_updates),
+        "label_updated_edges": sorted(label_updated_ids),
+        "label_repositioned_edges": label_repositioned_ids,
+        "rerouted_edges": rerouted_ids,
+        "saved_routes": saved_routes,
         "auto_rerouted_edges": sorted(auto_reroute_ids - explicit_reroute_ids),
         "added_nodes": sorted(node["id"] for node in new_nodes),
         "added_edges": sorted(edge["id"] for edge in new_edges),
@@ -2476,6 +2635,13 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     reroute, addition, and deletion explicit. This prevents an unrelated edit
     from being hidden behind a broadly authorized semantic cell.
     """
+    def geometry_payloads(tree):
+        return {key: {path: value for path, value in fields.items()
+                      if path.startswith("mxCell/mxGeometry[")}
+                for key, fields in document.cell_payload_signatures(tree).items()}
+
+    before_payloads = geometry_payloads(before)
+    after_payloads = geometry_payloads(after)
     before_cells = document.semantic_cells(before)
     after_cells = document.semantic_cells(after)
     missing = sorted(set(before_cells) - set(after_cells))
@@ -2486,7 +2652,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     for key in sorted(set(before_cells) & set(after_cells)):
         before_cell = before_cells[key]
         after_cell = after_cells[key]
-        if document.element_signature(before_cell.find("mxGeometry")) != document.element_signature(after_cell.find("mxGeometry")):
+        if before_payloads[key] != after_payloads[key]:
             changed_geometry.append(key)
         before_attributes = document.comparison_attributes(before_cell)
         after_attributes = document.comparison_attributes(after_cell)
@@ -2505,6 +2671,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         expected_added = set(expected_cells) - set(before_cells)
         expected_missing = set(before_cells) - set(expected_cells)
 
+    expected_payloads = geometry_payloads(expected_tree)
     expected_geometry: list[str] = []
     expected_attributes: list[str] = []
     unexpected_geometry: list[str] = []
@@ -2513,9 +2680,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
     for key in sorted(common_expected_actual):
         expected_cell = expected_cells[key]
         actual_cell = after_cells[key]
-        if document.element_signature(expected_cell.find("mxGeometry")) != document.element_signature(
-            actual_cell.find("mxGeometry")
-        ):
+        if expected_payloads[key] != after_payloads[key]:
             unexpected_geometry.append(key)
         expected_cell_attributes = document.comparison_attributes(expected_cell)
         actual_attributes = document.comparison_attributes(actual_cell)
@@ -2523,9 +2688,7 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
             unexpected_attributes.append(key)
         if key in before_cells:
             before_cell = before_cells[key]
-            if document.element_signature(before_cell.find("mxGeometry")) != document.element_signature(
-                expected_cell.find("mxGeometry")
-            ):
+            if before_payloads[key] != expected_payloads[key]:
                 expected_geometry.append(key)
             if document.comparison_attributes(before_cell) != expected_cell_attributes:
                 expected_attributes.append(key)
@@ -2555,6 +2718,16 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
             change = ("added" if cell_id not in expected_unmanaged else
                       "missing" if cell_id not in actual_unmanaged else "changed")
             unexpected_unmanaged.append({"cell_id": cell_id, "change": change})
+    changed_content = document.cell_payload_changes(before, after)
+    unexpected_content = document.cell_payload_changes(expected_tree, after)
+    preservation_errors = []
+    if changes is not None:
+        try:
+            saved_edge_preservation_guard(before, after, changes)
+        except contracts.DiagramError as error:
+            if error.code != "patch/preservation-violation":
+                raise
+            preservation_errors.append(error.diagnostic())
     preserved = (
         not unexpected_missing
         and not unexpected_geometry
@@ -2562,6 +2735,8 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         and not unexpected_added
         and not unexpected_order
         and not unexpected_unmanaged
+        and not unexpected_content
+        and not preservation_errors
     )
     result = {
         "preserved": preserved,
@@ -2585,6 +2760,12 @@ def compare_trees(before: ET.ElementTree, after: ET.ElementTree, changes: dict |
         result["unexpected_sibling_order"] = unexpected_order
     if unexpected_unmanaged:
         result["unexpected_unmanaged_cells"] = unexpected_unmanaged
+    if changed_content:
+        result["changed_cell_content"] = changed_content
+    if unexpected_content:
+        result["unexpected_cell_content"] = unexpected_content
+    if preservation_errors:
+        result["unexpected_preservation"] = preservation_errors
     return result
 
 
@@ -2636,6 +2817,9 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
         points = document.edge_waypoints(cell)
         if points:
             edge["waypoints"] = [{"x": x, "y": y} for x, y in points]
+        edge["label_geometry"] = document.edge_label_measurement(
+            cell, document.edge_polyline(cell, lanes, nodes), {"lanes": lanes, "nodes": nodes, "pool": pool},
+        )
         edge_specs.append(edge)
 
     phase_specs = [phase_cell_spec(cell) for _, cell in sorted(phases.items())]
@@ -2669,6 +2853,47 @@ def inspect_tree(tree: ET.ElementTree) -> dict:
     return result
 
 
+def _check_delivery_candidate(
+    accepted: ET.ElementTree, candidate: ET.ElementTree, strict: bool,
+    *, before: ET.ElementTree | None = None, changes: dict | None = None,
+) -> dict:
+    """Gate the parsed temporary file, before the atomic output replacement."""
+    if document.serialization_signature(accepted) != document.serialization_signature(candidate):
+        raise contracts.DiagramError(
+            "Serialized candidate changed accepted XML structure or content",
+            code="delivery/candidate-preservation-failed",
+            evidence={"serialized_structure_matches": False},
+        )
+    preservation = compare_trees(accepted, candidate)
+    if not preservation["preserved"]:
+        raise contracts.DiagramError(
+            "Serialized candidate changed accepted diagram content",
+            code="delivery/candidate-preservation-failed",
+            evidence={"comparison": preservation},
+        )
+    if before is not None:
+        saved_edge_preservation_guard(before, candidate, changes)
+    result = core_validation.validate_tree(candidate)
+    strict_failed = bool(strict and result["warnings"])
+    if not result["valid"] or strict_failed:
+        raise contracts.DiagramError(
+            "Serialized candidate failed strict validation" if strict_failed
+            else "Serialized candidate failed validation",
+            code="delivery/strict-validation-failed" if strict_failed
+            else "delivery/validation-failed",
+            evidence={"strict": strict, "diagnostics": result["diagnostics"]},
+        )
+    if before is not None:
+        comparison = compare_trees(before, candidate, changes)
+        if not comparison["preserved"]:
+            raise contracts.DiagramError(
+                "Serialized patch candidate differs from the declared patch",
+                code="delivery/candidate-preservation-failed",
+                evidence={"comparison": comparison},
+            )
+    return result
+
+
 def command_build(args: argparse.Namespace) -> None:
     document.ensure_output_available(args.output, args.force)
     spec = load_json(args.spec)
@@ -2685,7 +2910,12 @@ def command_build(args: argparse.Namespace) -> None:
             else "delivery/validation-failed",
             evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
-    document.write_tree(tree, args.output)
+    document.write_tree(
+        tree, args.output,
+        candidate_check=lambda candidate: result.update(
+            _check_delivery_candidate(tree, candidate, args.strict)
+        ),
+    )
     result.update(
         {
             "operation": "build",
@@ -2746,7 +2976,9 @@ def command_patch(args: argparse.Namespace) -> None:
             },
             supported_fixes=["review-semantic-drift", "use-accept-model-drift"],
         )
-    patch_receipt = patch_tree(tree, load_json(args.changes), args.allow_geometry_updates)
+    before = copy.deepcopy(tree)
+    changes = load_json(args.changes)
+    patch_receipt = patch_tree(tree, changes, args.allow_geometry_updates)
     patch_receipt.update(
         {
             "input_sha256": input_receipt["sha256"],
@@ -2772,7 +3004,12 @@ def command_patch(args: argparse.Namespace) -> None:
             else "delivery/validation-failed",
             evidence={"strict": args.strict, "diagnostics": result["diagnostics"]},
         )
-    document.write_tree(tree, args.output)
+    document.write_tree(
+        tree, args.output,
+        candidate_check=lambda candidate: result.update(
+            _check_delivery_candidate(tree, candidate, args.strict, before=before, changes=changes)
+        ),
+    )
     result.update(
         {
             "operation": "patch",

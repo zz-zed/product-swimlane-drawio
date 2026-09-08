@@ -33,13 +33,23 @@ Inspection returns semantic intent, current geometry, the exact input SHA-256 di
 - Lane insertion uses stable `before` / `after` references. Lane deletion requires explicit reconciliation of owned nodes, incident edges, `main_path`, and groups.
 - Unrelated geometry remains unchanged.
 - Unknown cells retain their complete subtrees and relative order among siblings. Phase normalization may sort managed runs between unknown cells, but cannot move an existing sibling across an unknown cell. A resulting phase-layer conflict fails validation without writing the candidate, even in non-strict mode.
-- Manual waypoints remain exact unless the user explicitly reroutes that edge.
-- Moving or resizing an existing node requires geometry authorization.
+- Saved ports and waypoints remain exact for label-only updates, even when the origin is still `automatic`. Labels keep their native position when possible and otherwise move only on the saved path. Explicit waypoint arrays remain exact even with `reroute: true`; supplying `waypoints` is the intentional replacement operation.
+- Moving or resizing an existing node requires geometry authorization. If a node/lane change invalidates a frozen route, `patch/route-update-required` requires an explicit route update for that edge.
 - A new v3 layout intent field may affect only its declared group or incident region unless a required lane expansion shifts later lanes.
-- Patch-added v3 nodes consume `slot` and note `anchor` intent; dependent lane shifts and automatic reroutes are separate receipt evidence.
+- Patch-added v3 nodes consume `slot` and note `anchor` intent; dependent lane shifts, text updates, label repositioning and rerouted edges are separate receipt evidence.
 - A node-type change requires explicit rerouting of all surviving incident edges.
 - A patch must name the `input.sha256` observed during inspection through `--expected-input-sha256`, preventing a later save from silently changing the baseline.
 - Reviewed direct semantic edits require both an equivalent declared patch and `--accept-model-drift`. Schema-composition errors cannot be overridden.
+
+## Native label evidence
+
+Inspect, validate and routing obstacles share current native label measurement.
+Relative x/y and offset are read from saved geometry; `data-label-*` remains
+historical generation metadata. Supported bounds are estimated, and unsupported
+styles or router geometry report `not_available` with a strict-failing warning.
+Unmeasurable frozen labels block spatial planning. Coverage counts and IDs must
+be reported alongside measured conflicts; zero conflicts is not a coverage pass.
+See the [supported profile](../skills/product-swimlane-drawio/references/schema.md#native-edge-labels-and-patch-receipts).
 
 ## Manual corrections
 
@@ -59,6 +69,14 @@ is treated as formatting, unless inherited `xml:space="preserve"` applies.
 Any unexpected order or unmanaged-content difference makes
 `preserved=false` and CLI exit 1. These evidence fields are omitted when empty;
 the existing semantic-cell count still counts managed cells only.
+
+Managed cells also protect complete ordered native payloads: extensions,
+repeated geometry, mixed text/tails, child order, and inherited `xml:space`.
+`changed_cell_content` / `unexpected_cell_content` locate differences by
+semantic ID, kind and native path. Known structural formatting whitespace may
+normalize; opaque content does not. The guarantee excludes ElementTree-discarded
+comments/processing instructions and arbitrary XML byte-for-byte preservation.
+An independent saved-edge guard checks permissions without replaying the patch.
 
 `compare` is a delivery gate after a declared patch: require exit 0 and
 `preserved=true` in addition to strict validation. It compares observed
@@ -89,7 +107,7 @@ Ambiguous edits remain manual geometry and receive a reconciliation diagnostic; 
 
 1. Inspect the latest user-saved input and capture its SHA-256 digest and managed state.
 2. Write a candidate to a new path while requiring the captured input digest.
-3. Compile and validate the exact candidate.
+3. Parse the serialized candidate, verify it against accepted in-memory content, run the independent preservation guard, validate/strict-check it, and compare the patch before atomic replacement.
 4. Export and review an optional preview.
 5. Replace a reviewed target only with explicit replacement intent.
 6. Re-inspect and revalidate after Draw.io saves the file.

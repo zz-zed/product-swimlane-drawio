@@ -1,52 +1,30 @@
 # Regression and review evidence
 
-## Scope and compatibility
+## Current evidence contract
 
-Version 0.6.0 extracts private contracts, geometry, document and metadata modules
-inside the complete Skill. The five CLI commands, schema/model-hash versions,
-layout/routing and patch/compare rules remain unchanged. Equivalence and upgrade
-impact are separate checks:
+Core runtime delivery uses Python 3.10+ standard library and the complete Skill.
+Build/patch parse and verify the serialized candidate before atomic replacement;
+patch additionally checks independent saved-edge invariants and same-version
+compare. Compare includes managed native extensions and opaque whitespace.
 
-- Preserve the accepted original-vs-extracted 0.5.1 comparison.
-- Derive a reference from the frozen original single-file 0.5.1 source by changing
-  only its unique `TOOL_VERSION` constant to 0.6.0. Pin the parent SHA-256 and save
-  the generation recipe, exact one-line diff and derived SHA-256. This reference
-  is not a historical release and must not be derived from the module candidate.
-- Compare that reference with the module candidate using full output XML bytes,
-  stdout, stderr and exit codes. Only verified temporary paths may be normalized;
-  do not normalize stamps, hashes, preservation results or pool attributes.
-- Audit original 0.5.1 vs candidate 0.6.0 separately, retaining complete raw
-  upgrade differences, including compare fields and exit codes. Keep earlier
-  failed gates unchanged; record the new criterion and results separately.
+Current label geometry comes from saved native state. Estimated bounds and
+supported-profile coverage are separate from conflict counts. Unsupported
+geometry is explicit and fails strict validation; it is never an empty routing
+obstacle. Label-only patches preserve saved routes, including GUI changes with
+an unchanged automatic-origin marker. Text updates, label movement, route edits
+and dependent node/lane motion are recorded separately.
 
-The complete comparison includes the six CLI cases, available editor corpus,
-synthetic unknown-content cases, valid old completed patches, known bad outputs,
-old-input/current-patch/same-version-compare and real tampering negatives. It is
-not limited to previously observed mismatches. A runtime fingerprint includes the
-entrypoint, every core module and the verified loaded version, not the entrypoint
-alone. No new renderer, migration or review API is introduced.
+Behavior changes require case-by-case audit of complete command results and
+artifact differences before updating the frozen fixture. Tests must assert
+native XML directly as well as compare, so replay cannot justify the same bug.
+Source checks and tests in an actually extracted package are separate evidence.
+List Python/OS/editor matrices actually executed and mark the others not run.
+Strict checks, native preview export, later agent image inspection, and human
+review remain separate. A numeric model or exported image alone is not a visual
+review or an interactive editor round trip.
 
-The existing cross-version limitation remains: 0.6.0 `compare --changes` can
-reject a valid completed 0.5.1 patch solely because replay uses the current
-producing-tool stamp. `pool:main` evidence, `preserved: false` and exit 1 must not
-be waived. Pool differences can also be real protected changes; see the
-[compatibility matrix](../skills/product-swimlane-drawio/references/schema.md#compatibility).
-
-The preceding 0.5.1 release changed release checks and developer evidence tooling, and fixed
-one strict-validation false positive: phase Z-order is checked among siblings,
-not across unrelated parents in Draw.io's depth-first serialization. Actual
-unsafe layering, visibility and interaction still fail. Routing, semantic
-hashes and patch permissions are unchanged. Container ancestors participate in
-the order check so reparented connectors cannot pass behind the pool or layer.
-Unknown cells now anchor sibling order during phase normalization; unresolved
-layering conflicts refuse output. `compare` also detects sibling-order and
-full unmanaged-subtree differences, adding optional evidence fields only when
-applicable. This intentionally rejects previously missed differences while
-keeping clean receipt shapes unchanged.
-Its generated XML changed only
-the `data-tool-version` stamp from 0.5.0 to 0.5.1. The current CLI remains a standard-library
-tool distributed as one complete Skill directory, including its private core modules. New review fields below are a **draft sidecar contract**,
-not accepted build/patch fields or a new CLI command.
+The existing cross-version completed-patch limitation remains; no entire pool
+attribute set, diagnostic set or receipt is waived to force equivalence.
 
 ## Release inventory
 
@@ -67,8 +45,9 @@ The repository test/tooling files are not added to the installed Skill.
 
 ## Frozen CLI baseline
 
-`tests/fixtures/cli-contract-v1.json` was captured from the 0.5.0 runtime before
-the version stamp changed. `tools/regression_baseline.py` prints a candidate
+`tests/fixtures/cli-contract-v1.json` began as a 0.5.0 snapshot and is maintained
+through explicit, reviewed behavior updates. Historical snapshots remain
+separate from the current fixture. `tools/regression_baseline.py` prints a candidate
 snapshot; it never rewrites the baseline. Review intentional differences before
 changing the fixture. The tests check command exit codes and fingerprints of
 the complete JSON result, stderr, generated bytes, ordered diagnostics,
@@ -187,3 +166,51 @@ Future repairs require a confirmed whitelist of layout-only intent, frozen
 manual geometry, separate candidate output, at most two rounds, strict and
 compare validation, and a last-good artifact. No automatic repair or new
 semantic/visual review claim is implemented in 0.6.0.
+
+## Historical 0.6.0 extraction evidence
+
+Version 0.6.0 extracts private contracts, geometry, document and metadata modules
+inside the complete Skill. The five CLI commands, schema/model-hash versions,
+layout/routing and patch/compare rules remain unchanged. Equivalence and upgrade
+impact are separate checks:
+
+- Preserve the accepted original-vs-extracted 0.5.1 comparison.
+- Derive a reference from the frozen original single-file 0.5.1 source by changing
+  only its unique `TOOL_VERSION` constant to 0.6.0. Pin the parent SHA-256 and save
+  the generation recipe, exact one-line diff and derived SHA-256. This reference
+  is not a historical release and must not be derived from the module candidate.
+- Compare that reference with the module candidate using full output XML bytes,
+  stdout, stderr and exit codes. Only verified temporary paths may be normalized;
+  do not normalize stamps, hashes, preservation results or pool attributes.
+- Audit original 0.5.1 vs candidate 0.6.0 separately, retaining complete raw
+  upgrade differences, including compare fields and exit codes. Keep earlier
+  failed gates unchanged; record the new criterion and results separately.
+
+The complete comparison includes the six CLI cases, available editor corpus,
+synthetic unknown-content cases, valid old completed patches, known bad outputs,
+old-input/current-patch/same-version-compare and real tampering negatives. It is
+not limited to previously observed mismatches. A runtime fingerprint includes the
+entrypoint, every core module and the verified loaded version, not the entrypoint
+alone. No new renderer, migration or review API is introduced.
+
+The existing cross-version limitation remains: 0.6.0 `compare --changes` can
+reject a valid completed 0.5.1 patch solely because replay uses the current
+producing-tool stamp. `pool:main` evidence, `preserved: false` and exit 1 must not
+be waived. Pool differences can also be real protected changes; see the
+[compatibility matrix](../skills/product-swimlane-drawio/references/schema.md#compatibility).
+
+The preceding 0.5.1 release changed release checks and developer evidence tooling, and fixed
+one strict-validation false positive: phase Z-order is checked among siblings,
+not across unrelated parents in Draw.io's depth-first serialization. Actual
+unsafe layering, visibility and interaction still fail. Routing, semantic
+hashes and patch permissions are unchanged. Container ancestors participate in
+the order check so reparented connectors cannot pass behind the pool or layer.
+Unknown cells now anchor sibling order during phase normalization; unresolved
+layering conflicts refuse output. `compare` also detects sibling-order and
+full unmanaged-subtree differences, adding optional evidence fields only when
+applicable. This intentionally rejects previously missed differences while
+keeping clean receipt shapes unchanged.
+Its generated XML changed only
+the `data-tool-version` stamp from 0.5.0 to 0.5.1. The current CLI remains a standard-library
+tool distributed as one complete Skill directory, including its private core modules. New review fields below are a **draft sidecar contract**,
+not accepted build/patch fields or a new CLI command.

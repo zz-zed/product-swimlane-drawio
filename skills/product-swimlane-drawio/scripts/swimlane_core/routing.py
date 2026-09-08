@@ -62,15 +62,25 @@ class RouteFailure:
 class RouteSearchBudget:
     """Finite routing feedback limits, independent from port-search budgets."""
 
-    __slots__ = ("max_component_replans", "max_batch_replays")
+    __slots__ = ("max_component_replans", "max_batch_replays", "max_path_candidates",
+                 "max_candidate_evaluations", "max_label_pairs", "max_batch_label_pairs")
 
-    def __init__(self, max_component_replans: int = 6, max_batch_replays: int = 64) -> None:
+    def __init__(self, max_component_replans: int = 6, max_batch_replays: int = 64,
+                 max_path_candidates: int = 128, max_candidate_evaluations: int = 8192,
+                 max_label_pairs: int = 32, max_batch_label_pairs: int = 128) -> None:
         component_replans = int(max_component_replans)
         batch_replays = int(max_batch_replays)
         if component_replans <= 0 or batch_replays <= 0:
             raise contracts.DiagramError("Route search budgets must be positive")
         self.max_component_replans = component_replans
         self.max_batch_replays = batch_replays
+        self.max_path_candidates = int(max_path_candidates)
+        self.max_candidate_evaluations = int(max_candidate_evaluations)
+        self.max_label_pairs = int(max_label_pairs)
+        self.max_batch_label_pairs = int(max_batch_label_pairs)
+        if min(self.max_path_candidates, self.max_candidate_evaluations,
+               self.max_label_pairs, self.max_batch_label_pairs) <= 0:
+            raise contracts.DiagramError("Route search budgets must be positive")
 
 
 class BatchRouteResult:
@@ -79,6 +89,7 @@ class BatchRouteResult:
     __slots__ = (
         "status", "decisions", "failure", "port_plan", "batch_replays",
         "component_replans", "routing_order", "linked_edge_pairs",
+        "label_choices", "planning",
     )
 
     def __init__(
@@ -92,6 +103,7 @@ class BatchRouteResult:
         component_replans=None,
         routing_order=(),
         linked_edge_pairs=(),
+        label_choices=None, planning=None,
     ) -> None:
         self.status = status
         self.decisions = tuple(decisions)
@@ -101,6 +113,8 @@ class BatchRouteResult:
         self.component_replans = dict(component_replans or {})
         self.routing_order = tuple(routing_order)
         self.linked_edge_pairs = tuple(linked_edge_pairs)
+        self.label_choices = dict(label_choices or {})
+        self.planning = dict(planning or {})
 
 
 def inferred_spec_route_class(edge: dict, nodes: dict[str, dict]) -> str:
@@ -229,8 +243,8 @@ def preferred_sides(
         elif (
             v3_semantics
             and source_type == "decision"
-            and target_type == "end"
             and same_lane_down
+            and (target_type == "end" or edge["from"] not in (bottom_reserved_sources or set()))
         ):
             default_exit = "bottom"
         elif source_type == "decision" and branch == "positive" and source["lane"] != target["lane"]:
@@ -460,7 +474,8 @@ def simplify_automatic_waypoints(
             ):
                 full_path = direct_elbow
 
-    if route_class == "back" and exit_side == entry_side and entry_side in {"left", "right"}:
+    if (route_class == "back" and exit_side == entry_side and entry_side in {"left", "right"}
+            and nodes[source_id]["lane"] == nodes[target_id]["lane"]):
         target = nodes[target_id]
         target_lane = lanes[target["lane"]]["geometry"]
         target_bounds = core_geometry.node_bounds_in_pool(target, lanes[target["lane"]])
@@ -586,6 +601,166 @@ def path_has_hairpin(points: list[tuple[float, float]]) -> bool:
         if first_delta * last_delta < 0 and core_geometry.segment_length(middle) < routing_policy.MIN_INTERNAL_SEGMENT:
             return True
     return False
+
+
+class QualityIssue:
+    """Plain geometric evidence shared by planning and XML diagnostics.
+
+    The order of issues is the legacy collector order. No diagnostic formatting,
+    XML objects, candidate score, or caller-owned state enters these predicates.
+    """
+
+    __slots__ = ("code", "subject_ids", "evidence", "scope")
+
+    def __init__(self, code, subject_ids, evidence=None, scope="path"):
+        self.code = code
+        self.subject_ids = tuple(subject_ids)
+        self.evidence = dict(evidence or {})
+        self.scope = scope
+
+    def to_dict(self):
+        return {"code": self.code, "subject_ids": list(self.subject_ids),
+                "evidence": dict(self.evidence), "scope": self.scope}
+
+
+def path_shape_issues(edge, points, lanes, nodes, node_bounds, internal_boundaries):
+    """Short internals, safely avoidable forward bends, and hairpins.
+
+    ``edge`` contains plain id/from/to/route/waypoints_origin fields and optional
+    exit_port/entry_port (side, offset) pairs. Endpoint segments retain their
+    original short-segment exemption. Lanes/nodes are routing views, not XML.
+    """
+    issues = []
+    segments = list(zip(points, points[1:]))
+    short_segments = [
+        {"index": index, "length": core_geometry.segment_length(segment)}
+        for index, segment in enumerate(segments[1:-1], start=1)
+        if core_geometry.segment_length(segment)
+        < routing_policy.MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
+    ]
+    if short_segments:
+        issues.append(QualityIssue("routing/short-segment", (edge.get("id"),), {
+            "segments": short_segments, "minimum": routing_policy.MIN_INTERNAL_SEGMENT,
+            "waypoints_origin": edge.get("waypoints_origin", "unknown"),
+        }))
+    bends = core_geometry.bend_count(points)
+    if edge.get("route") == "forward" and bends > 2:
+        source_id, target_id = edge.get("from"), edge.get("to")
+        exit_port, entry_port = edge.get("exit_port"), edge.get("entry_port")
+        if source_id in nodes and target_id in nodes and exit_port and entry_port:
+            pool_width = max(lane["geometry"]["x"] + lane["geometry"]["width"]
+                             for lane in lanes.values())
+            pool_height = max(lane["geometry"]["y"] + lane["geometry"]["height"]
+                              for lane in lanes.values())
+            candidates = route_candidates(
+                "forward", points[0], points[-1], exit_port[0], entry_port[0],
+                node_bounds[source_id], node_bounds[target_id],
+                lanes[nodes[target_id]["lane"]]["geometry"],
+                pool_width, pool_height, internal_boundaries, [],
+            )
+            if any(
+                core_geometry.bend_count(candidate) <= 2
+                and not path_has_hairpin(candidate)
+                and all(core_geometry.segment_length(segment)
+                        >= routing_policy.MIN_INTERNAL_SEGMENT - core_geometry.GEOMETRY_TOLERANCE
+                        for segment in list(zip(candidate, candidate[1:]))[1:-1])
+                and automatic_polyline_is_safe(candidate, lanes, nodes, source_id, target_id)
+                for candidate in candidates
+            ):
+                issues.append(QualityIssue("routing/excessive-bends", (edge.get("id"),),
+                                           {"bends": bends, "maximum": 2}))
+    if path_has_hairpin(points):
+        issues.append(QualityIssue("routing/hairpin", (edge.get("id"),)))
+    return tuple(issues)
+
+
+def segment_quality_issues(edge, segments, internal_boundaries, node_bounds):
+    """Ordered per-segment orthogonality, boundary and node violations.
+
+    A diagonal emits only its orthogonality issue, as in the XML collector.
+    Only the first source segment and the last target segment are exempt from
+    their own terminal node; intermediate re-entry is still a crossing.
+    """
+    issues = []
+    subject = (edge.get("id"),)
+    for index, segment in enumerate(segments):
+        axis = core_geometry.segment_axis(segment)
+        if axis == "diagonal":
+            issues.append(QualityIssue("routing/non-orthogonal", subject))
+            continue
+        if axis == "vertical":
+            x = segment[0][0]
+            if any(abs(x - boundary) < core_geometry.GEOMETRY_TOLERANCE
+                   for boundary in internal_boundaries):
+                issues.append(QualityIssue("routing/lane-boundary-overlap", subject, {"x": x}))
+            elif any(abs(x - boundary) < routing_policy.LANE_BOUNDARY_CLEARANCE
+                     for boundary in internal_boundaries):
+                issues.append(QualityIssue("routing/lane-boundary-clearance", subject, {
+                    "distance": min(abs(x - boundary) for boundary in internal_boundaries),
+                    "minimum": routing_policy.LANE_BOUNDARY_CLEARANCE,
+                }))
+        for node_id, bounds in node_bounds.items():
+            if node_id == edge.get("from") and index == 0:
+                continue
+            if node_id == edge.get("to") and index == len(segments) - 1:
+                continue
+            if core_geometry.segment_crosses_bounds(segment, bounds):
+                issues.append(QualityIssue("routing/node-crossing", subject, {"node": node_id}))
+    return tuple(issues)
+
+
+def back_corridor_issues(edge, segments, lanes, nodes, node_bounds):
+    """Same-lane returns need an internal corridor; cross-lane returns may approach directly."""
+    if edge.get("route") != "back" or edge.get("waypoints_origin") != "automatic":
+        return ()
+    target_id, entry_port = edge.get("to"), edge.get("entry_port")
+    if target_id not in nodes or not entry_port or entry_port[0] not in {"left", "right"}:
+        return ()
+    source_id = edge.get("from")
+    if source_id in nodes and nodes[source_id]["lane"] != nodes[target_id]["lane"]:
+        return ()
+    target = nodes[target_id]
+    lane = lanes[target["lane"]]["geometry"]
+    bounds = node_bounds[target_id]
+    safe_gap = routing_policy.LANE_BOUNDARY_CLEARANCE - core_geometry.GEOMETRY_TOLERANCE
+    vertical_x = [segment[0][0] for segment in segments
+                  if core_geometry.segment_axis(segment) == "vertical"]
+    if entry_port[0] == "left":
+        internal = any(lane["x"] + safe_gap <= x < bounds["left"] for x in vertical_x)
+    else:
+        internal = any(bounds["right"] < x <= lane["x"] + lane["width"] - safe_gap
+                       for x in vertical_x)
+    if internal:
+        return ()
+    return (QualityIssue("routing/back-corridor-outside-target-lane", (edge.get("id"),), {
+        "target_lane": target["lane"], "entry_side": entry_port[0], "vertical_x": vertical_x,
+    }),)
+
+
+def edge_pair_issues(first_edge, first_segments, second_edge, second_segments):
+    """Pair conflicts, close parallels and reciprocal ambiguity, in that order.
+
+    Caller chooses pair order (the XML collector sorts semantic IDs). Shared
+    endpoints retain core_geometry.segments_conflict's exact exemptions.
+    """
+    issues = []
+    subject = (first_edge.get("id"), second_edge.get("id"))
+    evidence = {"other_edge": second_edge.get("id")}
+    conflict = any(core_geometry.segments_conflict(first, second)
+                   for first in first_segments for second in second_segments)
+    near_parallel = any(segments_near_parallel(first, second)
+                        for first in first_segments for second in second_segments)
+    if conflict:
+        issues.append(QualityIssue("routing/edge-conflict", subject, evidence, "edge_pair"))
+    if near_parallel:
+        issues.append(QualityIssue("routing/near-parallel-conflict", subject, {
+            **evidence, "minimum": routing_policy.NEAR_PARALLEL_CLEARANCE,
+        }, "edge_pair"))
+    reciprocal = (first_edge.get("from") == second_edge.get("to")
+                  and first_edge.get("to") == second_edge.get("from"))
+    if reciprocal and (conflict or near_parallel):
+        issues.append(QualityIssue("routing/reciprocal-ambiguity", subject, evidence, "edge_pair"))
+    return tuple(issues)
 
 
 def route_candidates(
@@ -752,6 +927,7 @@ def candidate_score(
     reciprocal_segments: list[tuple[tuple[float, float], tuple[float, float]]],
     label_choice: tuple[int, dict[str, float]] | None,
     has_label: bool,
+    prefer_target_lane_corridor: bool = True,
 ) -> float:
     segments = list(zip(points, points[1:]))
     bends = core_geometry.bend_count(points)
@@ -775,7 +951,7 @@ def candidate_score(
         for other in reciprocal_segments:
             if core_geometry.segments_conflict(segment, other) or segments_near_parallel(segment, other):
                 score += ROUTE_CONFLICT_PENALTY * 2
-    if route_class == "back":
+    if route_class == "back" and prefer_target_lane_corridor:
         vertical_x = [
             segment[0][0]
             for segment in segments[1:-1]
@@ -920,6 +1096,70 @@ def _measure_candidate_clearance(candidate, profile):
         target_style=profile["target_style"],
         edge_style=profile["edge_style"],
     )
+
+
+def _candidate_quality(edge, assignment, path, lanes, nodes, context):
+    """Use the same geometric facts as final XML collectors, before scoring."""
+    view = dict(edge, route=infer_route_class(edge, nodes[edge["from"]], nodes[edge["to"]]),
+                waypoints_origin="automatic", exit_port=(assignment.exit.side, assignment.exit.offset),
+                entry_port=(assignment.entry.side, assignment.entry.offset))
+    bounds = {key: core_geometry.node_bounds_in_pool(node, lanes[node["lane"]])
+              for key, node in nodes.items()}
+    boundaries = internal_lane_boundaries(lanes)
+    segments = list(zip(path, path[1:]))
+    issues = [*path_shape_issues(view, path, lanes, nodes, bounds, boundaries),
+              *segment_quality_issues(view, segments, boundaries, bounds),
+              *back_corridor_issues(view, segments, lanes, nodes, bounds)]
+    if not endpoint_direction_is_valid(path, assignment.exit.side, assignment.entry.side):
+        issues.append(QualityIssue("routing/endpoint-direction", (edge["id"],), {}, "edge"))
+    if ((edge["from"], edge["to"]) in context.get("main_path_pairs", ())
+            and nodes[edge["from"]]["lane"] == nodes[edge["to"]]["lane"]
+            and int(nodes[edge["to"]]["semantic"].get("rank", 0)) > int(nodes[edge["from"]]["semantic"].get("rank", 0))
+            and all(nodes[key]["semantic"].get("slot", "main") == "main" for key in (edge["from"], edge["to"]))
+            and core_geometry.bend_count(path)):
+        issues.append(QualityIssue("layout/main-path-zigzag", (edge["id"],), {}, "edge"))
+    for other_id, other_path in sorted(context.get("paths", {}).items()):
+        if other_id == edge["id"]:
+            continue
+        source, target = context.get("endpoints", {}).get(other_id, (None, None))
+        issues.extend(edge_pair_issues(view, segments, {"id": other_id, "from": source, "to": target},
+                                      list(zip(other_path, other_path[1:]))))
+    return [issue.to_dict() for issue in issues]
+
+
+def _route_rejection_key(edge_id, assignment, hints, profiles, bounds, paths, frozen_labels):
+    """A rejected label carrier applies only to its exact geometric environment."""
+    return (assignment.assignment_key,
+            tuple((contracts.number(x), contracts.number(y)) for x, y in hints),
+            repr(profiles.get(edge_id)), repr(bounds),
+            tuple((key, tuple(value)) for key, value in sorted(paths.items()) if key != edge_id),
+            repr(frozen_labels))
+
+
+def _native_candidate_failure(edge, failures, counts, *, budget=None):
+    blockers = sorted({subject for item in failures for subject in item.get("subject_ids", ())
+                       if subject and subject != edge["id"]})
+    reasons = [item.get("evidence", {}).get("reason") for item in failures]
+    unsupported = any(reason for reason in reasons)
+    immutable = any(reason and reason not in {"editor_router_additional_turns_required",
+                                              "uncalibrated_off_center_perimeter"} for reason in reasons)
+    samples, per_reason = [], {}
+    for item in failures:
+        key = item.get("code"), item.get("evidence", {}).get("reason")
+        if len(samples) < 32 and per_reason.get(key, 0) < 3:
+            samples.append(item)
+            per_reason[key] = per_reason.get(key, 0) + 1
+    return RouteFailure(
+        "routing/route-search-budget" if budget else "routing/no-safe-route", edge["id"],
+        "Automatic route candidate budget was exhausted" if budget else
+        "No feasible automatic route for the selected endpoints",
+        locked=immutable,
+        evidence={"planning": {"version": 1, "stage": "candidate", "reason":
+                  "budget_exhausted" if budget else "native_profile_unavailable" if unsupported else
+                  "candidate_space_exhausted", "budget": budget, "counts": dict(counts),
+                  "blocking_edge_ids": blockers, "details": samples,
+                  "detail_count": len(failures), "truncated": len(failures) > len(samples)}},
+        supported_fixes=("reroute-edge", "align-ports", "review-native-label-geometry"))
 
 
 def route_edge_at_ports(
@@ -1083,13 +1323,29 @@ def route_edge_at_ports(
             if label.strip()
             else routing_policy.MIN_INTERNAL_SEGMENT,
         )
-        safe_candidates = [
-            candidate
-            for candidate in candidates
-            if automatic_polyline_is_safe(
-                candidate, lanes, nodes, edge["from"], edge["to"]
-            )
-        ]
+        native = context.get("native_label_profiles", {}).get(edge["id"])
+        counts = {}
+        if native is not None:
+            # All local rejections consume the same finite candidate budget.
+            unique = {}
+            for candidate in candidates:
+                key = tuple((contracts.number(x), contracts.number(y)) for x, y in candidate[1:-1])
+                unique.setdefault(key, candidate)
+            safe_candidates = []
+            budget = context["candidate_budget"]
+            for index, candidate in enumerate(unique.values()):
+                if index >= budget["max_path_candidates"]:
+                    return _native_candidate_failure(edge, [], counts, budget="path_candidates")
+                if budget["evaluations"] + index >= budget["max_candidate_evaluations"]:
+                    return _native_candidate_failure(edge, [], counts, budget="candidate_evaluations")
+                counts["candidate_evaluations"] = index + 1
+                if automatic_polyline_is_safe(candidate, lanes, nodes, edge["from"], edge["to"]):
+                    safe_candidates.append(candidate)
+                else:
+                    counts["routing/local-obstacle"] = counts.get("routing/local-obstacle", 0) + 1
+        else:
+            safe_candidates = [candidate for candidate in candidates
+                               if automatic_polyline_is_safe(candidate, lanes, nodes, edge["from"], edge["to"])]
         if not safe_candidates:
             if not allow_unsafe_base:
                 exit_fixed = (
@@ -1110,6 +1366,8 @@ def route_edge_at_ports(
                         "exit_offset": exit_offset,
                         "entry_side": entry_side,
                         "entry_offset": entry_offset,
+                        **({"planning": {"version": 1, "counts": counts,
+                             "reason": "candidate_space_exhausted"}} if native is not None else {}),
                     },
                     supported_fixes=(
                         "allocate-distinct-port", "align-ports", "reroute-edge",
@@ -1117,6 +1375,41 @@ def route_edge_at_ports(
                     ),
                 )
             safe_candidates = [core_geometry.compact_points([source_point, *base_points, target_point])]
+        frozen_labels = {
+            label_id: box for label_id, box in context.get("frozen_label_obstacles", {}).items()
+            if label_id != edge["id"]
+        }
+        blocked_labels = set()
+        obstacle_free_candidates = []
+        for candidate in safe_candidates:
+            overlaps = {
+                label_id for label_id, box in frozen_labels.items()
+                if any(core_geometry.segment_intersects_box(segment, box, gap=1.0)
+                       for segment in zip(candidate, candidate[1:]))
+            }
+            if overlaps:
+                blocked_labels.update(overlaps)
+            else:
+                obstacle_free_candidates.append(candidate)
+        if not obstacle_free_candidates:
+            return RouteFailure(
+                "routing/no-safe-route",
+                edge.get("id"),
+                f"No automatic route avoids the saved labels on edge {edge.get('id')}",
+                locked=(
+                    _endpoint_is_fixed(edge, assignment, "exit")
+                    and _endpoint_is_fixed(edge, assignment, "entry")
+                ),
+                evidence={
+                    "frozen_label_edges": sorted(blocked_labels),
+                    "candidate_count": len(safe_candidates),
+                    **({"planning": {"version": 1, "counts": counts,
+                         "reason": "candidate_space_exhausted", "blocking_label_ids": sorted(blocked_labels)}}
+                       if native is not None else {}),
+                },
+                supported_fixes=("reroute-edge", "move-edge-label", "increase-lane-width"),
+            )
+        safe_candidates = obstacle_free_candidates
         is_main_path = (edge["from"], edge["to"]) in main_path_pairs
         source_rank = int(source["semantic"].get("rank", "0"))
         target_rank = int(target["semantic"].get("rank", "0"))
@@ -1150,6 +1443,8 @@ def route_edge_at_ports(
                     evidence={
                         "minimum_terminal_run_px": clearance.CLEARANCE_THRESHOLD_PX,
                         "candidate_count": len(measurements),
+                        **({"planning": {"version": 1, "counts": counts,
+                             "reason": "candidate_space_exhausted"}} if native is not None else {}),
                     },
                     supported_fixes=(
                         "reroute-edge", "increase-target-lane-gutter",
@@ -1176,9 +1471,44 @@ def route_edge_at_ports(
                     f"Main-path ports can be realigned to avoid a zigzag on edge {edge.get('id')}",
                     locked=False,
                     suggested_offsets=suggested_offsets,
-                    evidence={"suggested_offsets": suggested_offsets},
+                    evidence={"suggested_offsets": suggested_offsets,
+                              **({"planning": {"version": 1, "counts": counts}} if native is not None else {})},
                     supported_fixes=("align-ports", "reroute-edge"),
                 )
+
+        native = context.get("native_label_profiles", {}).get(edge["id"])
+        preflights = {}
+        if native is not None:
+            failures, feasible = [], []
+            unique = {}
+            for candidate in safe_candidates:
+                key = tuple((contracts.number(x), contracts.number(y)) for x, y in candidate[1:-1])
+                unique.setdefault(key, candidate)
+            for candidate_index, (key, candidate) in enumerate(unique.items()):
+                rejection_key = _route_rejection_key(edge["id"], assignment, candidate[1:-1],
+                        context.get("native_label_profiles", {}), context.get("rejection_bounds", {}),
+                        dict(context.get("rejection_paths", {}), **context.get("paths", {})),
+                        context.get("frozen_label_obstacles", {}))
+                if rejection_key in context.get("rejected_paths", {}).get(edge["id"], set()):
+                    continue
+                measured = labels.preflight_candidate(native, assignment, candidate[1:-1])
+                issues = _candidate_quality(edge, assignment, candidate, lanes, nodes, context)
+                if measured["path_status"] != "available" or measured["label_status"] == "not_available":
+                    issues.append({"code": "text/edge-label-geometry-unavailable", "subject_ids": [edge["id"]],
+                                   "evidence": {"reason": measured["path_reason"] or measured["label_reason"],
+                                                "profile": measured["profile"]}})
+                elif measured["path"] != candidate:
+                    issues.extend(_candidate_quality(edge, assignment, measured["path"], lanes, nodes, context))
+                if issues:
+                    for issue in issues:
+                        counts[issue["code"]] = counts.get(issue["code"], 0) + 1
+                    failures.extend(issues)
+                else:
+                    feasible.append(candidate)
+                    preflights[tuple(candidate)] = measured
+            if not feasible:
+                return _native_candidate_failure(edge, failures, counts)
+            safe_candidates = feasible
 
         ranked: list[tuple[float, list[tuple[float, float]], tuple[int, dict[str, float]] | None]] = []
         for candidate in safe_candidates:
@@ -1191,6 +1521,7 @@ def route_edge_at_ports(
                 preferred_label_side,
                 label_container,
                 route_class == "back",
+                size=preflights[tuple(candidate)]["size"] if native is not None else None,
             )
             score = candidate_score(
                 candidate,
@@ -1204,6 +1535,7 @@ def route_edge_at_ports(
                 reciprocal_segments=reciprocal_segments,
                 label_choice=candidate_label,
                 has_label=bool(label.strip()),
+                prefer_target_lane_corridor=source["lane"] == target["lane"],
             )
             if (
                 require_clearance
@@ -1218,6 +1550,7 @@ def route_edge_at_ports(
                 item[0],
                 len(item[1]),
                 [(round(x, 4), round(y, 4)) for x, y in item[1]],
+                tuple((contracts.number(x), contracts.number(y)) for x, y in item[1]),
             ),
         )
         points = full_path[1:-1]
@@ -1233,6 +1566,11 @@ def route_edge_at_ports(
     }
     if "waypoints" not in edge and require_clearance:
         routed["arrowhead_clearance"] = clearance_by_path[tuple(full_path)].to_dict()
+    if "waypoints" not in edge and context.get("native_label_profiles", {}).get(edge["id"]) is not None:
+        measured = preflights[tuple(full_path)]
+        routed["native_path"] = measured["path"]
+        routed["native_measurement"] = measured
+        routed["candidate_evaluations"] = counts.get("candidate_evaluations", 0)
     return RouteDecision(edge["id"], assignment, routed)
 
 
@@ -1361,6 +1699,7 @@ def new_routing_context(
         "paths": {},
         "endpoints": {},
         "labels": {},
+        "frozen_label_obstacles": {},
         "port_limits": {},
         "label_sides": {},
     }
@@ -1649,6 +1988,13 @@ def plan_route_batch(
     mutate the supplied context, or write XML.  A failed replay is discarded in
     full before another port plan is considered.
     """
+    if routing_context is not None and "native_label_profiles" in routing_context and replanner is None:
+        return _plan_feasible_route_batch(
+            edges, lanes, nodes, main_path=main_path, mutable_edge_ids=mutable_edge_ids,
+            locked_offsets=locked_offsets, routing_context=routing_context,
+            v3_semantics=v3_semantics, port_budget=port_budget, route_budget=route_budget,
+            clearance_profiles=clearance_profiles,
+        )
     edge_list = list(edges)
     requested_main_path = list(main_path or [])
     mutable = {edge["id"] for edge in edge_list} if mutable_edge_ids is None else set(mutable_edge_ids)
@@ -1659,7 +2005,7 @@ def plan_route_batch(
     )
     if routing_context is not None:
         supplied = _clone_routing_value(routing_context)
-        for key in ("paths", "endpoints", "labels", "port_limits", "label_sides"):
+        for key in ("paths", "endpoints", "labels", "frozen_label_obstacles", "port_limits", "label_sides"):
             base_context.setdefault(key, {}).update(supplied.get(key, {}))
         if clearance_profiles is None and "arrowhead_clearance_profiles" in supplied:
             clearance_profiles = supplied["arrowhead_clearance_profiles"]
@@ -1667,7 +2013,7 @@ def plan_route_batch(
         base_context["arrowhead_clearance_profiles"] = _clone_routing_value(
             clearance_profiles
         )
-    for key in ("paths", "endpoints", "labels"):
+    for key in ("paths", "endpoints", "labels", "frozen_label_obstacles"):
         for edge_id in mutable:
             base_context.setdefault(key, {}).pop(edge_id, None)
     frozen_ids = {edge["id"] for edge in edge_list} - mutable
@@ -1939,6 +2285,413 @@ def plan_route_batch(
         routing_order=ordered_ids,
         linked_edge_pairs=linked_pairs,
     )
+
+
+def side_pair_candidates(edge, default, lanes, nodes, *, main=False, locked=(None, None), occupied=None):
+    """Finite geometric alternatives; explicit endpoints never change side."""
+    if "waypoints" in edge or main:
+        return (default,)
+    source, target = nodes[edge["from"]], nodes[edge["to"]]
+    route = infer_route_class(edge, source, target)
+    indices = {lane: index for index, lane in enumerate(lanes)}
+    delta = indices[target["lane"]] - indices[source["lane"]]
+    facing = "left" if delta > 0 else "right" if delta < 0 else default[1]
+    escape = (("top", facing) if route == "back" else ("bottom", "top") if route == "forward"
+              else (("right", "left") if delta > 0 else ("left", "right")))
+    fixed = tuple(edge.get(prefix + "_side") is not None or edge.get(prefix + "_offset") is not None
+                  or locked[index] is not None for index, prefix in enumerate(("exit", "entry")))
+    sides = ("top", "right", "bottom", "left")
+    values = [default, escape]
+    if route == "back" and delta:
+        # Before mixing opposite source/target sides, try the source's outer
+        # corridor. Opposite sides can force a loop around the entire scene.
+        outer = "left" if delta > 0 else "right"
+        values.append((outer, outer))
+    values.extend(((escape[0], default[1]), (default[0], escape[1])))
+    values.extend(sorted(((a, b) for a in sides for b in sides), key=lambda pair:
+                         (sum((occupied or {}).get((edge[field], pair[index]), 0)
+                              for index, field in enumerate(("from", "to"))),
+                          sum(pair[index] != default[index] for index in (0, 1)),
+                          sides.index(pair[0]), sides.index(pair[1]))))
+    return tuple(dict.fromkeys(pair for pair in values
+                               if all(not fixed[index] or pair[index] == default[index] for index in (0, 1))))
+
+
+def _side_domain_fits(edge_id, pair, requests):
+    """Prune only proven singleton clashes for this one-side-change trial."""
+    own = next(request for request in requests if request.edge_id == edge_id)
+    for index, endpoint in enumerate((own.exit, own.entry)):
+        changed = replace(endpoint, side=pair[index])
+        value = changed.hard_offset
+        if value is None and changed.supported_offsets is not None and len(changed.supported_offsets) == 1:
+            value = changed.supported_offsets[0]
+        if value is None:
+            continue
+        for request in requests:
+            if request.edge_id == edge_id:
+                continue
+            for other in (request.exit, request.entry):
+                other_value = other.hard_offset
+                if other_value is None and other.supported_offsets is not None and len(other.supported_offsets) == 1:
+                    other_value = other.supported_offsets[0]
+                if (other.node_id, other.side) == (changed.node_id, changed.side) and other_value is not None:
+                    if not port_planner._pair_offsets_compatible(changed, value, other, other_value,
+                                                               core_geometry.GEOMETRY_TOLERANCE / 100):
+                        return False
+    return True
+
+
+def _port_dependency_closure(edge_ids, requests, links, *, prospective=None):
+    """Include actual current/prospective port coupling, never entire lanes."""
+    members = set(edge_ids)
+    groups = {}
+    for request in requests:
+        for endpoint in (request.exit, request.entry):
+            groups.setdefault((endpoint.node_id, endpoint.side), set()).add(request.edge_id)
+            if prospective and request.edge_id in prospective:
+                side = prospective[request.edge_id][0 if endpoint.endpoint == "exit" else 1]
+                groups.setdefault((endpoint.node_id, side), set()).add(request.edge_id)
+    sets = [*groups.values(), *(set(pair) for pair in links)]
+    changed = True
+    while changed:
+        before = set(members)
+        for group in sets:
+            if members & group:
+                members.update(group)
+        changed = members != before
+    return members
+
+
+def _supported_offsets(profiles, edges):
+    domains = {}
+    for edge in edges:
+        if "waypoints" in edge:
+            continue
+        for endpoint, terminal in profiles.get(edge["id"], {}).get("terminals", {}).items():
+            kind = terminal.get("type")
+            style = terminal.get("style", "")
+            flags = {part for part in style.split(";") if part and "=" not in part}
+            values = {part.split("=", 1)[0]: part.split("=", 1)[1] for part in style.split(";") if "=" in part}
+            if (kind == "decision" and flags == {"rhombus"}
+                    or kind in {"start", "end"} and flags == {"ellipse"} and values.get("aspect") == "fixed"):
+                if not any(key in values for key in ("shape", "rotation", "perimeter", "direction", "flipH", "flipV", "perimeterSpacing")):
+                    domains.setdefault(edge["id"], {})[endpoint] = (.5,)
+    return domains
+
+
+def _plan_feasible_route_batch(edges, lanes, nodes, *, main_path=None, mutable_edge_ids=None,
+                               locked_offsets=None, routing_context=None, v3_semantics=False,
+                               port_budget=None, route_budget=None, clearance_profiles=None):
+    """Bounded repair of automatic candidates with immutable external obstacles.
+
+    Every replay has one finite state. Previously accepted independent decisions
+    and endpoint assignments are carried forward, not reoptimized. No caller
+    objects, XML, saved paths, or explicit authoring fields are changed.
+    """
+    edge_list = list(edges)
+    by_id = {edge["id"]: edge for edge in edge_list}
+    mutable = set(by_id) if mutable_edge_ids is None else set(mutable_edge_ids)
+    main_path = list(main_path or [])
+    budget = route_budget or RouteSearchBudget()
+    base = new_routing_context(main_path, edge_list, nodes, v3_semantics=v3_semantics)
+    supplied = _clone_routing_value(routing_context or {})
+    for key in ("paths", "endpoints", "labels", "frozen_label_obstacles", "port_limits", "label_sides"):
+        base[key].update(supplied.get(key, {}))
+        if key in {"paths", "endpoints", "labels", "frozen_label_obstacles"}:
+            for edge_id in mutable:
+                base[key].pop(edge_id, None)
+    profiles = supplied.get("native_label_profiles", {})
+    missing_profiles = sorted(edge["id"] for edge in edge_list
+                              if edge["id"] in mutable and "waypoints" not in edge
+                              and not profiles.get(edge["id"]))
+    if missing_profiles:
+        return BatchRouteResult(ROUTE_FAILED, failure=RouteFailure("routing/no-safe-route", missing_profiles[0],
+                "Automatic routes require native candidate profiles", locked=True,
+                evidence={"planning": {"version": 1, "stage": "candidate", "reason": "native_profile_unavailable",
+                                       "missing_profiles": missing_profiles}}))
+    clearance_profiles = clearance_profiles if clearance_profiles is not None else supplied.get("arrowhead_clearance_profiles")
+    base["native_label_profiles"] = profiles
+    frozen = set(by_id) - mutable
+    missing = sorted(frozen - set(base["paths"]))
+    if missing:
+        return BatchRouteResult(ROUTE_FAILED, failure=RouteFailure("routing/frozen-route-missing", missing[0],
+                                "Frozen edges require existing paths", locked=True, evidence={"edges": missing}))
+    ordered = edge_routing_order([edge for edge in edge_list if edge["id"] in mutable], main_path, nodes)
+    ordered_ids = tuple(edge["id"] for edge in ordered)
+    order = {edge_id: index for index, edge_id in enumerate(ordered_ids)}
+    main_ids = {edge["id"] for edge in edge_list if (edge["from"], edge["to"]) in base["main_path_pairs"]}
+    bounds = {key: core_geometry.node_bounds_in_pool(node, lanes[node["lane"]]) for key, node in nodes.items()}
+    links = _linked_reciprocal_pairs(edge_list)
+    default_sides = {}
+    for edge in edge_list:
+        if edge["from"] not in nodes or edge["to"] not in nodes:
+            return BatchRouteResult(ROUTE_FAILED, failure=RouteFailure("routing/missing-endpoint", edge["id"],
+                                    "Edge references a missing endpoint", locked=True))
+        default_sides[edge["id"]] = preferred_sides(
+            edge, infer_route_class(edge, nodes[edge["from"]], nodes[edge["to"]]),
+            nodes[edge["from"]], nodes[edge["to"]], lanes, main_path_pairs=base["main_path_pairs"],
+            outgoing_counts=base["outgoing_counts"], bottom_reserved_sources=base["bottom_reserved_sources"],
+            v3_semantics=v3_semantics)
+    side_options = {edge["id"]: side_pair_candidates(edge, default_sides[edge["id"]], lanes, nodes,
+                    main=edge["id"] in main_ids or edge["id"] not in mutable,
+                    locked=(locked_offsets or {}).get(edge["id"], (None, None)),
+                    occupied={key: sum(other["id"] != edge["id"] and
+                               (other[field], default_sides[other["id"]][index]) == key
+                               for other in edge_list for index, field in enumerate(("from", "to")))
+                              for key in ((node_id, side) for node_id in nodes for side in ("top", "right", "bottom", "left"))})
+                    for edge in edge_list}
+    sides = dict(default_sides)
+    side_indices = dict.fromkeys(by_id, 0)
+    domains = _supported_offsets(profiles, ordered)
+    derive_port_limits(base, edge_list, lanes, nodes)
+    requests = port_planner.collect_port_requests(edge_list, bounds, sides, mutable_edge_ids=mutable,
+                main_axis_edge_ids=main_ids, locked_offsets=locked_offsets,
+                offset_limits=base["port_limits"], supported_offsets=domains)
+    seed_for = {}
+    for edge_id in sorted(by_id):
+        component = tuple(sorted(_port_dependency_closure({edge_id}, requests, links)))
+        seed_for[edge_id] = component
+    replans = {}
+    evaluated = 0
+    label_pairs_used = 0
+    stable = {}
+    assignments = {}
+    locked_labels = {}
+    rejected_paths = {}
+    previous_paths = dict(base["paths"])
+    offset_attempted = set()
+    pending_port_rejection = None
+    pending_port_failure = None
+    visited = set()
+    history = []
+    active = set(mutable)
+    plan = None
+    failure = None
+
+    def finish(status, replay, *, choices=None):
+        planning = {"version": 1, "candidate_evaluations": evaluated,
+                    "label_pair_attempts": label_pairs_used,
+                    "history": history[-32:], "history_count": len(history),
+                    "truncated": len(history) > 32,
+                    "budgets": {name: getattr(budget, name) for name in budget.__slots__}}
+        if failure is not None:
+            detail = failure.evidence.setdefault("planning", {})
+            detail.update(planning)
+        return BatchRouteResult(status, decisions=tuple(stable[key] for key in ordered_ids if key in stable) if status == ROUTE_COMPLETE else (),
+                    failure=failure, port_plan=plan, batch_replays=replay, component_replans=replans,
+                    routing_order=ordered_ids, linked_edge_pairs=links, label_choices=choices, planning=planning)
+
+    for replay in range(1, budget.max_batch_replays + 1):
+        locks = dict(locked_offsets or {})
+        for edge_id, assignment in assignments.items():
+            if edge_id not in active:
+                locks[edge_id] = assignment.exit.offset, assignment.entry.offset
+        requests = port_planner.collect_port_requests(edge_list, bounds, sides, mutable_edge_ids=mutable,
+                    main_axis_edge_ids=main_ids, locked_offsets=locks,
+                    offset_limits=base["port_limits"], supported_offsets=domains)
+        preparation = port_planner.prepare_port_plan(requests, budget=port_budget, linked_edge_pairs=links)
+        plan = port_planner.initial_port_plan(preparation)
+        retry_failure = pending_port_failure
+        pending_port_failure = None
+        if pending_port_rejection is not None and plan.status == port_planner.PLAN_COMPLETE:
+            pivot, key = pending_port_rejection
+            plan = port_planner.replan_port_plan(preparation, plan.component_assignment_key(pivot),
+                        previous_plan=plan, rejected_assignment_keys=(key,))
+        pending_port_rejection = None
+        failure = None
+        context = _clone_routing_value(base)
+        context["native_label_profiles"] = profiles
+        context["candidate_budget"] = {"evaluations": evaluated,
+             "max_path_candidates": budget.max_path_candidates,
+             "max_candidate_evaluations": budget.max_candidate_evaluations}
+        context["rejected_paths"] = rejected_paths
+        context["rejection_paths"] = previous_paths
+        context["rejection_bounds"] = bounds
+        # Later stable routes are obstacles even before their turn in order.
+        for key, decision in stable.items():
+            if key not in active:
+                _record_trial_decision(context, by_id[key], decision)
+        if plan.status != port_planner.PLAN_COMPLETE:
+            if retry_failure is not None and plan.status == port_planner.PLAN_CANDIDATE_EXHAUSTED:
+                failure = retry_failure
+                failure.evidence["port_retry"] = _port_plan_evidence(plan)
+                subjects = {failure.edge_id}
+            elif plan.status in {port_planner.PLAN_CONSTRAINT_CONFLICT, port_planner.PLAN_BUDGET_EXHAUSTED}:
+                return _port_plan_failure(plan, batch_replays=replay, component_replans=replans,
+                                          routing_order=ordered_ids, linked_edge_pairs=links)
+            if failure is None:
+                failure = _port_plan_failure(plan).failure
+                subjects = set(plan.issues[0].edge_ids) if plan.issues else set(active)
+            issue = plan.issues[0] if plan.issues and retry_failure is None else None
+            if issue is not None and issue.node_id is not None and issue.side is not None:
+                # Changing the unrelated endpoint cannot solve this domain.
+                can_change_side = any(
+                    any(pair[index] != issue.side for pair in side_options[request.edge_id])
+                    for request in requests if request.edge_id in subjects
+                    for index, endpoint in enumerate((request.exit, request.entry))
+                    if endpoint.node_id == issue.node_id and endpoint.side == issue.side)
+                if not can_change_side:
+                    return finish(ROUTE_FAILED, replay)
+        else:
+            assignments = plan.by_edge()
+            for edge in ordered:
+                edge_id = edge["id"]
+                if edge_id in stable and edge_id not in active:
+                    outcome = stable[edge_id]
+                else:
+                    context["candidate_budget"]["evaluations"] = evaluated
+                    outcome = route_edge_at_ports(edge, assignments[edge_id], lanes, nodes, context,
+                                clearance_profile=(clearance_profiles or {}).get(edge_id),
+                                require_clearance=clearance_profiles is not None)
+                    if isinstance(outcome, RouteFailure):
+                        evaluated += outcome.evidence.get("planning", {}).get("counts", {}).get("candidate_evaluations", 0)
+                        failure = outcome
+                        subjects = {edge_id}
+                        break
+                    evaluated += outcome.routed.get("candidate_evaluations", 0)
+                stable[edge_id] = outcome
+                previous_paths[edge_id] = outcome.routed.get("native_path", outcome.routed["full_path"])
+                _record_trial_decision(context, edge, outcome)
+            if failure is None:
+                # Recheck every accepted automatic route against the complete
+                # batch, including explicit and saved routes routed later.
+                pair_context = _clone_routing_value(context)
+                pair_context["paths"].update(previous_paths)
+                for edge in ordered:
+                    if "waypoints" in edge:
+                        continue
+                    decision = stable[edge["id"]]
+                    issues = _candidate_quality(edge, assignments[edge["id"]],
+                            decision.routed.get("native_path", decision.routed["full_path"]),
+                            lanes, nodes, pair_context)
+                    if issues:
+                        failure = _native_candidate_failure(edge, issues, {})
+                        subjects = {edge["id"]}
+                        break
+            if failure is None:
+                items = [{"id": edge["id"], "text": edge.get("label", ""), "route": stable[edge["id"]].routed["route"],
+                          "assignment": assignments[edge["id"]], "hints": stable[edge["id"]].routed["points"],
+                          "profile": profiles[edge["id"]], "native": stable[edge["id"]].routed["native_measurement"]}
+                         for edge in ordered if "native_measurement" in stable[edge["id"]].routed]
+                paths = dict(base["paths"])
+                paths.update({key: value.routed.get("native_path", value.routed["full_path"]) for key, value in stable.items()})
+                container = {"left": 0., "top": 0.,
+                    "right": max(lane["geometry"]["x"] + lane["geometry"]["width"] for lane in lanes.values()),
+                    "bottom": max(lane["geometry"]["y"] + lane["geometry"]["height"] for lane in lanes.values())}
+                label_result = labels.plan_label_batch(items, paths, bounds, container,
+                                frozen_labels=base["frozen_label_obstacles"], preferred_sides=base["label_sides"],
+                                locked_choices=locked_labels, max_label_pairs=budget.max_label_pairs,
+                                max_batch_label_pairs=budget.max_batch_label_pairs - label_pairs_used)
+                label_pairs_used += label_result["pair_attempts"]
+                if label_result["status"] == "complete":
+                    return finish(ROUTE_COMPLETE, replay, choices=label_result["choices"])
+                detail = label_result["failure"]
+                locked_labels.update(label_result.get("provisional_choices", {}))
+                failure = RouteFailure("routing/route-search-budget" if detail["reason"] == "budget_exhausted" else
+                        "routing/no-safe-route", detail["edge_id"], "No clear native label placement for this route batch",
+                        evidence={"planning": dict(detail, version=1, stage="label_batch")},
+                        supported_fixes=("move-edge-label", "reroute-edge"))
+                subjects = {detail["edge_id"]}
+        detail = failure.evidence.get("planning", {})
+        blockers = set(detail.get("blocking_edge_ids", ())) | set(detail.get("blocking_label_ids", ()))
+        if failure.code == "routing/route-search-budget":
+            return finish(ROUTE_FAILED, replay)
+        if failure.locked and detail.get("reason") == "native_profile_unavailable":
+            return finish(ROUTE_FAILED, replay)
+        # A label failure first retries one mutable owner against all other
+        # accepted geometry; geometric blockers join only if that retry fails.
+        label_pivot = None
+        if detail.get("stage") == "label_batch":
+            candidates = sorted((blockers | subjects) & mutable, key=lambda key: order.get(key, -1), reverse=True)
+            label_pivot = next((key for key in candidates if key in stable and "waypoints" not in by_id[key]), None)
+        subjects = ({label_pivot} if label_pivot else subjects | blockers) & set(by_id)
+        if not subjects:
+            subjects = set(active)
+        closure = _port_dependency_closure(subjects, requests, links) & mutable
+        history.append({"replay": replay, "failure": failure.code, "reason": detail.get("reason"),
+                        "edges": sorted(subjects), "closure": sorted(closure),
+                        "sides": {key: sides[key] for key in sorted(closure)}})
+        seeds = {seed_for[key] for key in closure}
+        if not closure or any(replans.get(seed, 0) >= budget.max_component_replans for seed in seeds):
+            if closure:
+                failure = RouteFailure("routing/route-search-budget", failure.edge_id,
+                            "Seed component repair budget was exhausted", evidence={"planning": {
+                            "reason": "budget_exhausted", "budget": "component_replans", "last_failure": failure.evidence}})
+            return finish(ROUTE_FAILED, replay)
+        # One contextual offset retry precedes changing sides. Reject only this
+        # exact assignment, with the same obstacle snapshot; never carry it
+        # across topology changes.
+        pivot = failure.edge_id
+        obstacle_key = tuple((key, tuple(value.routed["full_path"])) for key, value in sorted(stable.items()) if key not in closure)
+        offset_key = (pivot, tuple(sorted(sides.items())), obstacle_key)
+        changed = False
+        if failure.suggested_offsets is not None and plan.status == port_planner.PLAN_COMPLETE:
+            for index, endpoint in enumerate(("exit", "entry")):
+                if getattr(assignments[pivot], endpoint).source not in {"explicit", "locked"}:
+                    value = failure.suggested_offsets[index]
+                    base["port_limits"].setdefault(pivot, {})[endpoint] = {"min": value, "max": value}
+            changed = True
+        elif label_pivot is not None:
+            key = label_pivot
+            rejection = _route_rejection_key(key, assignments[key], stable[key].routed["points"],
+                            profiles, bounds, previous_paths, base["frozen_label_obstacles"])
+            if rejection not in rejected_paths.get(key, set()):
+                rejected_paths.setdefault(key, set()).add(rejection)
+                changed = True
+        elif (plan.status == port_planner.PLAN_COMPLETE and pivot in assignments and
+              offset_key not in offset_attempted and "waypoints" not in by_id[pivot] and
+              not failure.locked):
+            offset_attempted.add(offset_key)
+            pending_port_rejection = pivot, assignments[pivot].assignment_key
+            pending_port_failure = failure
+            changed = True
+        if not changed:
+            # Port-coupled returns are considered before changing established
+            # main carriers. This applies to topology, not particular IDs.
+            pivots = sorted(closure, key=lambda key: (key in main_ids, -order.get(key, -1)))
+            for key in pivots:
+                while side_indices[key] + 1 < len(side_options[key]):
+                    side_indices[key] += 1
+                    proposed = side_options[key][side_indices[key]]
+                    if not _side_domain_fits(key, proposed, requests):
+                        history[-1]["side_domain_rejections"] = history[-1].get("side_domain_rejections", 0) + 1
+                        continue
+                    sides[key] = proposed
+                    closure = _port_dependency_closure(closure, requests, links, prospective={key: sides[key]}) & mutable
+                    rejected_paths = {}
+                    changed = True
+                    break
+                if changed:
+                    break
+        if not changed:
+            return finish(ROUTE_FAILED, replay)
+        # Charge every original seed in the *expanded* dependency closure.
+        seeds = {seed_for[key] for key in closure}
+        if any(replans.get(seed, 0) >= budget.max_component_replans for seed in seeds):
+            failure = RouteFailure("routing/route-search-budget", failure.edge_id,
+                    "Seed component repair budget was exhausted", evidence={"planning": {
+                    "reason": "budget_exhausted", "budget": "component_replans"}})
+            return finish(ROUTE_FAILED, replay)
+        for seed in seeds:
+            replans[seed] = replans.get(seed, 0) + 1
+        history[-1]["closure"] = sorted(closure)
+        for key in closure:
+            stable.pop(key, None)
+            locked_labels.pop(key, None)
+        active = closure
+        state = (tuple(sorted(sides.items())), pending_port_rejection,
+                 tuple((key, tuple((end, tuple(sorted(limits.items()))) for end, limits in sorted(value.items())))
+                       for key, value in sorted(base["port_limits"].items())),
+                 tuple((key, tuple(sorted(value))) for key, value in sorted(rejected_paths.items())),
+                 tuple(sorted((key, value.assignment_key) for key, value in assignments.items() if key not in active)))
+        if state in visited:
+            failure = RouteFailure("routing/route-search-budget", failure.edge_id,
+                       "Repeated repair state rejected", evidence={"planning": {"reason": "budget_exhausted", "budget": "repeated_state"}})
+            return finish(ROUTE_FAILED, replay)
+        visited.add(state)
+    failure = RouteFailure("routing/route-search-budget", failure.edge_id if failure else None,
+                "Routing batch replay budget was exhausted", evidence={"planning": {"reason": "budget_exhausted", "budget": "batch_replays"}})
+    return finish(ROUTE_FAILED, budget.max_batch_replays)
 
 
 def polyline_is_locally_valid(

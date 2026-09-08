@@ -4,7 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Unreleased
+
+## [0.7.0] - 2026-09-08 (release preparation; not published)
+
+- Preserve saved routes for label-only patches and require declared reroutes when node/lane edits invalidate them.
+- Measure labels from current native geometry, with estimated bounds and explicit unsupported coverage.
+- Compare complete managed XML payloads and verify serialized candidates before atomic replacement.
+- Separate label, route and saved-route preservation receipts; retain explicit waypoint arrays unless replacement is declared.
+- Reject infeasible automatic geometry and unsupported native candidates before scoring, with bounded side/port/path retries and batch label repair. Automatic build and reroute can now refuse a candidate before final validation, including without strict mode; no unsuccessful batch is written. Empty labels no longer hide unsupported native paths.
+- Keep saved-file command and severity conventions, while allowing cross-lane automatic returns to omit the former target-lane vertical corridor. Existing v2/v3 saved files can therefore have different warnings or strict results. Same-lane return checks and explicit or saved geometry protections remain.
+- Remove target-lane-only detours from cross-lane returns, prefer outward return pairs before mixed-side loops, and, for v3 same-lane downward decision branches whose bottom is not reserved by the main path, prefer the bottom exit.
+
+This entry records a locally verified candidate; no 0.7.0 tag, release, publication, or installation has been created.
 
 ## [0.6.5] - 2026-09-04
 
@@ -298,7 +310,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...v0.6.5
 [0.6.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.5.1...v0.6.0

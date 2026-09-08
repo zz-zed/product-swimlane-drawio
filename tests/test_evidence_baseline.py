@@ -50,7 +50,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         after = copy.deepcopy(before)
         tool.patch_tree(after, changes, allow_geometry_updates=False)
         self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
-        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.6.5")
+        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.7.0")
         for field, value in (("custom-protected", "tampered"), ("data-model-hash", "0" * 64)):
             with self.subTest(field=field):
                 tampered = copy.deepcopy(after)
@@ -343,19 +343,16 @@ class EvidenceBaselineTests(unittest.TestCase):
         tool = load_tool()
         with self.assertRaises(tool.contracts.DiagramError) as caught:
             tool.build_tree(corpus()["explicit-port-conflict"])
-        self.assertEqual(caught.exception.code, "routing/port-plan-exhausted")
-        self.assertIn("port assignment", str(caught.exception))
-        self.assertIn("allocate-distinct-port", caught.exception.supported_fixes)
-        self.assertIn("reroute-edge", caught.exception.supported_fixes)
-        self.assertIn("component", caught.exception.evidence)
-        self.assertIn("assignment", caught.exception.evidence)
-        self.assertIn("batch_replays", caught.exception.evidence)
-        self.assertIn("component_replans", caught.exception.evidence)
-        self.assertIn("component", caught.exception.evidence)
-        self.assertIn("batch_replays", caught.exception.evidence)
-        self.assertIn("component_replans", caught.exception.evidence)
+        self.assertEqual(caught.exception.code, "routing/port-capacity")
+        self.assertIn("no continuous interval", str(caught.exception))
         self.assertIn("allocate-distinct-port", caught.exception.supported_fixes)
         self.assertIn("increase-lane-width", caught.exception.supported_fixes)
+        self.assertEqual(caught.exception.evidence["node"], "n1")
+        self.assertEqual(caught.exception.evidence["side"], "bottom")
+        self.assertEqual(set(caught.exception.evidence["edges"]), {"e1"})
+        self.assertIn("locked", str(caught.exception.evidence["component_replans"]))
+        self.assertIn("batch_replays", caught.exception.evidence)
+        self.assertIn("component_replans", caught.exception.evidence)
 
     def test_request_response_retry_is_jointly_routed_without_conflict(self):
         tool = load_tool()
@@ -415,12 +412,12 @@ class EvidenceBaselineTests(unittest.TestCase):
         for value in (None, 501, True, "unknown", "0.5.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": value}}}
             self.assertEqual(normalize(result, {}, input_version="0.5.1"), result)
-        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5"):
+        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": version}}}
             self.assertEqual(normalize(result, {}, input_version=version)["result"]["patch_receipt"]["input_tool_version"], "<tool-version>")
 
     def test_release_stamp_normalization_is_path_and_artifact_bound(self):
-        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1", "0.6.5"):
+        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1", "0.6.5", "0.7.0"):
             result = {"result": {"tool_version": value,
                                  "validation": {"tool_version": value},
                                  "patch_receipt": {"input_tool_version": value}}}

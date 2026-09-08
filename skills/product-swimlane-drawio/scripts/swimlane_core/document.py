@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 import tempfile
 import xml.etree.ElementTree as ET
 
-from . import contracts, geometry as core_geometry
+from . import contracts, geometry as core_geometry, labels
 
 
 def geometry(parent: ET.Element, **attrs) -> ET.Element:
@@ -106,12 +107,10 @@ def set_edge_points(
     *,
     action: str = "replace_automatic",
 ) -> None:
-    """Update only the Draw.io points child, unless the caller freezes it.
+    """Replace known route entries while retaining opaque Array payload.
 
-    Patch operations must be able to leave a manually authored geometry byte-for-
-    byte intact.  The old helper rebuilt the entire geometry and incidentally
-    dropped offsets and unknown children; that is appropriate for neither a
-    frozen edge nor an existing edge with vendor metadata.
+    Point-owned extensions have no safe mapping when a route changes. Reject
+    those replacements instead of silently reassigning or dropping metadata.
     """
     if action == "preserve_existing":
         return
@@ -120,14 +119,67 @@ def set_edge_points(
     geom = cell.find("mxGeometry")
     if geom is None:
         geom = geometry(cell, relative=1)
-    for array in list(geom.findall("./Array[@as='points']")):
-        geom.remove(array)
-    # An explicit empty waypoint list is represented by no Array at all.  This
-    # remains distinct from preserving the pre-existing Array above.
-    if points:
+    arrays = geom.findall("./Array[@as='points']")
+    array = arrays[0] if arrays else None
+    old_points = array.findall("mxPoint") if array is not None else []
+    try:
+        old_coordinates = [(float(point.attrib["x"]), float(point.attrib["y"])) for point in old_points]
+    except (KeyError, ValueError):
+        old_coordinates = None
+    if old_coordinates == [(float(x), float(y)) for x, y in points]:
+        return
+    space_key = "{http://www.w3.org/XML/1998/namespace}space"
+    preserve_space = False
+    for element in (cell, geom, array):
+        if element is not None and element.get(space_key) in {"preserve", "default"}:
+            preserve_space = element.get(space_key) == "preserve"
+    protected_points = any(
+        set(point.attrib) - {"x", "y"} or len(point)
+        or (point.text or "").strip() or (point.tail or "").strip()
+        or (preserve_space and (point.text or point.tail))
+        for point in old_points
+    )
+    if len(arrays) > 1 or protected_points:
+        raise contracts.DiagramError(
+            "Cannot replace route points without losing point-owned or ambiguous native payload",
+            code="patch/preservation-violation",
+            subject={"kind": "edge", "id": cell.get(contracts.DATA_SEMANTIC_ID)},
+            evidence={"reason": "point-owned-extension" if protected_points else "multiple-points-arrays"},
+            supported_fixes=["retain-saved-edge", "review-native-point-payload"],
+        )
+    if array is None:
+        if not points:
+            return
         array = ET.SubElement(geom, "Array", {"as": "points"})
-        for x, y in points:
-            ET.SubElement(array, "mxPoint", {"x": contracts.number(x), "y": contracts.number(y)})
+    children = list(array)
+    replacement = []
+    point_index = 0
+    last_point_position = None
+    for child in children:
+        if child.tag != "mxPoint":
+            replacement.append(child)
+            continue
+        if point_index < len(points):
+            x, y = points[point_index]
+            child.set("x", contracts.number(x))
+            child.set("y", contracts.number(y))
+            replacement.append(child)
+            point_index += 1
+        last_point_position = len(replacement)
+    # Extra points remain adjacent to the last native point; vendor siblings
+    # retain their own relative order, text and tails.
+    insertion = last_point_position if last_point_position is not None else len(replacement)
+    for x, y in points[point_index:]:
+        replacement.insert(insertion, ET.Element("mxPoint", {"x": contracts.number(x), "y": contracts.number(y)}))
+        insertion += 1
+    array[:] = replacement
+    has_opaque_array = (set(array.attrib) != {"as"} or bool(list(array))
+                        or bool((array.text or "").strip()) or bool((array.tail or "").strip())
+                        or (preserve_space and bool(array.text or array.tail)))
+    # Preserve the established no-Array representation of an empty route when
+    # the Array contains only removable formatting and native points.
+    if not points and not has_opaque_array:
+        geom.remove(array)
 
 
 def graph_root(tree: ET.ElementTree) -> ET.Element:
@@ -273,6 +325,183 @@ def element_signature(element: ET.Element | None):
     )
 
 
+def _payload_text_rules(tree: ET.ElementTree) -> dict:
+    """Identify formatting slots; all unrecognized content stays opaque.
+
+    A child tail belongs to its parent's content, so xml:space on the child
+    never resets preservation of that tail. Mixed/extension content also
+    preserves separators even if an individual separator is only whitespace.
+    """
+    rules = {}
+
+    def known_child(parent, child):
+        if parent.tag == "mxfile":
+            return child.tag == "diagram"
+        if parent.tag == "diagram":
+            return child.tag == "mxGraphModel"
+        if parent.tag == "mxGraphModel":
+            return child.tag == "root"
+        if parent.tag == "root":
+            return (child.tag == "mxCell"
+                    and child.get(contracts.DATA_KIND) in contracts.MANAGED_KINDS
+                    and bool(child.get(contracts.DATA_SEMANTIC_ID)))
+        if parent.tag == "mxCell":
+            return child.tag == "mxGeometry"
+        if parent.tag == "mxGeometry":
+            return ((child.tag == "Array" and child.get("as") == "points")
+                    or (child.tag == "mxPoint" and child.get("as") in
+                        {"offset", "sourcePoint", "targetPoint"})
+                    or (child.tag == "mxRectangle" and child.get("as") == "alternateBounds"))
+        if parent.tag == "Array" and parent.get("as") == "points":
+            return child.tag == "mxPoint"
+        return False
+
+    def visit(element, inherited=False, opaque=False, keep_tail=False):
+        setting = element.get("{http://www.w3.org/XML/1998/namespace}space")
+        preserve = setting == "preserve" if setting in {"preserve", "default"} else inherited
+        children = list(element)
+        # Root-level unknown drawing units already have independently protected
+        # payload; their outer whitespace remains drawing-root formatting.
+        extensions = element.tag != "root" and any(not known_child(element, c) for c in children)
+        mixed = bool((element.text or "").strip()) or any((c.tail or "").strip() for c in children)
+        keep_content = opaque or preserve or extensions or mixed
+        rules[element] = (keep_content, keep_tail)
+        for child in children:
+            visit(child, preserve, opaque or not known_child(element, child), keep_content)
+
+    visit(tree.getroot())
+    return rules
+
+
+def serialization_signature(tree: ET.ElementTree):
+    """Whole working-tree signature used only to verify serialization fidelity."""
+    rules = _payload_text_rules(tree)
+
+    def signature(element):
+        keep_text, keep_tail = rules[element]
+        text, tail = element.text or "", element.tail or ""
+        return (element.tag, tuple(sorted(element.attrib.items())),
+                text if keep_text or text.strip() else "",
+                tail if keep_tail or tail.strip() else "",
+                tuple(signature(child) for child in element))
+
+    return signature(tree.getroot())
+
+
+def cell_payload_signatures(tree: ET.ElementTree) -> dict[str, dict]:
+    """Ordered native payload fields, without changing semantic hash scope."""
+    rules = _payload_text_rules(tree)
+    result = {}
+    for key, cell in semantic_cells(tree).items():
+        fields = {}
+
+        def collect(element, path, outer=False):
+            keep_text, keep_tail = rules[element]
+            if not outer:
+                fields[path + "/@attributes"] = tuple(sorted(element.attrib.items()))
+            text, tail = element.text or "", element.tail or ""
+            fields[path + "/text()"] = text if keep_text or text.strip() else ""
+            fields[path + "/tail()"] = tail if keep_tail or tail.strip() else ""
+            # Indices are absolute child positions: repeated tags and order are
+            # observable, including multiple mxGeometry elements.
+            for index, child in enumerate(element):
+                collect(child, f"{path}/{child.tag}[{index}]")
+
+        collect(cell, "mxCell", outer=True)
+        result[key] = fields
+    return result
+
+
+def cell_payload_changes(before: ET.ElementTree, after: ET.ElementTree) -> list[dict]:
+    left, right = cell_payload_signatures(before), cell_payload_signatures(after)
+    changes = []
+    for key in sorted(left.keys() & right.keys()):
+        for path in sorted(left[key].keys() | right[key].keys()):
+            if path not in left[key] or path not in right[key] or left[key][path] != right[key][path]:
+                changes.append({
+                    "semantic_id": key.split(":", 1)[1], "kind": key.split(":", 1)[0],
+                    "path": path,
+                    "change": "added" if path not in left[key] else
+                              "missing" if path not in right[key] else "changed",
+                })
+    return changes
+
+
+def route_mutable_opaque_guard(before: ET.ElementTree, candidate: ET.ElementTree, changes: dict) -> None:
+    """Protect edge extensions independently of route planning or patch replay.
+
+    Known route/label values are projected away; opaque fields and their order
+    remain. This also covers mutable routes that the saved-route guard excludes.
+    """
+    mutable_attributes = {
+        "source", "target", "value", "style",
+        contracts.DATA_EDGE_TYPE, contracts.DATA_FROM, contracts.DATA_TO,
+        contracts.DATA_ROUTE, contracts.DATA_BRANCH, contracts.DATA_FLOW_ROLE,
+        contracts.DATA_OUTCOME, contracts.DATA_ALLOW_PORT_REUSE,
+        contracts.DATA_EXIT_SIDE, contracts.DATA_ENTRY_SIDE,
+        contracts.DATA_EXIT_OFFSET, contracts.DATA_ENTRY_OFFSET,
+        contracts.DATA_EXIT_SIDE_EXPLICIT, contracts.DATA_ENTRY_SIDE_EXPLICIT,
+        contracts.DATA_EXIT_OFFSET_EXPLICIT, contracts.DATA_ENTRY_OFFSET_EXPLICIT,
+        contracts.DATA_WAYPOINTS_ORIGIN, contracts.DATA_LABEL_LEFT,
+        contracts.DATA_LABEL_TOP, contracts.DATA_LABEL_WIDTH,
+        contracts.DATA_LABEL_HEIGHT, contracts.DATA_LABEL_SEGMENT,
+    }
+    port_style = {"exitX", "exitY", "exitDx", "exitDy", "entryX", "entryY", "entryDx", "entryDy", "dashed"}
+
+    def signatures(tree):
+        rules = _payload_text_rules(tree)
+
+        def project(element, role):
+            attributes = dict(element.attrib)
+            if role == "cell":
+                attributes = {key: value for key, value in attributes.items() if key not in mutable_attributes}
+                attributes["style"] = tuple(part for part in element.get("style", "").split(";")
+                                            if part and part.split("=", 1)[0] not in port_style)
+            elif role == "geometry":
+                for key in ("x", "y", "relative"):
+                    attributes.pop(key, None)
+            elif role in {"array", "point", "offset"}:
+                for key in (("as",) if role == "array" else ("x", "y", "as") if role == "offset" else ("x", "y")):
+                    attributes.pop(key, None)
+            keep_text, keep_tail = rules[element]
+            text, tail = element.text or "", element.tail or ""
+            text = text if keep_text or text.strip() else ""
+            tail = tail if keep_tail or tail.strip() else ""
+            children = []
+            point_index = 0
+            for child in element:
+                child_role = "opaque"
+                if role == "cell" and child.tag == "mxGeometry":
+                    child_role = "geometry"
+                elif role == "geometry" and child.tag == "Array" and child.get("as") == "points":
+                    child_role = "array"
+                elif role == "geometry" and child.tag == "mxPoint" and child.get("as") == "offset":
+                    child_role = "offset"
+                elif role == "array" and child.tag == "mxPoint":
+                    child_role = "point"
+                payload = project(child, child_role)
+                if payload is not None:
+                    children.append((point_index if child_role == "point" else None, payload))
+                if child_role == "point":
+                    point_index += 1
+            if role != "opaque" and not (attributes or text or tail or children):
+                return None
+            return (element.tag, tuple(sorted(attributes.items())), text, tail, tuple(children))
+
+        return {edge_id: project(cell, "cell") for edge_id, cell in edge_records(graph_root(tree)).items()}
+
+    old, new = signatures(before), signatures(candidate)
+    deleted = set(changes.get("delete_edges", []))
+    violations = sorted(edge_id for edge_id in old if edge_id not in deleted and old[edge_id] != new.get(edge_id))
+    if violations:
+        raise contracts.DiagramError(
+            "Patch changed opaque content owned by an existing edge",
+            code="patch/preservation-violation",
+            evidence={"edges": violations, "reason": "opaque-edge-payload"},
+            supported_fixes=["retain-native-extension-payload", "review-native-point-payload"],
+        )
+
+
 def comparison_attributes(cell: ET.Element) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(cell.attrib.items()))
 
@@ -361,20 +590,22 @@ def ensure_output_available(output: Path, force: bool) -> None:
         )
 
 
-def write_tree(tree: ET.ElementTree, output: Path) -> None:
+def write_tree(tree: ET.ElementTree, output: Path, *, candidate_check=None) -> None:
+    """Write a separate candidate and approve its parsed content before replace.
+
+    The callback receives the actual serialized tree. It may raise to reject
+    delivery; neither the accepted in-memory tree nor an old output is changed.
+    """
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Pretty-print managed XML without interpreting or rewriting opaque text.
-    # ET.indent alone would destroy xml:space and whitespace word separators.
-    preserve_outer_space = graph_root_preserves_space(tree)
-    opaque_text = []
-    for entry in unmanaged_root_entries(tree):
-        for element in entry.iter():
-            keep_tail = (element is not entry or preserve_outer_space
-                         or bool((element.tail or "").strip()))
-            opaque_text.append((element, element.text, element.tail, keep_tail))
-    ET.indent(tree, space="  ")
-    for element, text, tail, keep_tail in opaque_text:
-        element.text = text
+    working = copy.deepcopy(tree)
+    saved_text = [
+        (element, element.text, element.tail, keep_text, keep_tail)
+        for element, (keep_text, keep_tail) in _payload_text_rules(working).items()
+    ]
+    ET.indent(working, space="  ")
+    for element, text, tail, keep_text, keep_tail in saved_text:
+        if keep_text:
+            element.text = text
         if keep_tail:
             element.tail = tail
     file_descriptor, temporary_name = tempfile.mkstemp(
@@ -383,7 +614,7 @@ def write_tree(tree: ET.ElementTree, output: Path) -> None:
     os.close(file_descriptor)
     temporary_path = Path(temporary_name)
     try:
-        tree.write(
+        working.write(
             temporary_path,
             encoding="utf-8",
             xml_declaration=False,
@@ -392,6 +623,9 @@ def write_tree(tree: ET.ElementTree, output: Path) -> None:
         with temporary_path.open("ab") as handle:
             handle.flush()
             os.fsync(handle.fileno())
+        candidate = read_tree(temporary_path)
+        if candidate_check is not None:
+            candidate_check(candidate)
         os.replace(temporary_path, output)
     finally:
         if temporary_path.exists():
@@ -428,7 +662,8 @@ def routing_node_views(nodes: dict[str, dict]) -> dict[str, dict]:
             attributes = record["cell"].attrib
             view["semantic"] = {
                 key: attributes[attribute]
-                for key, attribute in (("rank", contracts.DATA_RANK), ("type", contracts.DATA_NODE_TYPE))
+                for key, attribute in (("rank", contracts.DATA_RANK), ("type", contracts.DATA_NODE_TYPE),
+                                       ("slot", contracts.DATA_SLOT))
                 if attribute in attributes
             }
         views[node_id] = view
@@ -576,3 +811,67 @@ def read_lane_order(pool: ET.Element, root: ET.Element, lanes: dict[str, dict]) 
             supported_fixes=["restore-lane-order", "controlled-rebuild"],
         )
     return order
+
+
+def extract_native_label_profile(cell, path=None, scene=None):
+    """Extract native XML facts once; no capability or router decisions here."""
+    import math
+    geometries = cell.findall("mxGeometry")
+    geom = geometries[0] if len(geometries) == 1 else None
+    raw = {"text": cell.get("value", ""), "edge_style": cell.get("style", ""),
+           "path": list(path or []), "geometry_count": len(geometries),
+           "scene_available": bool(scene), "terminals": {}}
+    if geom is not None:
+        raw["native_geometry"] = {
+            "attributes": dict(geom.attrib),
+            "offsets": [{"tag": child.tag, "attributes": dict(child.attrib)}
+                        for child in geom if child.get("as") == "offset"],
+            "points_arrays": [[{"tag": point.tag, "attributes": dict(point.attrib)}
+                               for point in array]
+                              for array in geom.findall("./Array[@as='points']")],
+        }
+    if not scene:
+        return raw
+    lanes, nodes = scene.get("lanes", {}), scene.get("nodes", {})
+    pool = scene.get("pool")
+    try:
+        if "parent_origin" in scene:
+            origin = tuple(float(value) for value in scene["parent_origin"])
+            if len(origin) != 2:
+                raise ValueError("invalid parent origin")
+        elif pool is not None and cell.get("parent") == pool.get("id") and pool.get("parent") == "1":
+            pool_geometry = parse_geometry(pool)
+            origin = pool_geometry["x"], pool_geometry["y"]
+        else:
+            raw["parent_origin_reason"] = "parent_origin_unavailable"
+            origin = None
+        if origin is not None:
+            if not all(math.isfinite(value) for value in origin):
+                raise ValueError("nonfinite parent origin")
+            raw["parent_origin"] = origin
+    except (ValueError, TypeError, contracts.DiagramError):
+        raw["parent_origin_reason"] = "invalid_parent_origin"
+    for field, prefix in ((contracts.DATA_FROM, "exit"), (contracts.DATA_TO, "entry")):
+        node = nodes.get(cell.get(field))
+        terminal = {"present": node is not None}
+        raw["terminals"][prefix] = terminal
+        if node is None:
+            continue
+        terminal.update(identity_matches=cell.get("source" if prefix == "exit" else "target") == node["cell"].get("id"),
+                        style=node["cell"].get("style", ""),
+                        type=node["cell"].get(contracts.DATA_NODE_TYPE, "process"))
+        try:
+            terminal["bounds"] = core_geometry.node_bounds_in_pool(node, lanes[node["lane"]])
+        except (KeyError, ValueError, TypeError, OverflowError):
+            terminal["bounds_reason"] = "invalid_native_path"
+    return raw
+
+
+def native_label_inputs(cell, path=None, scene=None):
+    """Compatible saved-XML entry point to the pure native capability model."""
+    return labels.resolve_native_label_inputs(extract_native_label_profile(cell, path, scene))
+
+
+def edge_label_measurement(cell, path=None, scene=None):
+    """Shared read-only native label measurement for QA, inspect and routing."""
+    return labels.measure_native_label(native_label_inputs(cell, path, scene))
