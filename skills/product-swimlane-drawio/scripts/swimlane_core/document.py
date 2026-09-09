@@ -590,11 +590,16 @@ def ensure_output_available(output: Path, force: bool) -> None:
         )
 
 
-def write_tree(tree: ET.ElementTree, output: Path, *, candidate_check=None) -> None:
+def write_tree(
+    tree: ET.ElementTree, output: Path, *, candidate_check=None,
+    candidate_reader=None, before_commit=None, overwrite: bool = True,
+) -> dict | None:
     """Write a separate candidate and approve its parsed content before replace.
 
     The callback receives the actual serialized tree. It may raise to reject
     delivery; neither the accepted in-memory tree nor an old output is changed.
+    Migration alone opts into a raw candidate reader and atomic no-replace
+    publication. Existing callers retain their original replace behavior.
     """
     output.parent.mkdir(parents=True, exist_ok=True)
     working = copy.deepcopy(tree)
@@ -613,6 +618,10 @@ def write_tree(tree: ET.ElementTree, output: Path, *, candidate_check=None) -> N
     )
     os.close(file_descriptor)
     temporary_path = Path(temporary_name)
+    delivery = None if overwrite else {
+        "committed": False, "temporary_path": str(temporary_path),
+        "temporary_cleanup": "pending", "output": None, "diagnostics": [],
+    }
     try:
         working.write(
             temporary_path,
@@ -623,13 +632,57 @@ def write_tree(tree: ET.ElementTree, output: Path, *, candidate_check=None) -> N
         with temporary_path.open("ab") as handle:
             handle.flush()
             os.fsync(handle.fileno())
-        candidate = read_tree(temporary_path)
+        candidate = (candidate_reader or read_tree)(temporary_path)
         if candidate_check is not None:
             candidate_check(candidate)
-        os.replace(temporary_path, output)
+        if overwrite:
+            os.replace(temporary_path, output)
+        else:
+            # Compute the output identity before committing: a receipt read
+            # must not turn an already-delivered artifact into written=false.
+            output_receipt = {**file_receipt(temporary_path), "path": str(output)}
+            if before_commit is not None:
+                before_commit(temporary_path, output_receipt)
+            try:
+                os.link(temporary_path, output)
+            except FileExistsError as exc:
+                raise contracts.DiagramError(
+                    "Migration output already exists", code="delivery/output-exists",
+                    evidence={"output": str(output)}, supported_fixes=["choose-new-output"],
+                ) from exc
+            delivery["committed"] = True
+            delivery["output"] = output_receipt
+    except Exception as exc:
+        if not overwrite:
+            # Keep the original exception and its diagnostic/exit mapping.
+            # The finally block fills this shared record's cleanup outcome.
+            exc._migration_delivery = delivery
+        raise
     finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+        if overwrite:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        else:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                delivery["temporary_cleanup"] = "absent"
+            except OSError as exc:
+                delivery["temporary_cleanup"] = "failed"
+                diagnostic = contracts.make_diagnostic(
+                    "delivery/io-error", "warning" if delivery["committed"] else "error",
+                    "Unable to remove the migration temporary file",
+                    evidence={"temporary_path": str(temporary_path), "cause": str(exc)},
+                )
+                delivery["diagnostics"].append(diagnostic)
+                if not delivery["committed"]:
+                    raise contracts.DiagramError(
+                        "Migration failed before commit and temporary cleanup also failed",
+                        code="delivery/io-error", evidence={"delivery": delivery},
+                    ) from exc
+            else:
+                delivery["temporary_cleanup"] = "removed"
+    return delivery
 
 
 def file_receipt(path: Path) -> dict:

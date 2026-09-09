@@ -18,7 +18,7 @@
 
 Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Validation](#validation-and-reliability) · [Scope](#supported-scope)
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Conservative migration](#conservative-metadata-migration) · [Validation](#validation-and-reliability) · [Scope](#supported-scope)
 
 ## Why this exists
 
@@ -37,7 +37,7 @@ The result is built for the common product workflow: **AI creates the first 80%,
 
 - **Editable:** native, uncompressed `.drawio`; full-height vertical lanes; local drag-and-drop editing.
 - **Reliable:** confirmed main path; deterministic layout; orthogonal routing; separate return and retry channels; phase bands.
-- **Maintainable:** stable semantic IDs; `inspect`, `patch`, and `compare`; geometry-preserving defaults; safe lane and node changes.
+- **Maintainable:** stable semantic IDs; `inspect`, `patch`, and `compare`; geometry-preserving defaults; safe lane and node changes. The conservative migration interface adds an explicit path for eligible old managed diagrams.
 - **Verifiable:** strict schema; structured diagnostics; routing and label checks; atomic output receipts with SHA-256.
 
 ## See it in action
@@ -157,6 +157,51 @@ Automatic build and explicit reroute reject infeasible or unsupported native can
 
 Use the same tool version for a patch and its comparison. In 0.6.0, reviewing a patch already completed by 0.5.1 may fail solely because its producing-tool stamp differs; this does not mean the diagram was damaged. Editing a supported old input with the current tool and comparing with that same version is the normal workflow. A failed comparison is not waived, and read-only review must not rewrite stamps or automatically patch/rebuild files. See the [compatibility matrix](skills/product-swimlane-drawio/references/schema.md#compatibility).
 
+## Conservative metadata migration
+
+This integrated candidate interface is not a formal release. It covers an older **managed, single-page** diagram whose process identity and same-schema semantics already exist, but whose metadata has a narrow, provable omission. It is not an importer, a schema upgrade, an identity-adoption tool, or a way to repair a diagram by guessing from layout or labels. The established `build`, `inspect`, `patch`, `validate`, and default `compare` contracts remain unchanged.
+
+Start read-only. A dry run neither writes XML nor creates an output directory or candidate file:
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  migrate --input old.drawio --dry-run
+```
+
+The receipt records the input SHA-256, existing managed state, classification, reasons, same-schema semantic summary, exact planned changes, strict-validation evidence, and whether this invocation can write. The five migration classifications concern metadata eligibility, not a quality pass:
+
+| Classification | Meaning |
+|---|---|
+| `not-needed` | Nothing eligible needs repair. No output copy is created, even when the producing stamp is old or absent. |
+| `automatic` | A valid stored hash permits uniquely filling an absent derived lane order and/or hash-rule version. |
+| `confirmation-required` | The historical hash is absent but all other required raw facts are valid. The user must explicitly accept the current semantic model as a new baseline for that one invocation. |
+| `unsafe` | Existing hash drift, unsupported hash/schema rule, empty or invalid metadata, or missing/contradictory core facts prevents a repair. |
+| `unsupported` | The drawing, raw XML payload, or required semantic adoption is outside this conservative scope. |
+
+An acceptance flag never overrides `unsafe` or `unsupported`, and a dry run does not authorize a later write. An eligible repair requires a new output path, the SHA you reviewed, and—only for the missing-hash classification—the narrow acceptance flag:
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  migrate --input old.drawio --output migrated.drawio \
+  --expected-input-sha256 "<sha256-from-dry-run-or-inspect>" \
+  --accept-unverified-baseline
+```
+
+There is no migration `--force`, in-place overwrite, non-strict mode, target-schema conversion, or model-drift acceptance alias. The candidate rejects input/output aliases and an existing destination; it rechecks the input before atomic, no-clobber delivery. It writes only after projected and serialized strict validation, exact preservation checks, and an independently recomputed migration comparison. A successful `not-needed` result remains `written: false`; a strict failure is not turned into delivery by the classification.
+
+At most four attributes on the identified pool may differ, and only when their individual conditions hold: an absent `data-lane-order`, absent `data-model-hash-version`, an accepted absent `data-model-hash`, and `data-tool-version` when another allowed repair actually occurs. This is an exact change plan—not an allowlist for arbitrary pool differences. All process semantics, geometry, routes, unknown XML payload, text/tails, and sibling order remain protected.
+
+Verify a delivered migration independently; this mode is mutually exclusive with patch changes and never writes:
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  compare --before old.drawio --after migrated.drawio --migration
+```
+
+`compare --migration` recomputes the before-plan and rejects an incorrect target value, wrong cell, missing or extra field, or any semantic, geometry, XML-payload, text, or order change. A passing migration comparison proves preservation within this rule; it does not prove a user accepted a missing-hash baseline, nor does it replace strict validation.
+
+Historical-source reconstruction and reproducible neutral mutations can establish format rules, but they are not evidence that a real historical missing-field artifact is compatible. Historical editor saves, current editor saves, exports, Agent visual review, and human acceptance are separate evidence. In particular, a real historical missing-field original remains unverified until such an artifact is tested.
+
 ## Validation and reliability
 
 Strict validation checks the semantic model, main-path continuity, decisions, retries, phases, fixed-aspect nodes, text fit, ports, lane-boundary clearance, node crossings, short segments, excessive bends, hairpins, reciprocal ambiguity, supported arrowhead terminal-run clearance, label placement, connector overlap, and phase Z-order. Arrowhead coverage can be `partial` or `not_available` for unsupported styles or shapes; that is incomplete evidence, not an inferred pass.
@@ -208,6 +253,8 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json
 ```
+
+For migration commands and receipt, see [conservative migration](#conservative-metadata-migration) and the [semantic schema and patch contract](skills/product-swimlane-drawio/references/schema.md#conservative-metadata-migration).
 
 See the [semantic schema and patch contract](skills/product-swimlane-drawio/references/schema.md).
 

@@ -10,7 +10,7 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 CORE_MODULES = ("contracts", "geometry", "document", "metadata", "sizing",
                 "routing_policy", "ports", "labels", "routing", "routing_adapter",
-                "spec_validation", "layout", "validation")
+                "spec_validation", "layout", "validation", "migration")
 
 
 class ReleaseInventoryTests(unittest.TestCase):

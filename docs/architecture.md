@@ -56,6 +56,8 @@ After local editing, `inspect` reads the latest file rather than relying on an o
 
 The pool cell stores the producing tool version, model-hash version, stable lane order, and a hash of process meaning. The hash covers semantic IDs, labels, ownership, ordering, topology, main path, phases, and v3 layout intent. It excludes user-editable visual state such as coordinates, sizes, styles, lane widths, phase colors, ports, and manual waypoints. This separation detects undeclared semantic drift without treating ordinary Draw.io layout adjustments as corruption.
 
+For eligible metadata omissions, `migrate` checks original XML facts and plans only exact pool-attribute repairs under the existing schema. It does not call build, patch, metadata refresh, or routing. A write requires the reviewed input SHA, applicable missing-hash acceptance, projected and serialized strict checks, exact preservation, and atomic no-clobber delivery. `compare --migration` independently recomputes this plan and compares the full document under the serialization-signature formatting boundary; it neither accepts a baseline nor substitutes for strict validation.
+
 ## Trust boundaries
 
 - The model proposes semantics; it is not trusted to optimize raw geometry directly.
@@ -64,8 +66,8 @@ The pool cell stores the producing tool version, model-hash version, stable lane
 - Strict validation and visual review are independent evidence.
 - The latest user-saved `.drawio` is canonical after local editing.
 - A patch is bound to the exact inspected input bytes through SHA-256; a later save invalidates that baseline.
-- Reviewed direct semantic edits can establish a new baseline explicitly, but malformed schema composition cannot be overridden.
-- Incompatible or manually created Draw.io files require migration or controlled rebuilding before safe semantic patching.
+- Patch can accept reviewed direct semantic edits explicitly; migration rejects known drift and accepts a new baseline only when the historical hash is absent. Neither can override malformed schema composition.
+- Migration supports narrowly missing metadata in otherwise verifiable managed diagrams. Incompatible or manually created drawings require controlled rebuilding.
 
 ## Current implementation and page scope
 
@@ -78,6 +80,7 @@ The portable CLI is limited to file arguments, input summaries, authorization pr
 | `geometry` | Bounds, ports, polylines, intersections, and geometric comparisons. |
 | `document` | Draw.io XML readers and writers, raw routing views, native order, file receipts, and atomic output. |
 | `metadata` | Managed semantic identity, model hashing, and explicit metadata refresh. |
+| `migration` | Original-byte eligibility checks, exact same-schema metadata plans, conservative delivery, and independent migration comparison. |
 | `sizing` | Text estimates and node sizes. |
 | `routing_policy` | Shared routing and validation thresholds. |
 | `ports` | Port candidates, pair allocation, and per-operation allocator state. |
@@ -93,11 +96,11 @@ The portable CLI is limited to file arguments, input summaries, authorization pr
 | `roundtrip` | Patch coordination, saved-edit protection, declared-patch comparison, inspection, and domain-level delivery-candidate checks. |
 | `validation` | Ordered diagnostic collectors and read-only validation summaries. |
 
-The dependency direction is CLI to build or roundtrip; build to construction, layout, specification validation, and the shared core; and roundtrip to patch operations, construction, layout, specification validation, validation, and the shared core. Validation, routing, and the other shared modules do not import the higher-level orchestrators. `compare` calls patch processing only for its forward replay; patch operations do not depend on compare or delivery gates.
+The dependency direction is CLI to build, roundtrip, or migration; build to construction, layout, specification validation, and the shared core; and roundtrip to patch operations, construction, layout, specification validation, validation, and the shared core. Migration reads document, metadata, validation, and shared contract facts without invoking build, patch, or routing. Validation, routing, and the other shared modules do not import the higher-level orchestrators. Declared-patch `compare` calls patch processing only for its forward replay; patch operations do not depend on compare or delivery gates.
 
 Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans new edges and existing edges with declared route changes while treating frozen connector paths and labels as obstacles. A spatial change that makes a frozen route invalid requires an explicit route declaration; existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata.
 
-These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
+These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface includes six CLI commands and their structured JSON receipts: build, inspect, patch, validate, compare, and migrate. The original five command defaults remain unchanged; migration comparison is an explicit compare mode. Internal functions are not compatibility guarantees.
 
 Each generated file is a single-page process view. The tool does not provide multi-page navigation, cross-page connectors, or cross-file references. Split a dense end-to-end process and its exception detail into separate `.drawio` files when one page would no longer be readable.
 

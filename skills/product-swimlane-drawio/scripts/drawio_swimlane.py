@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from swimlane_core import build, contracts, document, roundtrip, validation as core_validation
+from swimlane_core import build, contracts, document, migration, roundtrip, validation as core_validation
 
 
 def load_json(path: Path) -> dict:
@@ -155,6 +155,12 @@ def command_validate(args: argparse.Namespace) -> None:
 
 
 def command_compare(args: argparse.Namespace) -> None:
+    if getattr(args, "migration", False):
+        result, exit_code = migration.compare_migration_files(args.before, args.after)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
     changes = load_json(args.changes) if args.changes else None
     result = roundtrip.compare_trees(document.read_tree(args.before), document.read_tree(args.after), changes)
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -166,6 +172,16 @@ def command_inspect(args: argparse.Namespace) -> None:
     result = roundtrip.inspect_tree(document.read_tree(args.input))
     result["input"] = document.file_receipt(args.input)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def command_migrate(args: argparse.Namespace) -> None:
+    options = {"expected_input_sha256": args.expected_input_sha256,
+               "accept_unverified_baseline": args.accept_unverified_baseline}
+    result, exit_code = (migration.dry_run(args.input, **options) if args.dry_run
+                         else migration.migrate_file(args.input, args.output, **options))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -213,12 +229,24 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare", help="Prove that all existing semantic cells were preserved")
     compare.add_argument("--before", type=Path, required=True)
     compare.add_argument("--after", type=Path, required=True)
-    compare.add_argument("--changes", type=Path, help="Allow cells named in a patch file to change")
+    comparison_mode = compare.add_mutually_exclusive_group()
+    comparison_mode.add_argument("--changes", type=Path, help="Allow cells named in a patch file to change")
+    comparison_mode.add_argument("--migration", action="store_true",
+                                 help="Require the exact same-schema metadata migration plan")
     compare.set_defaults(func=command_compare)
 
     inspect = subparsers.add_parser("inspect", help="Inspect compatible semantic metadata and geometry")
     inspect.add_argument("--input", type=Path, required=True)
     inspect.set_defaults(func=command_inspect)
+
+    migrate = subparsers.add_parser("migrate", help="Plan conservative same-schema metadata repair")
+    migrate.add_argument("--input", type=Path, required=True)
+    destination = migrate.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--dry-run", action="store_true")
+    destination.add_argument("--output", type=Path)
+    migrate.add_argument("--expected-input-sha256")
+    migrate.add_argument("--accept-unverified-baseline", action="store_true")
+    migrate.set_defaults(func=command_migrate)
     return parser
 
 

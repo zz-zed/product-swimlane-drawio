@@ -218,6 +218,7 @@ class CoreBoundaryTests(unittest.TestCase):
         geometry = ast.parse((CORE / "geometry.py").read_text(encoding="utf-8"))
         document = ast.parse((CORE / "document.py").read_text(encoding="utf-8"))
         metadata = ast.parse((CORE / "metadata.py").read_text(encoding="utf-8"))
+        migration = ast.parse((CORE / "migration.py").read_text(encoding="utf-8"))
         sizing = ast.parse((CORE / "sizing.py").read_text(encoding="utf-8"))
         routing_policy = ast.parse((CORE / "routing_policy.py").read_text(encoding="utf-8"))
         ports = ast.parse((CORE / "ports.py").read_text(encoding="utf-8"))
@@ -298,6 +299,12 @@ class CoreBoundaryTests(unittest.TestCase):
             "hashlib", "json", "xml.etree.ElementTree",
             "swimlane_core.contracts", "swimlane_core.document",
         })
+        assert_only_allowed_imports(migration, {
+            "copy", "hashlib", "json", "math", "os", "pathlib", "stat",
+            "xml.etree.ElementTree", "xml.parsers", "swimlane_core.contracts",
+            "swimlane_core.document", "swimlane_core.metadata", "swimlane_core.routing_policy",
+            "swimlane_core.spec_validation", "swimlane_core.validation",
+        })
         expected = {"node_bounds_in_pool", "port_xy", "port_point", "compact_points", "remove_collinear_points", "segment_length", "polyline_length", "bend_count", "bounds_overlap", "segment_axis", "value_between", "segment_crosses_bounds", "segment_intersects_box", "segments_conflict"}
         geometry_functions = {node.name for node in geometry.body if isinstance(node, ast.FunctionDef)}
         self.assertEqual(geometry_functions, expected)
@@ -305,7 +312,7 @@ class CoreBoundaryTests(unittest.TestCase):
         entry_functions = {node.name for node in ast.walk(ast.parse(entry_source)) if isinstance(node, ast.FunctionDef)}
         self.assertEqual(entry_functions, {
             "load_json", "command_build", "command_patch", "command_validate",
-            "command_compare", "command_inspect", "build_parser", "main",
+            "command_compare", "command_inspect", "command_migrate", "build_parser", "main",
         })
         roundtrip_functions = {
             node.name for node in roundtrip.body if isinstance(node, ast.FunctionDef)

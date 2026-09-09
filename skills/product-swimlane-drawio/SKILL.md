@@ -19,6 +19,7 @@ Build native, uncompressed `.drawio` files with the bundled Python tool. Keep th
 
 - **New diagram:** confirm the structure, then read the [build contract](references/schema.md#build-specification) and use the build workflow below.
 - **Modify an existing diagram:** use the latest saved file; read the [patch contract](references/schema.md#patch-specification), [inspection rules](references/schema.md#inspection-and-diagnostics), [artifact integrity](references/schema.md#artifact-integrity), and [compatibility matrix](references/schema.md#compatibility).
+- **Conservatively migrate an older managed diagram:** read [conservative metadata migration](references/schema.md#conservative-metadata-migration). Use it only for same-schema metadata omissions in a single-page managed drawing; it cannot adopt drawing semantics, convert schemas, or repair drift.
 - **Read-only check:** read only the relevant [inspection](references/schema.md#inspection-and-diagnostics), [integrity](references/schema.md#artifact-integrity), or [compatibility](references/schema.md#compatibility) section, then choose the requested `inspect`, `validate`, or `compare` command. Do not build, patch, overwrite, or automatically repair a diagram during a read-only request.
 
 Use information already supplied by the user; ask only for a missing fact that changes process meaning, ownership, the main path, or a safety authorization. When the user asks to confirm the structure first, wait without creating a specification or diagram.
@@ -136,6 +137,40 @@ Treat automated validation and visual review as separate evidence:
 12. Use `--accept-model-drift` only for reviewed, intentional semantic edits made directly in Draw.io. Never use it for schema-composition errors, unmanaged content, or an input SHA-256 mismatch.
 
 If diagnostics offer no safe authorized fix, a correction makes no progress, or a fix would change confirmed semantics or manual layout, stop with the diagnostic evidence and ask for a decision. Never lower strictness, add speculative waypoints, or use `--force` / `--accept-model-drift` to suppress the issue.
+
+## Conservatively migrate an older managed diagram
+
+Use migration only when a single-page managed file already has verifiable identity, ownership, topology, schema semantics, and raw geometry. Do not use it for ordinary nonmanaged drawings, unknown nodes or edges that need adoption, schema conversion, empty/invalid metadata, hash drift, or any missing core process fact. This workflow is distinct from patching: it never builds, normalizes, reroutes, refreshes general metadata, or infers a lane order from geometry.
+
+1. Run a read-only plan first:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" migrate --input "<old.drawio>" --dry-run
+   ```
+
+   Read the input SHA-256, classification, reasons, planned changes, strict-validation evidence, and `can_write`. The classifications are `not-needed`, `automatic`, `confirmation-required`, `unsafe`, and `unsupported`; they describe metadata eligibility rather than a strict-quality pass. Do not create an output for `not-needed`.
+2. Only `automatic`, or `confirmation-required` with the user's explicit acceptance for this invocation, can proceed. `--accept-unverified-baseline` applies only to an otherwise valid missing historical hash; it cannot override hash drift, an unsupported rule/schema, an empty value, missing identity/topology, or unsupported drawing content. Never treat a previous dry run as acceptance for a later command.
+3. For a write, require the reviewed SHA and a distinct, not-yet-existing output path. Do not offer `--force`, an in-place write, non-strict delivery, schema conversion, or `--accept-model-drift` as a migration substitute:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" migrate \
+     --input "<old.drawio>" --output "<migrated.drawio>" \
+     --expected-input-sha256 "<sha256-from-dry-run-or-inspect>" \
+     --accept-unverified-baseline
+   ```
+
+   Omit the acceptance flag for `automatic`; never add it just in case. The command must preserve the input and an existing destination, recheck the source before atomic no-clobber delivery, and require projected plus serialized strict validation and preservation checks.
+4. Confirm that the plan changes no more than the exact eligible pool attributes: absent `data-lane-order`, absent `data-model-hash-version`, accepted absent `data-model-hash`, and `data-tool-version` only when another allowed repair occurs. Existing valid hashes stay byte-for-byte unchanged. Every other attribute, semantic fact, geometry, route, unknown XML payload, text/tail, and sibling order remains protected.
+5. Independently verify a delivered migration; do not use `--changes` in this mode:
+
+   ```bash
+   python3 "<skill-root>/scripts/drawio_swimlane.py" compare \
+     --before "<old.drawio>" --after "<migrated.drawio>" --migration
+   ```
+
+   Require exit code 0 and `preserved: true`. This comparison recomputes the plan from `before`; it rejects incorrect, missing, moved, or extra changes and all unrelated content/geometry/order differences. It does not establish that a missing-hash baseline was accepted or replace strict validation.
+
+Historical-source reconstruction and reproducible neutral mutations establish limited format evidence only. Keep historical editor-save, current editor-save, export, Agent visual review, and human acceptance separate, and do not claim real historical missing-field originals were verified unless they actually were.
 
 ## Layout and handoff
 

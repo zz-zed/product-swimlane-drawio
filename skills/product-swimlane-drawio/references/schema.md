@@ -11,6 +11,7 @@ Use stable ASCII IDs containing letters, digits, underscores, or hyphens. Visibl
 - [Inspection and diagnostics](#inspection-and-diagnostics)
 - [Artifact integrity](#artifact-integrity)
 - [Compatibility](#compatibility)
+- [Conservative metadata migration](#conservative-metadata-migration)
 
 ## Build specification
 
@@ -316,4 +317,56 @@ The five commands have different safety boundaries. Being inspectable does not m
 
 Do not ignore pool-level differences: the pool also holds protected semantic and other attributes. Inspect the actual evidence for other changes. Never rewrite the user's or historical `after` stamp to make comparison pass, and never automatically rebuild or patch during a read-only review. If needed, use a trusted original producing version in isolation for read-only verification, or obtain authorization to apply the intended patch from the correct input using the current version. Preserve the original files and audit records in either case.
 
-Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles. Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`. This runtime does not add a migrate command or compatibility aliases: manually created files without compatible semantic metadata require a controlled rebuild or a separately authorized migration workflow.
+Version 3 is the default for new diagrams and adds behavior patterns, slots, note anchors, groups, flow roles, and layout profiles. Structured semantic checks apply after a v2 or v3 build, or after a patch explicitly supplies `main_path`. Manually created files without compatible semantic metadata still require a controlled rebuild; migration cannot silently adopt them.
+
+## Conservative metadata migration
+
+This conservative same-schema metadata-repair contract adds `migrate` and `compare --migration`, without changing the established default behavior of `build`, `inspect`, `patch`, `validate`, or `compare --changes`.
+
+The supported input is one uncompressed `mxfile` / `diagram` / `mxGraphModel` / `root` with one managed pool. Migration preflights original XML and rejects forms that cannot be protected, including multiple pages, compressed or unsupported wrappers, comments, processing instructions other than the XML declaration, DTD/custom entities, and unsupported explicit namespace payload. It does not change the legacy parser. It retains normal meaning for built-in escapes, numeric entities, and `xml:space`.
+
+Raw facts—not reader defaults—must establish identity, owner, type, rank, endpoints, route, and phase ranges. A v1 file may omit schema/main path only under its established interpretation; v2/v3 require their original schema/main-path facts. Missing newer-schema-only semantics, duplicate native or same-kind semantic IDs, raw/semantic endpoint or lane-parent contradictions, invalid existing lane order, empty metadata, an unsupported rule/version, and an existing nonmatching hash are unsafe. A normal nonmanaged drawing, an unknown drawing identity requiring adoption, or unprotectable/unsupported drawing content is unsupported. If both apply, report unsafe precedence while retaining both reasons.
+
+Run a dry plan before asking for any write:
+
+```bash
+python3 "<skill-root>/scripts/drawio_swimlane.py" migrate --input "<old.drawio>" --dry-run
+```
+
+Dry-run never serializes XML or creates a candidate/output directory. It returns input path/bytes/SHA-256, legacy source state, a same-schema semantic summary, planned changes, source/projected/serialized validation slots, preservation/delivery evidence where evaluated, and these classifications:
+
+| Classification | Eligibility rule | Write effect |
+|---|---|---|
+| `not-needed` | No repair is needed, even if a producing stamp is old or absent. | No copy; `written: false`. This does not certify strict quality. |
+| `automatic` | A valid stored hash matches and only derived lane order and/or hash version is absent. | Eligible after all projected strict checks. |
+| `confirmation-required` | Historical hash is absent while all other required raw facts are valid. | Requires explicit acceptance of the current semantics for this command only. |
+| `unsafe` | Structural/raw identity, schema/rule/hash, core-fact, or existing-metadata contradiction. | Refuse; acceptance cannot override it. |
+| `unsupported` | The drawing or XML payload needs adoption or lies outside this protected scope. | Refuse; acceptance cannot override it. |
+
+`can_write` means an actual repair is eligible, projected strict validation passes, and any applicable baseline acceptance was supplied. It is false for `not-needed`, unsafe/unsupported inputs, strict-quality blockers, and unaccepted missing hashes; it does not promise later source freshness or output delivery. `baseline_accepted` is true only when this missing-hash invocation explicitly supplied acceptance.
+
+Write with a reviewed input SHA and a distinct new path. `--accept-unverified-baseline` is permitted only for the `confirmation-required` missing-hash case; it cannot accept model-hash drift, invalid/empty metadata, missing core semantics, or another refusal reason. There is no migration `--force`, non-strict mode, target-schema conversion, in-place mode, or `--accept-model-drift` alias.
+
+```bash
+python3 "<skill-root>/scripts/drawio_swimlane.py" migrate \
+  --input "<old.drawio>" --output "<migrated.drawio>" \
+  --expected-input-sha256 "<reviewed-sha256>" \
+  --accept-unverified-baseline
+```
+
+Omit that flag for `automatic`. The write rejects path aliases and an occupied output, keeps the input and pre-existing target unchanged on failure, checks the SHA and source again before same-directory atomic no-clobber publication, and never uses replace/copy fallback. It accepts delivery only after exact in-memory changes, projected strict validation, serialized readback/signature/semantic checks, independently recomputed comparison, and serialized strict validation. A post-commit temporary-cleanup warning records successful `written: true` separately from quality; a pre-commit failure remains a delivery failure.
+
+The plan contains only actual changes, in this order: `data-lane-order`, `data-model-hash-version`, `data-model-hash`, `data-tool-version`. Every change identifies the actual pool cell, semantic ID, old presence/value, new string value, and stable reason. At most these four pool attributes may change: absent lane order uses the reader's existing root-entry order (never geometric sorting); absent hash version may be filled; an absent hash needs the narrow explicit acceptance; and the tool version changes only when another allowed repair occurs. A valid existing hash remains byte-for-byte unchanged. This is a precise change plan, not a pool-attribute allowlist: all other attributes, cells, semantic facts, geometry, routing, unknown XML payload, mixed text/tails, and sibling order must remain protected.
+
+Verify delivery independently:
+
+```bash
+python3 "<skill-root>/scripts/drawio_swimlane.py" compare \
+  --before "<old.drawio>" --after "<migrated.drawio>" --migration
+```
+
+`--migration` and `--changes` are mutually exclusive. The migration comparison recomputes the plan from `before`; it does not trust a writer receipt. It rejects a wrong cell/value, missing or extra attribute, and every unrelated structure, identity, semantic, geometry, unknown-payload, text/tail, or order difference. A valid XML `after` with such a difference yields `preserved: false`; malformed input is a refusal. A passing comparison proves rule-bound preservation only: it neither accepts an unverified baseline nor substitutes for strict validation.
+
+The stable receipt uses `operation: "migrate"`, `migration_rule_version: "1"`, `producing_tool_version`, `input`, `source_managed_state`, `classification`, `can_write`, `reasons`, `semantic_summary`, `planned_changes`, `baseline_acceptance_required`, `baseline_accepted`, `written`, `output`, `validation`, `preservation`, and `delivery`. Migration comparison uses `operation: "compare-migration"`, its before/after receipts, classification, planned changes, preservation, differences, and reasons. The candidate exit convention is: `0` for completed dry-run classification, not-needed, or successful delivery; `1` for write-time candidate strict/preservation failure; `2` for invalid input/parameters, expected-SHA, alias/output, classification, confirmation, or precommit I/O refusal; and `3` for unexpected internal errors.
+
+Historical-source reconstruction and reproducible neutral synthetic mutations are limited format evidence; they do not demonstrate that a real historical missing-field artifact is compatible or that historical business need existed. Record historical reconstruction, synthetic mutation, historical/current editor saves, export, Agent visual review, and human acceptance as separate evidence types. Do not claim real historical missing-field-original compatibility until it is actually verified.

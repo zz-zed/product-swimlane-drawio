@@ -19,6 +19,7 @@ EXPECTED_SKILL_FILES = frozenset({
     "scripts/swimlane_core/contracts.py",
     "scripts/swimlane_core/geometry.py",
     "scripts/swimlane_core/document.py", "scripts/swimlane_core/metadata.py",
+    "scripts/swimlane_core/migration.py",
     "scripts/swimlane_core/sizing.py", "scripts/swimlane_core/routing_policy.py",
     "scripts/swimlane_core/ports.py", "scripts/swimlane_core/port_planner.py",
     "scripts/swimlane_core/labels.py",

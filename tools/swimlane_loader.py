@@ -29,6 +29,7 @@ class LoadedSkill:
     geometry: ModuleType
     document: ModuleType
     metadata: ModuleType
+    migration: ModuleType
     sizing: ModuleType
     routing_policy: ModuleType
     ports: ModuleType
@@ -70,6 +71,7 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         geometry = importlib.import_module("swimlane_core.geometry")
         document = importlib.import_module("swimlane_core.document")
         metadata = importlib.import_module("swimlane_core.metadata")
+        migration = importlib.import_module("swimlane_core.migration")
         sizing = importlib.import_module("swimlane_core.sizing")
         routing_policy = importlib.import_module("swimlane_core.routing_policy")
         ports = importlib.import_module("swimlane_core.ports")
@@ -89,7 +91,7 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         spec.loader.exec_module(tool)
         return LoadedSkill(tool=tool, build=build, construction=construction,
                            clearance=clearance, contracts=contracts, geometry=geometry,
-                           document=document, metadata=metadata, sizing=sizing,
+                           document=document, metadata=metadata, migration=migration, sizing=sizing,
                            routing_policy=routing_policy, ports=ports,
                            port_planner=port_planner, labels=labels,
                            patch_operations=patch_operations, roundtrip=roundtrip,

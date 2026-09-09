@@ -18,7 +18,7 @@
 
 生成过程不依赖 Draw.io MCP，也不要求安装 Draw.io 应用。只有需要可视化编辑或导出时，才需要 Draw.io Desktop 或 diagrams.net。
 
-**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [校验](#校验与输出可靠度) · [适用范围](#适用范围)
+**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [保守迁移](#保守元数据迁移) · [校验](#校验与输出可靠度) · [适用范围](#适用范围)
 
 ## 为什么需要这个 Skill
 
@@ -37,7 +37,7 @@
 
 - **可编辑：** 原生未压缩 `.drawio`、全高度垂直泳道、本地拖拽编辑。
 - **可靠：** 已确认主路径、确定性布局、正交路由、独立返回和重试通道、阶段带。
-- **可维护：** 稳定语义 ID、`inspect`、`patch`、`compare`、默认保护几何、安全调整泳道和节点。
+- **可维护：** 稳定语义 ID、`inspect`、`patch`、`compare`、默认保护几何、安全调整泳道和节点。保守迁移接口为符合条件的旧受管图提供显式元数据迁移路径。
 - **可验证：** 严格 Schema、结构化诊断、路由与标签检查、带 SHA-256 的原子输出收据。
 
 ## 查看完整示例
@@ -161,6 +161,51 @@ Agent 可能会询问安装范围，并在运行命令前请求授权。
 
 自动 build 和显式 reroute 会在最终校验前拒绝不可行或原生支持范围外的候选，非 strict 模式同样适用；空标签不再掩盖路径不支持。已有文件校验沿用命令和诊断严重级别约定，但保存的 v2/v3 跨泳道 automatic 回线不再要求目标泳道内的竖直走廊，因此警告及 strict 结果可能变化。同泳道回线检查及显式、已保存几何的保护保持。仅在 v3 中，同泳道向下的判断分支会在底部未被主路径保留时优先底出；显式端口仍优先。
 
+## 保守元数据迁移
+
+这套已集成的候选接口尚未正式发布。它仅覆盖这样一类旧图：**单页、受管、身份和同 schema 流程语义已经存在**，但元数据存在可由明确规则补齐的狭窄缺口。它不是导入器、schema 升级工具、身份采纳工具，也不会从布局或标签猜测语义。既有 `build`、`inspect`、`patch`、`validate` 和默认 `compare` 契约不变。
+
+先做只读判定。dry-run 不写 XML，也不创建输出目录或候选文件：
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  migrate --input old.drawio --dry-run
+```
+
+回执包含输入 SHA-256、现有 managed state、分类、原因、同 schema 语义摘要、精确拟改字段、严格校验证据以及本次调用是否可写。五类迁移分类描述的是元数据可修复资格，而不是质量通过：
+
+| 分类 | 含义 |
+|---|---|
+| `not-needed` | 没有可修复项；即使 producing stamp 旧或缺失，也不创建输出副本。 |
+| `automatic` | 已有有效 hash，可唯一补齐缺失的派生 lane order 和/或 hash-rule version。 |
+| `confirmation-required` | 历史 hash 缺失，但其它所需原始事实有效。用户必须在这一次调用中明确接受当前语义模型为新基线。 |
+| `unsafe` | 已有 hash 漂移、不支持的 hash/schema rule、空或无效元数据，或核心事实缺失/矛盾，均不得修复。 |
+| `unsupported` | 图形、原始 XML 载荷或所需语义采纳超出本轮保守范围。 |
+
+接受标志不能覆盖 `unsafe` 或 `unsupported`，一次 dry-run 也不能授权后续写入。符合条件的修复必须使用新输出路径、已经审阅的 SHA，并且仅在“缺历史 hash”分类下使用这个窄接受标志：
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  migrate --input old.drawio --output migrated.drawio \
+  --expected-input-sha256 "<dry-run或inspect返回的sha256>" \
+  --accept-unverified-baseline
+```
+
+迁移没有 `--force`、原地覆盖、非 strict 模式、target-schema 转换或 model-drift 接受别名。候选会拒绝输入/输出别名和已存在目标，在原子、无覆盖交付前再次检查输入；只有 projected 与 serialized strict 校验、精确保护检查和独立重算的迁移比较都通过后才写入。`not-needed` 成功时仍为 `written: false`；分类不能把 strict 失败变成可交付结果。
+
+最多只能变更已识别 pool 上的四个属性，并且每项都须满足各自条件：缺失的 `data-lane-order`、缺失的 `data-model-hash-version`、已经明确接受的缺失 `data-model-hash`，以及确有其它允许修复时的 `data-tool-version`。这是精确变更计划，不是允许任意 pool 差异的白名单；流程语义、几何、路由、未知 XML 载荷、text/tail 与同级顺序都受保护。
+
+对已经交付的迁移执行独立核验。此模式与 patch changes 互斥，且绝不写入：
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  compare --before old.drawio --after migrated.drawio --migration
+```
+
+`compare --migration` 会从 before 重新计算计划，拒绝目标值错误、cell 错误、漏字段/多字段，以及任意语义、几何、XML 载荷、text 或顺序变化。迁移比较通过只证明该规则范围内的保护；它不证明用户接受了缺 hash 基线，也不能替代 strict 校验。
+
+历史源码重建和可复现的中性合成变异可以证明格式规则，但不能证明真实历史缺字段原件兼容。历史编辑器保存、当前编辑器保存、导出、Agent 看图和真人验收是彼此独立的证据；尤其是真实历史缺字段原件仍需在取得后验证。
+
 ## 校验与输出可靠度
 
 严格校验覆盖语义模型、主路径连续性、判断、重试、阶段、固定宽高比节点、文字适配、端口、泳道边界距离、节点穿越、短线段、过多折点、回钩、往返路径混淆、受支持样式的箭头末段净空、标签位置、连线重叠和阶段层级。对未覆盖的样式或形状，箭头检查会明确返回 `partial` 或 `not_available`；这表示证据不完整，不是推断通过。
@@ -212,6 +257,8 @@ python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
 python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
   compare --before process.drawio --after process-updated.drawio --changes changes.json
 ```
+
+迁移命令与回执请见[保守迁移](#保守元数据迁移)和[语义 Schema 与补丁约定](skills/product-swimlane-drawio/references/schema.md#conservative-metadata-migration)。
 
 详见[语义 Schema 与补丁约定](skills/product-swimlane-drawio/references/schema.md)。
 

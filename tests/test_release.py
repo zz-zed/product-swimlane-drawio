@@ -513,7 +513,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
         self.assertIn("complete Skill directory is its distribution unit", architecture)
         self.assertIn("portable CLI is limited to file arguments, input summaries, authorization preflight checks, command dispatch and output, and exception mapping", architecture)
-        self.assertIn("public interface remains the five CLI commands", architecture)
+        self.assertIn("public interface includes six CLI commands", architecture)
         tool_tree = ast.parse(TOOL.read_text(encoding="utf-8"))
         core_imports = [
             node for node in tool_tree.body
@@ -523,14 +523,14 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             {alias.name for alias in core_imports[0].names},
             {
-                "build", "contracts", "document", "roundtrip", "validation",
+                "build", "contracts", "document", "migration", "roundtrip", "validation",
             },
         )
         self.assertEqual(
             {alias.name: alias.asname for alias in core_imports[0].names}["validation"],
             "core_validation",
         )
-        for module in ("clearance", "contracts", "geometry", "document", "metadata", "sizing",
+        for module in ("clearance", "contracts", "geometry", "document", "metadata", "migration", "sizing",
                        "routing_policy", "ports", "port_planner", "labels", "routing",
                        "routing_adapter", "construction", "build", "spec_validation", "layout", "validation"):
             self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
