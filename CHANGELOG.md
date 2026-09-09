@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## [0.8.0] - 2026-09-09
+
+### Added
+
+- Add a conservative `migrate` command and `compare --migration` for supported, same-schema Draw.io files. Migration only repairs absent, derivable pool metadata after raw preservation checks, strict validation, and an independently recomputed comparison.
+- Reject unsafe or unsupported native XML before migration, including ambiguous geometry bindings, unmanaged identities, incompatible schemas, malformed protected payloads, and unverified historical baselines unless explicitly accepted for that invocation.
+
+### Changed
+
+- Use atomic no-clobber migration delivery with input SHA binding, source and output alias checks, candidate readback, and a receipt that separately reports commit and temporary-cleanup status.
+- Preserve the five existing CLI commands and default writer behavior. The producing-tool stamp changes to 0.8.0, so newly written XML and file hashes differ from v0.7.1.
+
 ## [0.7.1] - 2026-09-09
 
 ### Changed
@@ -331,7 +343,8 @@ This release is based on the locally verified candidate and is published with th
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...v0.6.5

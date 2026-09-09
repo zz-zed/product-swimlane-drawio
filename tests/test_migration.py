@@ -354,7 +354,7 @@ class MigrationPlanTests(MigrationFixture):
             report = json.loads(result.stdout)
             self.assertEqual(report["operation"], "migrate")
             self.assertEqual(report["migration_rule_version"], "1")
-            self.assertEqual(report["producing_tool_version"], "0.7.1")
+            self.assertEqual(report["producing_tool_version"], "0.8.0")
             self.assertEqual(list(Path(temp).iterdir()), [path])
 
 
@@ -576,7 +576,7 @@ class MigrationDeliveryTests(MigrationFixture):
                     elif mutation == "malformed":
                         raw += b"<broken>"
                     else:
-                        raw = raw.replace(b'data-tool-version="0.7.1"', b'data-tool-version="wrong"')
+                        raw = raw.replace(b'data-tool-version="0.8.0"', b'data-tool-version="wrong"')
                     candidate.write_bytes(raw)
                 with mock.patch.object(ET.ElementTree, "write", new=corrupt):
                     report, code = self.deliver(source, output)
@@ -824,7 +824,7 @@ class MigrationComparisonTests(MigrationFixture):
                 elif mutation == "unchanged-allowed-field":
                     pool.set("data-lane-order", '[ "lane-a" ]')
                 elif mutation == "wrong-tool-version":
-                    pool.set("data-tool-version", "0.8.0")
+                    pool.set("data-tool-version", "0.7.1")
                 else:
                     pool.set("id", "different-native-id")
                 report, code = self.compare(before, after)
