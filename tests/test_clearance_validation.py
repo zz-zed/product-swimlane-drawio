@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,13 +19,13 @@ class ClearanceValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         loaded = load_skill_modules(TOOL, module_name="clearance_validation_tests")
-        cls.tool = loaded.tool
+        cls.build = loaded.build
         cls.validation = loaded.validation
         cls.document = loaded.document
         cls.contracts = loaded.contracts
 
     def test_summary_exposes_complete_clearance_check_without_warning(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         report = self.validation.validate_tree(tree)
 
         self.assertEqual(report["arrowhead_clearance"]["status"], "complete")
@@ -38,8 +39,8 @@ class ClearanceValidationTests(unittest.TestCase):
         })
 
     def test_short_terminal_run_emits_reproducible_evidence_and_is_read_only(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
-        edge = self.tool.document.edge_records(self.tool.document.graph_root(tree))["e0"]
+        tree = self.build.build_tree(linear_spec(2, version="2"))
+        edge = self.document.edge_records(self.document.graph_root(tree))["e0"]
         # e0 is a vertical bottom-to-top edge.  This final waypoint leaves a
         # 10px terminal run before the target process perimeter.
         edge.set("style", edge.get("style").replace(
@@ -48,7 +49,7 @@ class ClearanceValidationTests(unittest.TestCase):
         self.document.set_edge_points(
             edge, [(120.0, 160.0), (44.0, 160.0), (44.0, 204.0)]
         )
-        root_before = self.tool.ET.tostring(tree.getroot())
+        root_before = ET.tostring(tree.getroot())
 
         report = self.validation.validate_tree(tree)
         warnings = [
@@ -76,10 +77,10 @@ class ClearanceValidationTests(unittest.TestCase):
         self.assertIn("coverage", evidence)
         self.assertLess(evidence["clearance_px"], evidence["threshold"])
         self.assertEqual(report["arrowhead_clearance"]["violations"], 1)
-        self.assertEqual(root_before, self.tool.ET.tostring(tree.getroot()))
+        self.assertEqual(root_before, ET.tostring(tree.getroot()))
 
     def test_explicit_short_terminal_run_is_diagnostic_only(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         edge = self.document.edge_records(root)["e0"]
         edge.set("data-waypoints-origin", "explicit")
@@ -97,7 +98,7 @@ class ClearanceValidationTests(unittest.TestCase):
         self.assertEqual(warning["supported_fixes"], ["edit-explicit-waypoints"])
 
     def test_partial_and_empty_clearance_summaries_are_not_claimed_complete(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         edges = self.document.edge_records(root)
         edges["e0"].set("style", edges["e0"].get("style").replace(
@@ -110,7 +111,7 @@ class ClearanceValidationTests(unittest.TestCase):
         self.assertEqual(partial["unavailable_edges"], ["e0"])
         self.assertEqual(partial["violations"], 0)
 
-        empty_tree = self.tool.build_tree(linear_spec(2, version="2"))
+        empty_tree = self.build.build_tree(linear_spec(2, version="2"))
         empty_root = self.document.graph_root(empty_tree)
         for edge in list(self.document.edge_records(empty_root).values()):
             empty_root.remove(edge)
@@ -121,7 +122,7 @@ class ClearanceValidationTests(unittest.TestCase):
         self.assertIsNone(empty["violations"])
 
     def test_no_arrow_is_not_applicable_and_unknown_style_is_not_available(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         edges = self.document.edge_records(root)
         edges["e0"].set("style", edges["e0"].get("style").replace(
@@ -142,7 +143,7 @@ class ClearanceValidationTests(unittest.TestCase):
         })
 
     def test_all_unmeasurable_edges_keep_null_violations(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         for edge in self.document.edge_records(root).values():
             edge.set("style", edge.get("style").replace(

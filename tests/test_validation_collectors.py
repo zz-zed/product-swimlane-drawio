@@ -19,7 +19,8 @@ class ValidationCollectorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         loaded = load_skill_modules(TOOL, module_name="validation_collector_tests")
-        cls.tool = loaded.tool
+        cls.metadata = loaded.metadata
+        cls.build = loaded.build
         cls.validation = loaded.validation
         cls.document = loaded.document
         cls.geometry = loaded.geometry
@@ -29,7 +30,7 @@ class ValidationCollectorTests(unittest.TestCase):
         spec = linear_spec(2, version="2")
         for edge in spec["edges"]:
             edge["label"] = ""
-        self.tree = self.tool.build_tree(spec)
+        self.tree = self.build.build_tree(spec)
         self.pool = self.document.find_pool(self.tree)
         self.root = self.document.graph_root(self.tree)
         self.refresh_records()
@@ -59,7 +60,7 @@ class ValidationCollectorTests(unittest.TestCase):
     def summarize(self, diagnostics, **overrides):
         values = dict(
             diagnostics=diagnostics, pool=self.pool, schema_version="2",
-            integrity=self.tool.metadata.managed_artifact_summary(self.tree),
+            integrity=self.metadata.managed_artifact_summary(self.tree),
             lanes=self.lanes, nodes=self.nodes, edge_cells=list(self.edges.values()),
             unmanaged_edges=[], edge_cells_by_id=self.edges, edge_points={},
         )

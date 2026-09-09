@@ -25,7 +25,7 @@ class FeasibleRoutingTests(unittest.TestCase):
             calls.append((copy.deepcopy(args), copy.deepcopy(kwargs)))
             return original(*args, **kwargs)
         with mock.patch.object(self.routing, "plan_route_batch", side_effect=capture):
-            self.loaded.tool.build_tree(spec or linear_spec(3, version="2"))
+            self.loaded.build.build_tree(spec or linear_spec(3, version="2"))
         self.assertEqual(len(calls), 1)
         return calls[0]
 
@@ -370,7 +370,7 @@ class FeasibleRoutingTests(unittest.TestCase):
         self.assertEqual(len(path), 3)
         self.assertEqual(path[0][0], path[1][0])
         self.assertEqual(path[1][1], path[2][1])
-        tree = self.loaded.tool.build_tree(spec)
+        tree = self.loaded.build.build_tree(spec)
         self.assertTrue(self.loaded.validation.validate_tree(tree)["quality_gate_passed"])
 
 

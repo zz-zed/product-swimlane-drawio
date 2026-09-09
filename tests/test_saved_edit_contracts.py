@@ -21,7 +21,7 @@ class SavedEditContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.m = load_skill_modules(TOOL, module_name='saved_edit_contracts')
-        cls.t, cls.d, cls.c = cls.m.tool, cls.m.document, cls.m.contracts
+        cls.roundtrip, cls.b, cls.d, cls.c = cls.m.roundtrip, cls.m.build, cls.m.document, cls.m.contracts
 
     def edge(self, tree, edge_id='e0'):
         return self.d.edge_records(self.d.graph_root(tree))[edge_id]
@@ -35,7 +35,7 @@ class SavedEditContracts(unittest.TestCase):
                              if key.startswith(('data-waypoints', 'data-exit', 'data-entry')))))
 
     def saved_retry(self):
-        tree = self.t.build_tree(corpus()['request-response-retry'])
+        tree = self.b.build_tree(corpus()['request-response-retry'])
         edge = self.edge(tree, 'retry')
         pts = edge.findall("./mxGeometry/Array[@as='points']/mxPoint")
         for a, b in zip(pts, pts[1:]):
@@ -47,39 +47,39 @@ class SavedEditContracts(unittest.TestCase):
         before = self.saved_retry(); after = copy.deepcopy(before)
         changes = {'update_edges': [{'id': 'retry', 'label': 'Recheck'}]}
         saved = self.route(self.edge(before, 'retry'))
-        result = self.t.patch_tree(after, changes, False)
+        result = self.roundtrip.patch_tree(after, changes, False)
         self.assertEqual(self.route(self.edge(after, 'retry')), saved)
         self.assertIn((454., 492.), self.d.edge_waypoints(self.edge(after, 'retry')))
         self.assertEqual(result['label_updated_edges'], ['retry'])
         self.assertEqual(result['rerouted_edges'], [])
         self.assertEqual(result['saved_routes'], {'checked': 7, 'preserved': True, 'changed_edges': []})
         self.assertTrue(self.m.validation.validate_tree(after)['quality_gate_passed'])
-        self.assertTrue(self.t.compare_trees(before, after, changes)['preserved'])
+        self.assertTrue(self.roundtrip.compare_trees(before, after, changes)['preserved'])
 
     def test_t02_label_only_preserves_repeated_collinear_and_empty_explicit_points(self):
         for points in ([], [(120, 142), (120, 142), (120, 151)]):
             with self.subTest(points=points):
-                tree = self.t.build_tree(linear_spec())
+                tree = self.b.build_tree(linear_spec())
                 edge = self.edge(tree)
                 self.d.set_edge_points(edge, points, action='replace_explicit')
                 edge.set('data-waypoints-origin', 'explicit')
                 saved = self.route(edge)
-                self.t.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': ''}]}, False)
+                self.roundtrip.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': ''}]}, False)
                 self.assertEqual(self.route(self.edge(tree)), saved)
 
     def test_t03_same_label_false_reroute_and_same_routing_fields_are_noops(self):
         for update in ({'label': 'Next'}, {'reroute': False}, {'route': 'forward'}, {'exit_side': 'bottom'}):
-            tree = self.t.build_tree(linear_spec()); edge = self.edge(tree)
+            tree = self.b.build_tree(linear_spec()); edge = self.edge(tree)
             if 'route' in update:
                 update['route'] = edge.get('data-route')
             saved = ET.tostring(edge)
-            result = self.t.patch_tree(tree, {'update_edges': [{'id': 'e0', **update}]}, False)
+            result = self.roundtrip.patch_tree(tree, {'update_edges': [{'id': 'e0', **update}]}, False)
             self.assertEqual(ET.tostring(self.edge(tree)), saved)
             self.assertEqual(result['label_repositioned_edges'], [])
             self.assertEqual(result['rerouted_edges'], [])
 
     def test_t04_shorter_text_keeps_saved_relative_geometry(self):
-        tree = self.t.build_tree(linear_spec()); edge = self.edge(tree)
+        tree = self.b.build_tree(linear_spec()); edge = self.edge(tree)
         geom = edge.find('mxGeometry')
         # An equivalent real native placement with nonzero x, not a cache edit.
         lanes, nodes = self.d.lane_node_records(self.d.graph_root(tree), self.d.find_pool(tree))
@@ -89,22 +89,22 @@ class SavedEditContracts(unittest.TestCase):
         offset = geom.find("./mxPoint[@as='offset']")
         offset.set('x', str(measured['position'][0]-anchor[0])); offset.set('y', str(measured['position'][1]-anchor[1]))
         saved = ET.tostring(geom)
-        result = self.t.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': 'Go'}]}, False)
+        result = self.roundtrip.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': 'Go'}]}, False)
         self.assertEqual(ET.tostring(self.edge(tree).find('mxGeometry')), saved)
         self.assertEqual(result['label_repositioned_edges'], [])
 
     def test_t05_overlap_repositions_only_label_on_saved_path(self):
-        tree = self.t.build_tree(linear_spec()); edge = self.edge(tree)
+        tree = self.b.build_tree(linear_spec()); edge = self.edge(tree)
         geom = edge.find('mxGeometry'); offset = geom.find("./mxPoint[@as='offset']")
         offset.set('x', '0'); offset.set('y', '60')
         saved = self.route(edge)
-        result = self.t.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': 'Go'}]}, False)
+        result = self.roundtrip.patch_tree(tree, {'update_edges': [{'id': 'e0', 'label': 'Go'}]}, False)
         self.assertEqual(self.route(self.edge(tree)), saved)
         self.assertEqual(result['label_repositioned_edges'], ['e0'])
         self.assertTrue(self.m.validation.validate_tree(tree)['quality_gate_passed'])
 
     def test_t06_unplaceable_label_leaves_cli_input_and_output_unchanged(self):
-        tree = self.t.build_tree(linear_spec())
+        tree = self.b.build_tree(linear_spec())
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); before = root/'before.drawio'; output = root/'after.drawio'; patch = root/'patch.json'
             self.d.write_tree(tree, before); original=before.read_bytes(); output.write_bytes(b'sentinel')
@@ -120,20 +120,20 @@ class SavedEditContracts(unittest.TestCase):
         changes = {'update_edges': [{'id': 'e0', 'label': 'Go', 'reroute': True}, {'id': 'retry', 'label': 'Recheck'}, {'id': 'e1', 'label': 'Pass'}]}
         a,b=copy.deepcopy(before),copy.deepcopy(before)
         for tree in (a,b):
-            self.t.patch_tree(tree,changes,False)
+            self.roundtrip.patch_tree(tree,changes,False)
             self.assertEqual(self.route(self.edge(tree,'retry')),self.route(self.edge(before,'retry')))
         self.assertEqual(ET.tostring(a.getroot()),ET.tostring(b.getroot()))
 
     def test_t08_t15_frozen_native_label_unavailable_blocks_added_route(self):
-        tree = self.t.build_tree(linear_spec()); self.edge(tree).set('style',self.edge(tree).get('style')+'rotation=30;')
+        tree = self.b.build_tree(linear_spec()); self.edge(tree).set('style',self.edge(tree).get('style')+'rotation=30;')
         saved=ET.tostring(self.edge(tree))
         with self.assertRaises(self.c.DiagramError) as caught:
-            self.t.patch_tree(tree,{'edges':[{'id':'extra','from':'n1','to':'n3'}]},False)
+            self.roundtrip.patch_tree(tree,{'edges':[{'id':'extra','from':'n1','to':'n3'}]},False)
         self.assertEqual(caught.exception.code,'text/edge-label-geometry-unavailable')
         self.assertEqual(ET.tostring(self.edge(tree)),saved)
 
     def test_t15_new_route_avoids_actual_frozen_label_and_preserves_old_xml(self):
-        tree = self.t.build_tree(linear_spec())
+        tree = self.b.build_tree(linear_spec())
         edge = self.edge(tree, 'e2')
         cache = {key: value for key, value in edge.attrib.items() if key.startswith('data-label-')}
         offset = edge.find("mxGeometry/mxPoint[@as='offset']")
@@ -146,7 +146,7 @@ class SavedEditContracts(unittest.TestCase):
         self.assertEqual(measured['bounds']['left'], 17.5)
         self.assertEqual(measured['bounds']['right'], 42.5)
         self.assertTrue(self.m.validation.validate_tree(tree)['quality_gate_passed'])
-        self.t.patch_tree(tree, {'edges': [{'id': 'bypass', 'from': 'n1', 'to': 'n3',
+        self.roundtrip.patch_tree(tree, {'edges': [{'id': 'bypass', 'from': 'n1', 'to': 'n3',
                               'exit_side': 'left', 'entry_side': 'left',
                               'exit_offset': .5, 'entry_offset': .5}]}, True)
         for edge_id, saved in old_edges.items():
@@ -168,7 +168,7 @@ class SavedEditContracts(unittest.TestCase):
                 # y=348, while remaining valid on its own saved carrier.
                 if not explicit:
                     spec['edges'][2]['label'] = '中' * 20
-                tree = self.t.build_tree(spec)
+                tree = self.b.build_tree(spec)
                 geometry = self.edge(tree, 'e2').find('mxGeometry')
                 offset = geometry.find("mxPoint[@as='offset']")
                 if offset is None:
@@ -198,7 +198,7 @@ class SavedEditContracts(unittest.TestCase):
                 self.assertEqual(list(root.glob('.*.candidate')), [])
 
     def test_t15_legacy_route_fallback_cannot_cross_saved_label(self):
-        tree = self.t.build_tree(linear_spec())
+        tree = self.b.build_tree(linear_spec())
         offset = self.edge(tree, 'e2').find("mxGeometry/mxPoint[@as='offset']")
         offset.set('x', '-66'); offset.set('y', '0')
         root, pool = self.d.graph_root(tree), self.d.find_pool(tree)
@@ -210,81 +210,81 @@ class SavedEditContracts(unittest.TestCase):
                     'exit_side': 'left', 'entry_side': 'left', 'exit_offset': .5, 'entry_offset': .5}
         # Exercise the compatibility API's unsafe-base fallback deliberately:
         # it may bypass its legacy node gate, never a saved-label obstacle.
-        with mock.patch.object(self.t.routing, 'route_candidates', return_value=[]):
+        with mock.patch.object(self.m.routing, 'route_candidates', return_value=[]):
             with self.assertRaises(self.c.DiagramError) as caught:
-                self.t.routing.route_edge(new_edge, self.d.routing_lane_views(lanes),
-                                          self.d.routing_node_views(nodes), self.t.ports.PortAllocator(), context)
+                self.m.routing.route_edge(new_edge, self.d.routing_lane_views(lanes),
+                                          self.d.routing_node_views(nodes), self.m.ports.PortAllocator(), context)
         self.assertIn('saved labels', str(caught.exception))
         self.assertEqual(context, saved_context)
 
     def test_t09_valid_node_motion_preserves_saved_points_invalid_requires_route(self):
-        tree = self.t.build_tree(linear_spec()); saved=self.route(self.edge(tree))
-        self.t.patch_tree(tree,{'update_nodes':[{'id':'n1','y':178}]},True)
+        tree = self.b.build_tree(linear_spec()); saved=self.route(self.edge(tree))
+        self.roundtrip.patch_tree(tree,{'update_nodes':[{'id':'n1','y':178}]},True)
         self.assertEqual(self.route(self.edge(tree)),saved)
-        tree = self.t.build_tree(linear_spec())
+        tree = self.b.build_tree(linear_spec())
         with self.assertRaises(self.c.DiagramError) as caught:
-            self.t.patch_tree(tree,{'update_nodes':[{'id':'n1','x':45}]},True)
+            self.roundtrip.patch_tree(tree,{'update_nodes':[{'id':'n1','x':45}]},True)
         self.assertEqual(caught.exception.code,'patch/route-update-required')
         self.assertIn('e0',caught.exception.evidence['edges'])
         # Native unrounded endpoints expose a subpixel diagonal when the
         # planner serializes a nonexact fraction; do not round it into support.
-        tree = self.t.build_tree(linear_spec())
+        tree = self.b.build_tree(linear_spec())
         with self.assertRaises(self.c.DiagramError) as unavailable:
-            self.t.patch_tree(tree, {'update_nodes':[{'id':'n1','x':45}],
+            self.roundtrip.patch_tree(tree, {'update_nodes':[{'id':'n1','x':45}],
                                     'update_edges':[{'id':'e0','reroute':True},
                                                     {'id':'e1','reroute':True}]}, True)
         self.assertEqual(unavailable.exception.code, 'routing/no-safe-route')
         self.assertIn('editor_router_additional_turns_required', str(unavailable.exception.evidence))
         # An explicit aligned port request on an exactly representable offset
         # moves the node and preserves a strict-valid vertical main path.
-        tree = self.t.build_tree(linear_spec())
-        self.t.patch_tree(tree, {'update_nodes':[{'id':'n1','x':21}], 'update_edges':[
+        tree = self.b.build_tree(linear_spec())
+        self.roundtrip.patch_tree(tree, {'update_nodes':[{'id':'n1','x':21}], 'update_edges':[
             {'id':'e0','reroute':True,'exit_offset':0.5,'entry_offset':0.75},
             {'id':'e1','reroute':True,'exit_offset':0.75,'entry_offset':0.5}]}, True)
         self.assertTrue(self.m.validation.validate_tree(tree)['quality_gate_passed'])
 
     def test_moved_nonincident_note_invalidates_frozen_route(self):
-        tree = self.t.build_tree(linear_spec())
-        self.t.patch_tree(tree, {'nodes': [{'id':'memo','lane':'lane-a','rank':1,'type':'note',
+        tree = self.b.build_tree(linear_spec())
+        self.roundtrip.patch_tree(tree, {'nodes': [{'id':'memo','lane':'lane-a','rank':1,'type':'note',
                                           'label':'Memo','x':10,'y':72,'width':45,'height':24}]}, False)
         before = copy.deepcopy(tree)
         saved = self.route(self.edge(tree))
         with self.assertRaises(self.c.DiagramError) as caught:
-            self.t.patch_tree(tree, {'update_nodes': [{'id':'memo','x':102,'y':140}]}, True)
+            self.roundtrip.patch_tree(tree, {'update_nodes': [{'id':'memo','x':102,'y':140}]}, True)
         self.assertEqual(caught.exception.code, 'patch/route-update-required')
         self.assertIn('e0', caught.exception.evidence['edges'])
         self.assertEqual(self.route(self.edge(tree)), saved)
 
     def test_t10_saved_native_port_automatic_is_preserved_without_reroute(self):
-        tree=self.t.build_tree(linear_spec()); edge=self.edge(tree,'e1')
+        tree=self.b.build_tree(linear_spec()); edge=self.edge(tree,'e1')
         self.d.set_style_option(edge,'exitX','0.4'); self.d.set_style_option(edge,'entryX','0.4')
         saved=self.route(edge)
-        self.t.patch_tree(tree,{'update_nodes':[{'id':'n1','label':'Revised'}]},False)
+        self.roundtrip.patch_tree(tree,{'update_nodes':[{'id':'n1','label':'Revised'}]},False)
         self.assertEqual(self.route(self.edge(tree,'e1')),saved)
 
     def test_t14_inspect_validate_read_only_and_cache_independent(self):
-        tree=self.t.build_tree(linear_spec()); before=self.t.inspect_tree(tree)['edges'][0]['label_geometry']
+        tree=self.b.build_tree(linear_spec()); before=self.roundtrip.inspect_tree(tree)['edges'][0]['label_geometry']
         self.edge(tree).set('data-label-left','-9999');self.edge(tree).set('data-label-segment','99')
         saved=ET.tostring(tree.getroot())
-        after=self.t.inspect_tree(tree)['edges'][0]['label_geometry'];self.m.validation.validate_tree(tree)
+        after=self.roundtrip.inspect_tree(tree)['edges'][0]['label_geometry'];self.m.validation.validate_tree(tree)
         self.assertEqual(before,after);self.assertEqual(saved,ET.tostring(tree.getroot()))
 
     def test_hidden_label_text_update_preserves_geometry_and_not_applicable(self):
-        tree = self.t.build_tree(linear_spec()); edge = self.edge(tree)
+        tree = self.b.build_tree(linear_spec()); edge = self.edge(tree)
         edge.set('style', edge.get('style')+'noLabel=1;')
         geometry = ET.tostring(edge.find('mxGeometry')); route = self.route(edge)
-        receipt = self.t.patch_tree(tree, {'update_edges': [{'id':'e0','label':'Accepted'}]}, False)
+        receipt = self.roundtrip.patch_tree(tree, {'update_edges': [{'id':'e0','label':'Accepted'}]}, False)
         self.assertEqual(self.edge(tree).get('value'), 'Accepted')
         self.assertEqual(self.route(self.edge(tree)), route)
         self.assertEqual(ET.tostring(self.edge(tree).find('mxGeometry')), geometry)
         self.assertEqual(receipt['label_repositioned_edges'], [])
-        self.assertEqual(self.t.inspect_tree(tree)['edges'][0]['label_geometry']['status'], 'not_applicable')
+        self.assertEqual(self.roundtrip.inspect_tree(tree)['edges'][0]['label_geometry']['status'], 'not_applicable')
 
     def test_saved_route_guard_rejects_direct_path_mutation_without_replay(self):
         before=self.saved_retry();after=copy.deepcopy(before)
         self.edge(after,'retry').find("./mxGeometry/Array/mxPoint").set('x','450')
         with self.assertRaises(self.c.DiagramError) as caught:
-            self.t.saved_edge_preservation_guard(before,after,{'update_edges':[{'id':'retry','label':'Recheck'}]})
+            self.roundtrip.saved_edge_preservation_guard(before,after,{'update_edges':[{'id':'retry','label':'Recheck'}]})
         self.assertEqual(caught.exception.code,'patch/preservation-violation')
 
 

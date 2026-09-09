@@ -17,12 +17,13 @@ class NativeLabelGeometryTests(unittest.TestCase):
     def setUpClass(cls):
         cls.loaded = load_skill_modules(ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py", module_name="native_label_tests")
         cls.tool = cls.loaded.tool
+        cls.build = cls.loaded.build
         cls.document = cls.loaded.document
-        cls.labels = cls.tool.labels
+        cls.labels = cls.loaded.labels
         cls.validation = cls.loaded.validation
 
     def make_label(self):
-        tree = self.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         pool = self.document.find_pool(tree)
         lanes, nodes = self.document.lane_node_records(root, pool)

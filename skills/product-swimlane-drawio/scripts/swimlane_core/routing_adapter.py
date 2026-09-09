@@ -8,6 +8,35 @@ import xml.etree.ElementTree as ET
 from . import contracts, document, geometry as core_geometry, labels, ports, routing
 
 
+def route_batch_error(batch: routing.BatchRouteResult) -> contracts.DiagramError:
+    """Preserve structured routing evidence at the public build/patch boundary."""
+    failure = batch.failure
+    evidence = dict(failure.evidence) if failure is not None else {}
+    evidence["batch_replays"] = batch.batch_replays
+    evidence["component_replans"] = {
+        str(key): value for key, value in batch.component_replans.items()
+    }
+    if failure is not None and failure.component_key is not None:
+        evidence.setdefault("component", failure.component_key)
+    if failure is not None and failure.assignment_key is not None:
+        evidence.setdefault("assignment", failure.assignment_key)
+    return contracts.DiagramError(
+        failure.message if failure is not None else "Route batch failed",
+        code=failure.code if failure is not None else "routing/batch-failed",
+        subject=(
+            {"kind": "edge", "id": failure.edge_id}
+            if failure is not None and failure.edge_id
+            else None
+        ),
+        evidence=evidence,
+        supported_fixes=(
+            list(failure.supported_fixes)
+            if failure is not None
+            else ["report-bug"]
+        ),
+    )
+
+
 def edge_style(
     edge_type: str,
     exit_side: str,

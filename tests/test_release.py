@@ -60,6 +60,12 @@ def load_tool_module():
     return load_skill_modules(TOOL, module_name="drawio_swimlane_under_test").tool
 
 
+def load_spec_validation_module():
+    return load_skill_modules(
+        TOOL, module_name="spec_validation_under_test"
+    ).spec_validation
+
+
 def schema_matches(value, rule: dict, root: dict) -> bool:
     if "$ref" in rule:
         target = root
@@ -395,7 +401,7 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
         )
-        self.assertEqual(codex_plugin["version"], "0.7.0")
+        self.assertEqual(codex_plugin["version"], "0.7.1")
         self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
         self.assertEqual(
             codex_marketplace["plugins"][0]["source"],
@@ -506,7 +512,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertIn("Strict validation and visual review are independent", architecture)
         self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
         self.assertIn("complete Skill directory is its distribution unit", architecture)
-        self.assertIn("portable CLI retains input validation, layout compilation, build, patch impact and operations, inspect, compare, and command orchestration", architecture)
+        self.assertIn("portable CLI is limited to file arguments, input summaries, authorization preflight checks, command dispatch and output, and exception mapping", architecture)
+        self.assertIn("public interface remains the five CLI commands", architecture)
         tool_tree = ast.parse(TOOL.read_text(encoding="utf-8"))
         core_imports = [
             node for node in tool_tree.body
@@ -516,17 +523,16 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             {alias.name for alias in core_imports[0].names},
             {
-                "clearance", "contracts", "document", "geometry", "labels", "metadata",
-                "ports", "routing", "routing_adapter", "routing_policy", "sizing", "validation",
+                "build", "contracts", "document", "roundtrip", "validation",
             },
         )
         self.assertEqual(
-            {alias.name: alias.asname for alias in core_imports[0].names}["geometry"],
-            "core_geometry",
+            {alias.name: alias.asname for alias in core_imports[0].names}["validation"],
+            "core_validation",
         )
         for module in ("clearance", "contracts", "geometry", "document", "metadata", "sizing",
                        "routing_policy", "ports", "port_planner", "labels", "routing",
-                       "routing_adapter", "validation"):
+                       "routing_adapter", "construction", "build", "spec_validation", "layout", "validation"):
             self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
             self.assertIn(f"| `{module}` |", architecture)
         self.assertIn("single-page process view", architecture)
@@ -567,16 +573,16 @@ class ReleasePackageTests(unittest.TestCase):
 
     def test_json_schema_fields_match_runtime_build_contract(self) -> None:
         schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
-        tool = load_tool_module()
-        self.assertEqual(set(schema["properties"]), tool.TOP_LEVEL_FIELDS)
-        self.assertEqual(set(schema["$defs"]["lane"]["properties"]), tool.LANE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["node"]["properties"]), tool.NODE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["edge"]["properties"]), tool.EDGE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["phase"]["properties"]), tool.PHASE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["group"]["properties"]), tool.contracts.GROUP_FIELDS)
-        self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), tool.ANCHOR_FIELDS)
-        self.assertEqual(set(schema["$defs"]["layout"]["properties"]), tool.LAYOUT_FIELDS)
-        self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), tool.CANVAS_FIELDS)
+        spec_validation = load_spec_validation_module()
+        self.assertEqual(set(schema["properties"]), spec_validation.TOP_LEVEL_FIELDS)
+        self.assertEqual(set(schema["$defs"]["lane"]["properties"]), spec_validation.LANE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["node"]["properties"]), spec_validation.NODE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["edge"]["properties"]), spec_validation.EDGE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["phase"]["properties"]), spec_validation.PHASE_FIELDS)
+        self.assertEqual(set(schema["$defs"]["group"]["properties"]), spec_validation.contracts.GROUP_FIELDS)
+        self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), spec_validation.ANCHOR_FIELDS)
+        self.assertEqual(set(schema["$defs"]["layout"]["properties"]), spec_validation.LAYOUT_FIELDS)
+        self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), spec_validation.CANVAS_FIELDS)
 
     def test_loading_tool_module_does_not_write_into_skill_directory(self) -> None:
         cache_directory = TOOL.parent / "__pycache__"
@@ -682,7 +688,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.7.0")
+        self.assertEqual(report["tool_version"], "0.7.1")
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -895,7 +901,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.7.0")
+            self.assertEqual(upgraded["tool_version"], "0.7.1")
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -2073,21 +2079,21 @@ class DiagramWorkflowTests(unittest.TestCase):
                 })
 
     def test_phase_validation_rejects_edges_behind_ancestor_containers(self) -> None:
-        tool = load_tool_module()
+        loaded = load_skill_modules(TOOL, module_name="phase_z_order_build")
         for presentation in ("bands", "rail"):
             for container_id in ("psd-pool-main", "1"):
                 with self.subTest(presentation=presentation, container=container_id):
                     spec = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
                     spec.update(schema_version="3", behavior_pattern="linear",
                                 layout={"phase_presentation": presentation})
-                    tree = tool.build_tree(spec)
-                    root = tool.document.graph_root(tree)
+                    tree = loaded.build.build_tree(spec)
+                    root = loaded.document.graph_root(tree)
                     container = next(cell for cell in root if cell.get("id") == container_id)
                     edge = next(cell for cell in root if cell.get("data-kind") == "edge")
                     edge.set("parent", container.get("parent"))
                     root.remove(edge)
                     root.insert(list(root).index(container), edge)
-                    report = tool.core_validation.validate_tree(tree)
+                    report = loaded.validation.validate_tree(tree)
                     self.assertFalse(report["quality_gate_passed"])
                     self.assertIn("layout/phase-z-order", {
                         item["code"] for item in report["diagnostics"]
@@ -2097,7 +2103,7 @@ class DiagramWorkflowTests(unittest.TestCase):
                     root.remove(edge)
                     root.append(edge)
                     self.assertNotIn("layout/phase-z-order", {
-                        item["code"] for item in tool.core_validation.validate_tree(tree)["diagnostics"]
+                        item["code"] for item in loaded.validation.validate_tree(tree)["diagnostics"]
                     })
 
     def test_strict_validate_rejects_phase_above_editable_content(self) -> None:
@@ -2790,10 +2796,10 @@ class DiagramWorkflowTests(unittest.TestCase):
             # routing quality. The two known straight tracks are 13.2px apart.
             tree = ET.parse(output)
             forward = next(cell for cell in tree.iter("mxCell") if cell.get("data-semantic-id") == "forward")
-            tool = load_tool_module()
+            loaded = load_skill_modules(TOOL, module_name="saved_native_clearance")
             for key, value in (("exitX", "0.5"), ("exitY", "1"), ("entryX", "0.5"), ("entryY", "0")):
-                tool.document.set_style_option(forward, key, value)
-            tool.document.set_edge_points(forward, [], action="replace_explicit")
+                loaded.document.set_style_option(forward, key, value)
+            loaded.document.set_edge_points(forward, [], action="replace_explicit")
             geom = forward.find("mxGeometry")
             geom.set("relative", "1")
             geom.set("x", "0")

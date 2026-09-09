@@ -22,6 +22,8 @@ PACKAGE_PREFIX = "swimlane_core"
 @dataclass(frozen=True)
 class LoadedSkill:
     tool: ModuleType
+    build: ModuleType
+    construction: ModuleType
     clearance: ModuleType
     contracts: ModuleType
     geometry: ModuleType
@@ -32,8 +34,12 @@ class LoadedSkill:
     ports: ModuleType
     port_planner: ModuleType
     labels: ModuleType
+    patch_operations: ModuleType
+    roundtrip: ModuleType
     routing: ModuleType
     routing_adapter: ModuleType
+    spec_validation: ModuleType
+    layout: ModuleType
     validation: ModuleType
 
 
@@ -57,6 +63,8 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
     sys.path.insert(0, str(scripts_dir))
     sys.dont_write_bytecode = True
     try:
+        build = importlib.import_module("swimlane_core.build")
+        construction = importlib.import_module("swimlane_core.construction")
         clearance = importlib.import_module("swimlane_core.clearance")
         contracts = importlib.import_module("swimlane_core.contracts")
         geometry = importlib.import_module("swimlane_core.geometry")
@@ -67,19 +75,26 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         ports = importlib.import_module("swimlane_core.ports")
         port_planner = importlib.import_module("swimlane_core.port_planner")
         labels = importlib.import_module("swimlane_core.labels")
+        patch_operations = importlib.import_module("swimlane_core.patch_operations")
+        roundtrip = importlib.import_module("swimlane_core.roundtrip")
         routing = importlib.import_module("swimlane_core.routing")
         routing_adapter = importlib.import_module("swimlane_core.routing_adapter")
+        spec_validation = importlib.import_module("swimlane_core.spec_validation")
+        layout = importlib.import_module("swimlane_core.layout")
         validation = importlib.import_module("swimlane_core.validation")
         spec = importlib.util.spec_from_file_location(module_name, tool_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to load swimlane tool: {tool_path}")
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
-        return LoadedSkill(tool=tool, clearance=clearance, contracts=contracts, geometry=geometry,
+        return LoadedSkill(tool=tool, build=build, construction=construction,
+                           clearance=clearance, contracts=contracts, geometry=geometry,
                            document=document, metadata=metadata, sizing=sizing,
                            routing_policy=routing_policy, ports=ports,
                            port_planner=port_planner, labels=labels,
+                           patch_operations=patch_operations, roundtrip=roundtrip,
                            routing=routing, routing_adapter=routing_adapter,
+                           spec_validation=spec_validation, layout=layout,
                            validation=validation)
     finally:
         for name in list(_package_modules()):

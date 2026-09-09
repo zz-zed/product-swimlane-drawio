@@ -22,53 +22,53 @@ def load_tool():
     return load_skill_modules(
         ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py",
         module_name="evidence_tool",
-    ).tool
+    )
 
 
 class EvidenceBaselineTests(unittest.TestCase):
     def test_old_completed_patch_cross_version_compare_remains_a_failure(self):
-        tool = load_tool()
+        loaded = load_tool()
         changes = {"update_nodes": [{"id": "n1", "label": "Revised"}]}
         # A synthetic prior-producing-version fixture, not an editor golden.
-        with mock.patch.object(tool.contracts, "TOOL_VERSION", "0.5.1"):
-            before = tool.build_tree(linear_spec(version="3"))
+        with mock.patch.object(loaded.contracts, "TOOL_VERSION", "0.5.1"):
+            before = loaded.build.build_tree(linear_spec(version="3"))
             old_after = copy.deepcopy(before)
-            tool.patch_tree(old_after, changes, allow_geometry_updates=False)
-            self.assertTrue(tool.compare_trees(before, old_after, changes)["preserved"])
+            loaded.roundtrip.patch_tree(old_after, changes, allow_geometry_updates=False)
+            self.assertTrue(loaded.roundtrip.compare_trees(before, old_after, changes)["preserved"])
         old_bytes = ET.tostring(old_after.getroot())
-        result = tool.compare_trees(before, old_after, changes)
+        result = loaded.roundtrip.compare_trees(before, old_after, changes)
         self.assertFalse(result["preserved"])
         self.assertEqual(result["unexpected_attributes"], ["pool:main"])
         self.assertEqual(ET.tostring(old_after.getroot()), old_bytes)
 
     def test_old_input_current_patch_compares_without_waiving_pool_tampering(self):
-        tool = load_tool()
+        loaded = load_tool()
         changes = {"update_nodes": [{"id": "n1", "label": "Revised"}]}
-        with mock.patch.object(tool.contracts, "TOOL_VERSION", "0.5.1"):
-            before = tool.build_tree(linear_spec(version="3"))
+        with mock.patch.object(loaded.contracts, "TOOL_VERSION", "0.5.1"):
+            before = loaded.build.build_tree(linear_spec(version="3"))
         original = ET.tostring(before.getroot())
         after = copy.deepcopy(before)
-        tool.patch_tree(after, changes, allow_geometry_updates=False)
-        self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
-        self.assertEqual(tool.document.find_pool(after).get("data-tool-version"), "0.7.0")
+        loaded.roundtrip.patch_tree(after, changes, allow_geometry_updates=False)
+        self.assertTrue(loaded.roundtrip.compare_trees(before, after, changes)["preserved"])
+        self.assertEqual(loaded.document.find_pool(after).get("data-tool-version"), "0.7.1")
         for field, value in (("custom-protected", "tampered"), ("data-model-hash", "0" * 64)):
             with self.subTest(field=field):
                 tampered = copy.deepcopy(after)
-                tool.document.find_pool(tampered).set(field, value)
-                result = tool.compare_trees(before, tampered, changes)
+                loaded.document.find_pool(tampered).set(field, value)
+                result = loaded.roundtrip.compare_trees(before, tampered, changes)
                 self.assertFalse(result["preserved"])
                 self.assertIn("pool:main", result["unexpected_attributes"])
         self.assertEqual(ET.tostring(before.getroot()), original)
 
     def editor_tree_with_manual_cell(self, presentation="rail", kind="edge"):
-        tool = load_tool()
+        loaded = load_tool()
         spec = json.loads((ROOT / "tests/fixtures/neutral-flow.json").read_text())
         spec.update(schema_version="3", behavior_pattern="approval-loop",
                     layout={"phase_presentation": presentation or "rail"})
         if presentation is None:
             spec.pop("phases")
-        tree = tool.build_tree(spec)
-        root = tool.document.graph_root(tree)
+        tree = loaded.build.build_tree(spec)
+        root = loaded.document.graph_root(tree)
         original = list(root)
 
         def descendants(parent):
@@ -87,46 +87,46 @@ class EvidenceBaselineTests(unittest.TestCase):
         ET.SubElement(manual, "customPayload", {"value": "untouched"})
         start = next(c for c in root if c.get("id") == "psd-node-start")
         root.insert(list(root).index(start) + 1, manual)
-        return tool, tree
+        return loaded, tree
 
     def test_patch_preserves_manual_cell_sibling_order_and_subtree(self):
         for presentation in ("rail", "bands", None):
             for kind in ("edge", "vertex"):
                 with self.subTest(presentation=presentation, kind=kind):
-                    tool, before = self.editor_tree_with_manual_cell(presentation, kind)
+                    loaded, before = self.editor_tree_with_manual_cell(presentation, kind)
                     after = copy.deepcopy(before)
                     changes = {"update_nodes": [{"id": "step-a", "label": "Revised"}]}
-                    tool.patch_tree(after, changes, allow_geometry_updates=False)
-                    for parent in {c.get("parent") for c in tool.document.graph_root(before)}:
+                    loaded.roundtrip.patch_tree(after, changes, allow_geometry_updates=False)
+                    for parent in {c.get("parent") for c in loaded.document.graph_root(before)}:
                         self.assertEqual(
-                            [c.get("id") for c in tool.document.graph_root(before) if c.get("parent") == parent],
-                            [c.get("id") for c in tool.document.graph_root(after) if c.get("parent") == parent])
-                    self.assertEqual(tool.document.element_signature(before.find(".//mxCell[@id='manual-cell']")),
-                                     tool.document.element_signature(after.find(".//mxCell[@id='manual-cell']")))
-                    self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
+                            [c.get("id") for c in loaded.document.graph_root(before) if c.get("parent") == parent],
+                            [c.get("id") for c in loaded.document.graph_root(after) if c.get("parent") == parent])
+                    self.assertEqual(loaded.document.element_signature(before.find(".//mxCell[@id='manual-cell']")),
+                                     loaded.document.element_signature(after.find(".//mxCell[@id='manual-cell']")))
+                    self.assertTrue(loaded.roundtrip.compare_trees(before, after, changes)["preserved"])
 
     def test_compare_detects_sibling_reorder_with_and_without_patch(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         changes = {"update_nodes": [{"id": "step-a", "label": "Revised"}]}
         for patch in (None, changes):
             with self.subTest(patch=patch):
                 after = copy.deepcopy(before)
                 if patch is not None:
-                    tool.patch_tree(after, patch, allow_geometry_updates=False)
-                root = tool.document.graph_root(after)
+                    loaded.roundtrip.patch_tree(after, patch, allow_geometry_updates=False)
+                root = loaded.document.graph_root(after)
                 manual = next(c for c in root if c.get("id") == "manual-cell")
                 root.remove(manual)
                 root.append(manual)
-                result = tool.compare_trees(before, after, patch)
+                result = loaded.roundtrip.compare_trees(before, after, patch)
                 self.assertFalse(result["preserved"])
                 self.assertEqual(result["unexpected_sibling_order"][0]["parent"], "psd-lane-lane-a")
 
     def test_compare_detects_unknown_cell_mutations(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         for mutation in ("style", "parent", "source", "geometry", "payload", "remove", "add"):
             with self.subTest(mutation=mutation):
                 after = copy.deepcopy(before)
-                root = tool.document.graph_root(after)
+                root = loaded.document.graph_root(after)
                 manual = next(c for c in root if c.get("id") == "manual-cell")
                 if mutation in ("style", "parent", "source"):
                     manual.set(mutation, "changed")
@@ -140,13 +140,13 @@ class EvidenceBaselineTests(unittest.TestCase):
                     added = copy.deepcopy(manual)
                     added.set("id", "manual-extra")
                     root.append(added)
-                result = tool.compare_trees(before, after, {})
+                result = loaded.roundtrip.compare_trees(before, after, {})
                 self.assertFalse(result["preserved"])
                 self.assertTrue(result["unexpected_unmanaged_cells"])
 
     def test_wrapped_unknown_cell_preserves_order_and_compares_metadata(self):
-        tool, before = self.editor_tree_with_manual_cell()
-        root = tool.document.graph_root(before)
+        loaded, before = self.editor_tree_with_manual_cell()
+        root = loaded.document.graph_root(before)
         manual = next(c for c in root if c.get("id") == "manual-cell")
         index = list(root).index(manual)
         root.remove(manual)
@@ -155,20 +155,20 @@ class EvidenceBaselineTests(unittest.TestCase):
         root.insert(index, wrapper)
         after = copy.deepcopy(before)
         changes = {"update_nodes": [{"id": "step-a", "label": "Revised"}]}
-        tool.patch_tree(after, changes, allow_geometry_updates=False)
+        loaded.roundtrip.patch_tree(after, changes, allow_geometry_updates=False)
         def native_ids(tree):
             result = []
-            for item in tool.document.graph_root(tree):
+            for item in loaded.document.graph_root(tree):
                 cell = item if item.tag == "mxCell" else item.find("mxCell")
                 if cell is not None and cell.get("parent") == "psd-lane-lane-a":
                     result.append(item.get("id") or cell.get("id"))
             return result
         self.assertEqual(native_ids(before), native_ids(after))
-        self.assertTrue(tool.compare_trees(before, after, changes)["preserved"])
+        self.assertTrue(loaded.roundtrip.compare_trees(before, after, changes)["preserved"])
         for mutation in ("wrapper-attribute", "order", "tail", "text"):
             with self.subTest(mutation=mutation):
                 changed = copy.deepcopy(after)
-                changed_root = tool.document.graph_root(changed)
+                changed_root = loaded.document.graph_root(changed)
                 item = changed_root.find("object")
                 if mutation == "wrapper-attribute":
                     item.set("label", "Changed")
@@ -179,10 +179,10 @@ class EvidenceBaselineTests(unittest.TestCase):
                     item.find("mxCell/customPayload").tail = "meaningful text"
                 else:
                     item.find("mxCell/customPayload").text = "important text"
-                self.assertFalse(tool.compare_trees(before, changed, changes)["preserved"])
+                self.assertFalse(loaded.roundtrip.compare_trees(before, changed, changes)["preserved"])
 
     def test_unknown_mixed_content_including_whitespace_is_protected(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         payload = before.find(".//customPayload")
         payload.text = " meaningful "
         payload.tail = " trailing "
@@ -191,18 +191,18 @@ class EvidenceBaselineTests(unittest.TestCase):
                 after = copy.deepcopy(before)
                 setattr(after.find(".//customPayload"), location,
                         getattr(after.find(".//customPayload"), location).strip())
-                self.assertFalse(tool.compare_trees(before, after)["preserved"])
+                self.assertFalse(loaded.roundtrip.compare_trees(before, after)["preserved"])
         after = copy.deepcopy(before)
         after.find(".//mxCell[@id='manual-cell']/mxGeometry").tail = "\n    "
-        self.assertFalse(tool.compare_trees(before, after)["preserved"])
+        self.assertFalse(loaded.roundtrip.compare_trees(before, after)["preserved"])
         # The drawing unit's outer tail belongs to root formatting, not its
         # opaque payload, unless an ancestor requests xml:space preservation.
         after = copy.deepcopy(before)
         after.find(".//mxCell[@id='manual-cell']").tail = "\n    "
-        self.assertTrue(tool.compare_trees(before, after)["preserved"])
+        self.assertTrue(loaded.roundtrip.compare_trees(before, after)["preserved"])
 
     def test_unknown_whitespace_roundtrip_and_xml_space_inheritance(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         payload = before.find(".//customPayload")
         payload.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
         payload.text = "   "
@@ -222,7 +222,7 @@ class EvidenceBaselineTests(unittest.TestCase):
                     after.find(".//customPayload/word").tail = ""
                 else:
                     after.find(".//mxCell[@id='manual-cell']").tail = " "
-                self.assertFalse(tool.compare_trees(source, after)["preserved"])
+                self.assertFalse(loaded.roundtrip.compare_trees(source, after)["preserved"])
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             source, output, changes = (directory / n for n in ("before.drawio", "after.drawio", "patch.json"))
@@ -239,52 +239,52 @@ class EvidenceBaselineTests(unittest.TestCase):
             final = ET.parse(output)
             self.assertEqual(final.find(".//customPayload").text, "   ")
             self.assertEqual(final.find(".//customPayload/word").tail, " ")
-            self.assertTrue(tool.compare_trees(before, final, {})["preserved"])
+            self.assertTrue(loaded.roundtrip.compare_trees(before, final, {})["preserved"])
 
     def test_foreign_metadata_does_not_hide_unknown_subtree_changes(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         manual = before.find(".//mxCell[@id='manual-cell']")
         manual.set("data-kind", "foreign-kind")
         manual.set("data-semantic-id", "external-id")
         after = copy.deepcopy(before)
         after.find(".//customPayload").tail = "changed text"
-        result = tool.compare_trees(before, after)["unexpected_unmanaged_cells"]
+        result = loaded.roundtrip.compare_trees(before, after)["unexpected_unmanaged_cells"]
         self.assertEqual(result, [{"cell_id": "manual-cell", "change": "changed"}])
 
     def test_compare_ignores_cross_parent_serialization_order(self):
-        tool, before = self.editor_tree_with_manual_cell()
+        loaded, before = self.editor_tree_with_manual_cell()
         after = copy.deepcopy(before)
-        root = tool.document.graph_root(after)
+        root = loaded.document.graph_root(after)
         # Moving a complete sibling group in the XML does not change paint order.
         root[:] = sorted(root, key=lambda c: c.get("parent", ""))
-        self.assertTrue(tool.compare_trees(before, after)["preserved"])
+        self.assertTrue(loaded.roundtrip.compare_trees(before, after)["preserved"])
 
     def test_compare_reports_managed_sibling_reorder(self):
-        tool = load_tool()
-        before = tool.build_tree(linear_spec())
+        loaded = load_tool()
+        before = loaded.build.build_tree(linear_spec())
         after = copy.deepcopy(before)
-        root = tool.document.graph_root(after)
+        root = loaded.document.graph_root(after)
         nodes = [c for c in root if c.get("data-kind") == "node"]
         root.remove(nodes[0])
         root.append(nodes[0])
-        result = tool.compare_trees(before, after, {})
+        result = loaded.roundtrip.compare_trees(before, after, {})
         self.assertFalse(result["preserved"])
         self.assertEqual(result["unexpected_sibling_order"][0]["parent"], "psd-lane-lane-a")
 
     def test_compare_accepts_declared_phase_addition_and_deletion(self):
-        tool, before = self.editor_tree_with_manual_cell(None)
+        loaded, before = self.editor_tree_with_manual_cell(None)
         add = {"phases": [{"id": "new-phase", "label": "Phase", "from_rank": 1, "to_rank": 3}]}
         after = copy.deepcopy(before)
-        tool.patch_tree(after, add, allow_geometry_updates=False)
-        self.assertTrue(tool.compare_trees(before, after, add)["preserved"])
+        loaded.roundtrip.patch_tree(after, add, allow_geometry_updates=False)
+        self.assertTrue(loaded.roundtrip.compare_trees(before, after, add)["preserved"])
         remove = {"delete_phases": ["new-phase"]}
         final = copy.deepcopy(after)
-        tool.patch_tree(final, remove, allow_geometry_updates=False)
-        self.assertTrue(tool.compare_trees(after, final, remove)["preserved"])
+        loaded.roundtrip.patch_tree(final, remove, allow_geometry_updates=False)
+        self.assertTrue(loaded.roundtrip.compare_trees(after, final, remove)["preserved"])
 
     def test_layer_conflict_with_unknown_anchor_is_refused_atomically(self):
-        tool, tree = self.editor_tree_with_manual_cell()
-        root = tool.document.graph_root(tree)
+        loaded, tree = self.editor_tree_with_manual_cell()
+        root = loaded.document.graph_root(tree)
         phase = next(c for c in root if c.get("data-kind") == "phase")
         manual = next(c for c in root if c.get("id") == "manual-cell")
         manual.set("parent", "psd-pool-main")
@@ -319,30 +319,30 @@ class EvidenceBaselineTests(unittest.TestCase):
         self.assertEqual(actual["cases"].keys(), expected["cases"].keys())
 
     def test_repeated_builds_and_unordered_list_permutations(self):
-        tool = load_tool()
+        loaded = load_tool()
         for name, spec in {"linear": linear_spec(), "decision": corpus()["decision-retry-phases"]}.items():
             with self.subTest(case=name):
-                first = tool.build_tree(spec)
-                second = tool.build_tree(spec)
+                first = loaded.build.build_tree(spec)
+                second = loaded.build.build_tree(spec)
                 self.assertEqual(ET.tostring(first.getroot()), ET.tostring(second.getroot()))
                 permuted = copy.deepcopy(spec)
                 permuted["nodes"].reverse()
                 permuted["edges"].reverse()
-                third = tool.build_tree(permuted)
+                third = loaded.build.build_tree(permuted)
                 # Permutations promise the same geometry/semantics, not paint
                 # order. compare must now report real sibling-order changes.
-                self.assertEqual({key: tool.document.element_signature(cell) for key, cell in tool.document.semantic_cells(first).items()},
-                                 {key: tool.document.element_signature(cell) for key, cell in tool.document.semantic_cells(third).items()})
-                compared = tool.compare_trees(first, third)
+                self.assertEqual({key: loaded.document.element_signature(cell) for key, cell in loaded.document.semantic_cells(first).items()},
+                                 {key: loaded.document.element_signature(cell) for key, cell in loaded.document.semantic_cells(third).items()})
+                compared = loaded.roundtrip.compare_trees(first, third)
                 for key in ("unexpected_geometry", "unexpected_attributes", "unexpected_added", "unexpected_missing"):
                     self.assertEqual(compared[key], [])
                 self.assertEqual(compared.get("unexpected_sibling_order"), compared.get("changed_sibling_order"))
-                self.assertEqual(tool.core_validation.validate_tree(first), tool.core_validation.validate_tree(third))
+                self.assertEqual(loaded.validation.validate_tree(first), loaded.validation.validate_tree(third))
 
     def test_locked_conflict_is_rejected_not_waived(self):
-        tool = load_tool()
-        with self.assertRaises(tool.contracts.DiagramError) as caught:
-            tool.build_tree(corpus()["explicit-port-conflict"])
+        loaded = load_tool()
+        with self.assertRaises(loaded.contracts.DiagramError) as caught:
+            loaded.build.build_tree(corpus()["explicit-port-conflict"])
         self.assertEqual(caught.exception.code, "routing/port-capacity")
         self.assertIn("no continuous interval", str(caught.exception))
         self.assertIn("allocate-distinct-port", caught.exception.supported_fixes)
@@ -355,15 +355,18 @@ class EvidenceBaselineTests(unittest.TestCase):
         self.assertIn("component_replans", caught.exception.evidence)
 
     def test_request_response_retry_is_jointly_routed_without_conflict(self):
-        tool = load_tool()
-        tree = tool.build_tree(corpus()["request-response-retry"])
-        report = tool.core_validation.validate_tree(tree)
+        loaded = load_skill_modules(
+            ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py",
+            module_name="evidence_routing_policy",
+        )
+        tree = loaded.build.build_tree(corpus()["request-response-retry"])
+        report = loaded.validation.validate_tree(tree)
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["diagnostics"], [])
         self.assertEqual(report["arrowhead_clearance"]["status"], "complete")
         self.assertEqual(report["arrowhead_clearance"]["checked_count"], 7)
         self.assertEqual(report["arrowhead_clearance"]["violations"], 0)
-        inspected = tool.inspect_tree(tree)
+        inspected = loaded.roundtrip.inspect_tree(tree)
         retry = next(edge for edge in inspected["edges"] if edge["id"] == "retry")
         self.assertEqual((retry["exit_side"], retry["entry_side"]), ("right", "right"))
         retry_carrier_x = {point["x"] for point in retry["waypoints"]}
@@ -380,7 +383,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         }
         self.assertGreaterEqual(
             carrier_x - max(forward_waypoint_x),
-            tool.routing_policy.LANE_BOUNDARY_CLEARANCE,
+            loaded.routing_policy.LANE_BOUNDARY_CLEARANCE,
         )
 
     def test_performance_probe_has_measurements_and_real_timeout(self):
@@ -412,12 +415,12 @@ class EvidenceBaselineTests(unittest.TestCase):
         for value in (None, 501, True, "unknown", "0.5.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": value}}}
             self.assertEqual(normalize(result, {}, input_version="0.5.1"), result)
-        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0"):
+        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0", "0.7.1"):
             result = {"result": {"patch_receipt": {"input_tool_version": version}}}
             self.assertEqual(normalize(result, {}, input_version=version)["result"]["patch_receipt"]["input_tool_version"], "<tool-version>")
 
     def test_release_stamp_normalization_is_path_and_artifact_bound(self):
-        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1", "0.6.5", "0.7.0"):
+        for value in (None, 600, True, "unknown", "0.5.1", "0.6.1", "0.6.5", "0.7.0", "0.7.1"):
             result = {"result": {"tool_version": value,
                                  "validation": {"tool_version": value},
                                  "patch_receipt": {"input_tool_version": value}}}
