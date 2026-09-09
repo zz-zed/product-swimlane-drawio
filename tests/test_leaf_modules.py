@@ -109,8 +109,12 @@ class LeafModuleTests(unittest.TestCase):
             self.assertIsNot(one.sizing, two.sizing)
             self.assertIsNot(one.ports, two.ports)
             self.assertIsNot(one.labels, two.labels)
+            self.assertIsNot(one.spec_validation, two.spec_validation)
+            self.assertIsNot(one.layout, two.layout)
             self.assertNotIn("swimlane_core.ports", sys.modules)
             self.assertNotIn("swimlane_core.labels", sys.modules)
+            self.assertNotIn("swimlane_core.spec_validation", sys.modules)
+            self.assertNotIn("swimlane_core.layout", sys.modules)
 
 
 if __name__ == "__main__":

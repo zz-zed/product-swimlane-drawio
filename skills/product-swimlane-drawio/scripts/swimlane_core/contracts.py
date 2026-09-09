@@ -8,12 +8,13 @@ import re
 SCHEMA_VERSION = "2"
 V3_SCHEMA_VERSION = "3"
 STRUCTURED_SCHEMA_VERSIONS = {SCHEMA_VERSION, V3_SCHEMA_VERSION}
-TOOL_VERSION = "0.7.0"
+TOOL_VERSION = "0.7.1"
 MODEL_HASH_VERSION = "1"
 
 GROUP_KINDS = {"parallel", "branch", "merge", "exception", "support"}
 GROUP_FIELDS = {"id", "label", "lane", "kind", "nodes"}
 GROUP_UPDATE_FIELDS = GROUP_FIELDS
+NODE_TYPES = frozenset({"start", "end", "process", "decision", "note"})
 
 # These names are the persisted XML wire contract.  Keep them centralized so
 # document/metadata extraction can use the same spelling without importing the

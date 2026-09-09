@@ -15,13 +15,17 @@ EXPECTED_SKILL_FILES = frozenset({
     "SKILL.md", "agents/openai.yaml", "references/schema.json",
     "references/schema.md", "scripts/drawio_swimlane.py",
     "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/clearance.py",
+    "scripts/swimlane_core/build.py", "scripts/swimlane_core/construction.py",
     "scripts/swimlane_core/contracts.py",
     "scripts/swimlane_core/geometry.py",
     "scripts/swimlane_core/document.py", "scripts/swimlane_core/metadata.py",
     "scripts/swimlane_core/sizing.py", "scripts/swimlane_core/routing_policy.py",
     "scripts/swimlane_core/ports.py", "scripts/swimlane_core/port_planner.py",
     "scripts/swimlane_core/labels.py",
+    "scripts/swimlane_core/patch_operations.py",
+    "scripts/swimlane_core/roundtrip.py",
     "scripts/swimlane_core/routing.py", "scripts/swimlane_core/routing_adapter.py",
+    "scripts/swimlane_core/spec_validation.py", "scripts/swimlane_core/layout.py",
     "scripts/swimlane_core/validation.py",
 })
 EXPECTED_RELEASE_FILES = frozenset(json.loads(

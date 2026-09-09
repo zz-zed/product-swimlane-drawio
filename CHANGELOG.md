@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## [0.7.1] - 2026-09-09
+
+### Changed
+
+- Separate build and patch input validation, deterministic layout calculations, native cell construction, build orchestration, incremental patch operations, and round-trip coordination into focused private modules.
+- Split the existing patch sequence into explicit operation stages while preserving record refresh points, saved-route authorization, error ordering, metadata refresh, and delivery receipts.
+- Keep the portable CLI focused on file arguments, authorization checks, command dispatch, delivery orchestration, and exception mapping.
+- Document the current one-way dependency boundary: compare replays a declared patch on a copy, while patch operations do not depend on compare or delivery gates.
+
+### Tests and evidence
+
+- Add direct boundary and combined-operation coverage for module ownership, isolated loading, refreshed patch records, declared main-path changes, group and missing-edge error priority, and delivery fault injection at the actual production call sites.
+- Verify the source tree and an extracted repository archive on Python 3.11 and 3.14, and exercise all five commands from the complete read-only Skill package outside a repository.
+- Compare the refactored candidate with v0.7.0 across normal, fixed, patch, saved-file, opaque XML, and serialization-failure cases without normalizing XML bytes.
+
+### Compatibility
+
+- Preserve the five CLI commands, schemas, defaults, diagnostics, exit codes, deterministic geometry, saved manual waypoints, unknown XML payloads, and atomic-write behavior from v0.7.0.
+- Keep the complete Skill as the Python 3.10+ standard-library-only distribution unit. The version stamp changes to 0.7.1, so newly written XML and its file hash differ from v0.7.0.
+- Do not add migration, multi-page editing, a new solver, automatic visual repair, or a public Python SDK.
+
 ## [0.7.0] - 2026-09-08
 
 - Preserve saved routes for label-only patches and require declared reroutes when node/lane edits invalidate them.
@@ -310,7 +331,8 @@ This release is based on the locally verified candidate and is published with th
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.1...v0.6.5
 [0.6.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.0...v0.6.1

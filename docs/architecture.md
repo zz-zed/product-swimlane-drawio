@@ -48,7 +48,9 @@ The output is native, uncompressed `.drawio`, not a flattened image. Draw.io Des
 
 ### Incremental update loop
 
-After local editing, `inspect` reads the latest file rather than relying on an older JSON source. It reports the exact input digest and whether embedded semantics are managed, recoverable, or unsafe. `patch` requires the inspected digest as a baseline, applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints, and refreshes the versioned semantic-model hash. Lane operations use stable neighboring IDs, enforce dependency-safe deletion, and expose downstream shifts separately from requested changes. Patch-added v3 nodes compile `slot` and note `anchor` intent against the current saved geometry. `compare` replays the declaration and checks the exact before-and-after result.
+After local editing, `inspect` reads the latest file rather than relying on an older JSON source. It reports the exact input digest and whether embedded semantics are managed, recoverable, or unsafe. `patch` requires the inspected digest as a baseline, applies declared semantic changes while preserving unrelated geometry and compatible manual waypoints, and refreshes the versioned semantic-model hash. Lane operations use stable neighboring IDs, enforce dependency-safe deletion, and expose downstream shifts separately from requested changes. Patch-added v3 nodes compile `slot` and note `anchor` intent against the current saved geometry.
+
+`compare` applies a supplied patch to a copy of the before tree and compares that expected result with the supplied after file; patch processing does not call compare. The serialized delivery candidate must also pass an independent serialization-signature gate, so a replay result cannot justify a serialization change by itself. Failed CLI operations do not replace an input or existing target file. Internal patch processing does not promise a whole-object rollback after every exception. Compare checks managed payloads, preserved unknown subtrees, and sibling order within the diagram content; it does not claim to cover every outer `mxfile` attribute or wrapper detail.
 
 ### Managed artifact identity
 
@@ -67,7 +69,7 @@ The pool cell stores the producing tool version, model-hash version, stable lane
 
 ## Current implementation and page scope
 
-The portable CLI retains input validation, layout compilation, build, patch impact and operations, inspect, compare, and command orchestration. Its adjacent private modules own these responsibilities:
+The portable CLI is limited to file arguments, input summaries, authorization preflight checks, command dispatch and output, and exception mapping. Its adjacent private modules own domain behavior:
 
 | Module | Responsibility |
 | --- | --- |
@@ -83,11 +85,19 @@ The portable CLI retains input validation, layout compilation, build, patch impa
 | `labels` | Label dimensions, candidates, scoring, and placement. |
 | `routing` | Route candidates, selection, scoring, and explicit routing context. |
 | `routing_adapter` | Conversion between native XML and route decisions, including applying styles, points, and label geometry. |
+| `spec_validation` | Build and patch input structure, fields, objects, and cross-object constraints; it does not read or write files. |
+| `layout` | Canvas, lane, rank, slot, and anchor value calculations; it does not write XML or introduce new layout intent. |
+| `construction` | Native lane, node, edge, and phase-cell construction, phase updates, and hierarchy rules shared by build and patch work. |
+| `build` | New-diagram orchestration from a specification to a native tree, using layout, construction, routing, and metadata. |
+| `patch_operations` | Controlled lane, node, edge, phase, and group changes with their incremental dependencies for one declared operation state. |
+| `roundtrip` | Patch coordination, saved-edit protection, declared-patch comparison, inspection, and domain-level delivery-candidate checks. |
 | `validation` | Ordered diagnostic collectors and read-only validation summaries. |
 
-Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans only new or explicitly/necessarily rerouted edges while treating frozen connector paths and labels as obstacles. Existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata.
+The dependency direction is CLI to build or roundtrip; build to construction, layout, specification validation, and the shared core; and roundtrip to patch operations, construction, layout, specification validation, validation, and the shared core. Validation, routing, and the other shared modules do not import the higher-level orchestrators. `compare` calls patch processing only for its forward replay; patch operations do not depend on compare or delivery gates.
 
-Dependencies point from orchestration and adapters into the shared core; core modules do not import the CLI. These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
+Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans new edges and existing edges with declared route changes while treating frozen connector paths and labels as obstacles. A spatial change that makes a frozen route invalid requires an explicit route declaration; existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata.
+
+These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface remains the five CLI commands and their structured JSON receipts; internal functions are not compatibility guarantees.
 
 Each generated file is a single-page process view. The tool does not provide multi-page navigation, cross-page connectors, or cross-file references. Split a dense end-to-end process and its exception detail into separate `.drawio` files when one page would no longer be readable.
 

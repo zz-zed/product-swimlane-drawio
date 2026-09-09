@@ -46,7 +46,8 @@ class BatchIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.loaded = load_skill_modules(TOOL, module_name="batch_integration_tests")
-        cls.tool = cls.loaded.tool
+        cls.roundtrip = cls.loaded.roundtrip
+        cls.build = cls.loaded.build
         cls.document = cls.loaded.document
         cls.adapter = cls.loaded.routing_adapter
         cls.contracts = cls.loaded.contracts
@@ -105,7 +106,7 @@ class BatchIntegrationTests(unittest.TestCase):
                 "exit_offset": 0.5, "entry_offset": 0.5,
             }]}
             with self.assertRaises(self.contracts.DiagramError):
-                self.tool.patch_tree(tree, changes, allow_geometry_updates=False)
+                self.roundtrip.patch_tree(tree, changes, allow_geometry_updates=False)
             self.assertEqual(ET.tostring(self.edge(root, "first")), first_before)
             self.assertEqual(ET.tostring(self.edge(root, "second")), second_before)
             changes_path.write_text(json.dumps(changes), encoding="utf-8")
@@ -120,7 +121,7 @@ class BatchIntegrationTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), sentinel)
 
     def test_patch_keeps_frozen_edge_xml_style_geometry_label_and_order(self):
-        tree = self.tool.build_tree(linear_spec())
+        tree = self.build.build_tree(linear_spec())
         root = self.document.graph_root(tree)
         frozen = self.edge(root, "second")
         frozen.attrib["style"] += "vendorToken=keep;"
@@ -129,14 +130,14 @@ class BatchIntegrationTests(unittest.TestCase):
         ET.SubElement(geometry, "mxPoint", {"as": "vendor-offset", "x": "3", "y": "4"})
         frozen_before = ET.tostring(frozen)
         sibling_before = [child.attrib.get("id") for child in list(root)]
-        self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "label": "Changed", "reroute": True}]}, allow_geometry_updates=False)
+        self.roundtrip.patch_tree(tree, {"update_edges": [{"id": "first", "label": "Changed", "reroute": True}]}, allow_geometry_updates=False)
         frozen_after = self.edge(root, "second")
         self.assertEqual(ET.tostring(frozen_after), frozen_before)
         self.assertEqual([child.attrib.get("id") for child in list(root)], sibling_before)
 
     def test_provenance_and_explicit_waypoint_writeback_are_distinct(self):
-        derived = self.tool.build_tree(linear_spec())
-        explicit = self.tool.build_tree(linear_spec(explicit=True))
+        derived = self.build.build_tree(linear_spec())
+        explicit = self.build.build_tree(linear_spec(explicit=True))
         derived_edge = self.edge(self.document.graph_root(derived), "first")
         explicit_edge = self.edge(self.document.graph_root(explicit), "first")
         for key in (
@@ -147,14 +148,14 @@ class BatchIntegrationTests(unittest.TestCase):
             self.assertEqual(explicit_edge.attrib[key], "1")
 
         # A frozen explicit route is not compacted when a different edge is patched.
-        tree = self.tool.build_tree(linear_spec(waypoints=[]))
+        tree = self.build.build_tree(linear_spec(waypoints=[]))
         root = self.document.graph_root(tree)
         first = self.edge(root, "first")
         geometry_before = ET.tostring(first.find("mxGeometry"))
-        self.tool.patch_tree(tree, {"update_edges": [{"id": "second", "label": "Later", "reroute": True}]}, allow_geometry_updates=False)
+        self.roundtrip.patch_tree(tree, {"update_edges": [{"id": "second", "label": "Later", "reroute": True}]}, allow_geometry_updates=False)
         self.assertEqual(ET.tostring(self.edge(root, "first").find("mxGeometry")), geometry_before)
 
-        repeated = self.tool.build_tree(linear_spec())
+        repeated = self.build.build_tree(linear_spec())
         repeated_root = self.document.graph_root(repeated)
         repeated_first = self.edge(repeated_root, "first")
         # A calculation may normalize these points; a patch must not normalize
@@ -162,11 +163,11 @@ class BatchIntegrationTests(unittest.TestCase):
         self.document.set_edge_points(repeated_first, [(110.0, 130.0), (110.0, 130.0), (110.0, 160.0), (110.0, 190.0)])
         repeated_first.attrib[self.contracts.DATA_WAYPOINTS_ORIGIN] = "explicit"
         repeated_before = ET.tostring(repeated_first.find("mxGeometry"))
-        self.tool.patch_tree(repeated, {"update_edges": [{"id": "second", "label": "Again", "reroute": True}]}, allow_geometry_updates=False)
+        self.roundtrip.patch_tree(repeated, {"update_edges": [{"id": "second", "label": "Again", "reroute": True}]}, allow_geometry_updates=False)
         self.assertEqual(ET.tostring(self.edge(repeated_root, "first").find("mxGeometry")), repeated_before)
 
     def test_build_preserves_object_and_compact_array_waypoint_forms(self):
-        baseline = self.tool.build_tree(linear_spec())
+        baseline = self.build.build_tree(linear_spec())
         baseline_root = self.document.graph_root(baseline)
         pool = self.document.find_pool(baseline)
         lanes, nodes = self.document.lane_node_records(baseline_root, pool)
@@ -182,17 +183,17 @@ class BatchIntegrationTests(unittest.TestCase):
         )
         for waypoints in forms:
             with self.subTest(waypoints=waypoints):
-                tree = self.tool.build_tree(linear_spec(waypoints=waypoints))
+                tree = self.build.build_tree(linear_spec(waypoints=waypoints))
                 root = self.document.graph_root(tree)
                 self.assertEqual(self.document.edge_waypoints(self.edge(root, "first")), expected)
 
     def test_existing_style_updates_only_anchor_tokens_and_profile_uses_effective_style(self):
-        tree = self.tool.build_tree(linear_spec())
+        tree = self.build.build_tree(linear_spec())
         root = self.document.graph_root(tree)
         first = self.edge(root, "first")
         first.attrib["style"] = "strokeColor=#123456;" + first.attrib["style"] + "labelBorderColor=#654321;"
         before = first.attrib["style"].split(";")
-        self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
+        self.roundtrip.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
         after = self.edge(root, "first").attrib["style"].split(";")
         anchors = {"exitX", "exitY", "exitDx", "exitDy", "entryX", "entryY", "entryDx", "entryDy"}
         self.assertEqual([part for part in before if part.split("=", 1)[0] not in anchors], [part for part in after if part.split("=", 1)[0] not in anchors])
@@ -207,7 +208,7 @@ class BatchIntegrationTests(unittest.TestCase):
         self.assertEqual(profile["target_type"], nodes["step"]["cell"].attrib[self.contracts.DATA_NODE_TYPE])
 
     def test_unknown_style_reroute_is_refused_without_discarding_native_tokens(self):
-        tree = self.tool.build_tree(linear_spec())
+        tree = self.build.build_tree(linear_spec())
         root = self.document.graph_root(tree)
         first = self.edge(root, "first")
         first.attrib["style"] = "vendorBefore=1;" + first.attrib["style"] + "vendorAfter=2;"
@@ -219,7 +220,7 @@ class BatchIntegrationTests(unittest.TestCase):
             existing_edges={"first": first})
         self.assertEqual(profiles["first"]["edge_style"], first.attrib["style"])
         with self.assertRaises(self.contracts.DiagramError) as caught:
-            self.tool.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
+            self.roundtrip.patch_tree(tree, {"update_edges": [{"id": "first", "reroute": True}]}, allow_geometry_updates=False)
         self.assertEqual(caught.exception.code, "routing/no-safe-route")
         self.assertEqual(caught.exception.evidence["planning"]["reason"], "native_profile_unavailable")
         self.assertIn("unsupported_style:vendorAfter,vendorBefore", json.dumps(caught.exception.evidence))
@@ -245,7 +246,7 @@ class BatchIntegrationTests(unittest.TestCase):
         specs.append(v3)
         for spec in specs:
             with self.subTest(schema_version=spec["schema_version"]):
-                tree = self.tool.build_tree(spec)
+                tree = self.build.build_tree(spec)
                 edge = self.edge(self.document.graph_root(tree), "first")
                 keys = list(edge.attrib)
                 self.assertEqual(keys[:8], [

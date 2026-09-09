@@ -20,7 +20,7 @@ class NativePreflightTests(unittest.TestCase):
         cls.document, cls.labels = cls.loaded.document, cls.loaded.labels
 
     def setup_native(self):
-        tree = self.loaded.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.loaded.build.build_tree(linear_spec(2, version="2"))
         root = self.document.graph_root(tree)
         pool = self.document.find_pool(tree)
         lanes, nodes = self.document.lane_node_records(root, pool)
@@ -284,7 +284,7 @@ class NativePreflightTests(unittest.TestCase):
         self.assertEqual(ET.tostring(cell), snapshot)
 
     def test_patch_profile_and_writer_share_explicit_type_and_label_updates(self):
-        tree = self.loaded.tool.build_tree(linear_spec(2, version="2"))
+        tree = self.loaded.build.build_tree(linear_spec(2, version="2"))
         adapter = self.loaded.routing_adapter
         original = adapter.native_label_profiles
         captured = []
@@ -293,7 +293,7 @@ class NativePreflightTests(unittest.TestCase):
             captured.append((copy.deepcopy(kwargs["explicit_by_edge"]), copy.deepcopy(result)))
             return result
         with mock.patch.object(adapter, "native_label_profiles", side_effect=capture):
-            self.loaded.tool.patch_tree(tree, {"update_edges": [
+            self.loaded.roundtrip.patch_tree(tree, {"update_edges": [
                 {"id": "e0", "reroute": True, "type": "async", "label": "Updated"},
             ]}, False)
         self.assertEqual(len(captured), 1)

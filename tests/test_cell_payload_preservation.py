@@ -22,12 +22,15 @@ SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 class CellPayloadPreservationTests(unittest.TestCase):
     def setUp(self):
-        self.tool = load_skill_modules(
+        self.loaded = load_skill_modules(
             ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py",
             module_name="payload_tool",
-        ).tool
-        self.document = self.tool.document
-        self.before = self.tool.build_tree(linear_spec())
+        )
+        self.tool = self.loaded.tool
+        self.build = self.loaded.build
+        self.roundtrip = self.loaded.roundtrip
+        self.document = self.loaded.document
+        self.before = self.build.build_tree(linear_spec())
 
     def cell(self, tree, kind="node", semantic_id="n1"):
         return self.document.semantic_cells(tree)[f"{kind}:{semantic_id}"]
@@ -50,7 +53,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         for changes in (None, {"update_nodes": [{"id": "n1", "label": "Revised"}]}):
             expected = copy.deepcopy(self.before)
             if changes is not None:
-                self.tool.patch_tree(expected, changes, False)
+                self.roundtrip.patch_tree(expected, changes, False)
             for mutation in ("add", "remove", "attribute", "text"):
                 with self.subTest(changes=changes, mutation=mutation):
                     actual = copy.deepcopy(expected)
@@ -64,7 +67,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
                         payload.set("mode", "changed")
                     else:
                         payload.find("word").text = "changed"
-                    report = self.tool.compare_trees(self.before, actual, changes)
+                    report = self.roundtrip.compare_trees(self.before, actual, changes)
                     self.assertFalse(report["preserved"])
                     self.assertTrue(report["unexpected_cell_content"])
                     self.assertTrue(all(item["semantic_id"] == "n1" and item["kind"] == "node"
@@ -76,13 +79,13 @@ class CellPayloadPreservationTests(unittest.TestCase):
         ET.SubElement(edge.find("mxGeometry"), "vendorGeometry").text = "  "
         changes = {"update_edges": [{"id": "e0", "label": "Go"}]}
         expected = copy.deepcopy(self.before)
-        self.tool.patch_tree(expected, changes, False)
-        self.assertTrue(self.tool.compare_trees(self.before, expected, changes)["preserved"])
+        self.roundtrip.patch_tree(expected, changes, False)
+        self.assertTrue(self.roundtrip.compare_trees(self.before, expected, changes)["preserved"])
         for path in ("vendorPayload", "mxGeometry/vendorGeometry"):
             with self.subTest(path=path):
                 actual = copy.deepcopy(expected)
                 self.cell(actual, "edge", "e0").find(path).text = "changed"
-                report = self.tool.compare_trees(self.before, actual, changes)
+                report = self.roundtrip.compare_trees(self.before, actual, changes)
                 self.assertFalse(report["preserved"])
                 self.assertTrue(report["unexpected_cell_content"])
 
@@ -98,7 +101,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
             with self.subTest(path=path, field=field):
                 actual = copy.deepcopy(self.before)
                 setattr(self.cell(actual).find(path), field, value)
-                self.assertFalse(self.tool.compare_trees(self.before, actual)["preserved"])
+                self.assertFalse(self.roundtrip.compare_trees(self.before, actual)["preserved"])
 
     def test_xml_space_inheritance_and_child_default_tail(self):
         self.before.getroot().set(SPACE, "preserve")
@@ -110,7 +113,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         for path, field in ((".", "text"), (".", "tail"), ("mxGeometry", "tail")):
             actual = copy.deepcopy(self.before)
             setattr(self.cell(actual).find(path), field, " ")
-            self.assertFalse(self.tool.compare_trees(self.before, actual)["preserved"])
+            self.assertFalse(self.roundtrip.compare_trees(self.before, actual)["preserved"])
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "saved.drawio"
             self.document.write_tree(self.before, output)
@@ -124,7 +127,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         ET.indent(actual, space="\t")
         for cell in self.document.semantic_cells(actual).values():
             cell.attrib = dict(reversed(list(cell.attrib.items())))
-        self.assertTrue(self.tool.compare_trees(self.before, actual)["preserved"])
+        self.assertTrue(self.roundtrip.compare_trees(self.before, actual)["preserved"])
 
     def test_duplicate_geometry_and_nested_vendor_order_are_compared(self):
         cell = self.cell(self.before)
@@ -141,7 +144,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
                     other[1].set("vendor", "changed")
                 else:
                     other[1][:] = list(reversed(list(other[1])))
-                report = self.tool.compare_trees(self.before, actual)
+                report = self.roundtrip.compare_trees(self.before, actual)
                 self.assertFalse(report["preserved"])
                 self.assertEqual(report["unexpected_geometry"], ["node:n1"])
                 self.assertTrue(report["unexpected_cell_content"])
@@ -159,7 +162,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         self.assertEqual([point.attrib for point in points], [{"x": "12", "y": "14"}] * 2)
         actual = copy.deepcopy(self.before)
         self.cell(actual, "edge", "e0").find("mxGeometry/vendorGeometry/part").tail = ""
-        report = self.tool.compare_trees(self.before, actual)
+        report = self.roundtrip.compare_trees(self.before, actual)
         self.assertFalse(report["preserved"])
         self.assertTrue(report["unexpected_cell_content"])
 
@@ -179,7 +182,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
             self.assertEqual(self.cell(seen[0]).find("vendorPayload").text, "  ")
             self.assertEqual(self.cell(seen[0]).find("vendorPayload/word").tail, " ")
             self.assertEqual(self.cell(seen[0]).find("mxGeometry/vendorGeometry").text, "\n  ")
-            self.assertTrue(self.tool.compare_trees(self.before, seen[0])["preserved"])
+            self.assertTrue(self.roundtrip.compare_trees(self.before, seen[0])["preserved"])
 
     def test_candidate_callback_failure_keeps_old_output_and_removes_temp(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -208,10 +211,10 @@ class CellPayloadPreservationTests(unittest.TestCase):
             output = Path(temporary) / "saved.drawio"
             output.write_bytes(b"old-output-sentinel")
             with mock.patch.object(ET.ElementTree, "write", corrupt):
-                with self.assertRaises(self.tool.contracts.DiagramError) as caught:
+                with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
                     self.document.write_tree(
                         self.before, output,
-                        candidate_check=lambda candidate: self.tool._check_delivery_candidate(
+                        candidate_check=lambda candidate: self.roundtrip._check_delivery_candidate(
                             self.before, candidate, False),
                     )
             self.assertEqual(caught.exception.code, "delivery/candidate-preservation-failed")
@@ -223,20 +226,20 @@ class CellPayloadPreservationTests(unittest.TestCase):
         actual.getroot().set("serializer-regression", "changed")
         # Public preservation governance is intentionally unchanged. Candidate
         # delivery additionally verifies its own serializer did not drift.
-        self.assertTrue(self.tool.compare_trees(self.before, actual)["preserved"])
-        with self.assertRaises(self.tool.contracts.DiagramError) as caught:
-            self.tool._check_delivery_candidate(self.before, actual, False)
+        self.assertTrue(self.roundtrip.compare_trees(self.before, actual)["preserved"])
+        with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
+            self.roundtrip._check_delivery_candidate(self.before, actual, False)
         self.assertEqual(caught.exception.code, "delivery/candidate-preservation-failed")
         missing_root = copy.deepcopy(self.before)
         model = missing_root.find("./diagram/mxGraphModel")
         model.remove(model.find("root"))
-        with self.assertRaises(self.tool.contracts.DiagramError) as caught:
-            self.tool._check_delivery_candidate(self.before, missing_root, False)
+        with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
+            self.roundtrip._check_delivery_candidate(self.before, missing_root, False)
         self.assertEqual(caught.exception.code, "delivery/candidate-preservation-failed")
 
     def assert_guard_rejects(self, before, candidate, changes):
-        with self.assertRaises(self.tool.contracts.DiagramError) as caught:
-            self.tool.saved_edge_preservation_guard(before, candidate, changes)
+        with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
+            self.roundtrip.saved_edge_preservation_guard(before, candidate, changes)
         self.assertEqual(caught.exception.code, "patch/preservation-violation")
         self.assertIn("e0", caught.exception.evidence["edges"])
 
@@ -267,13 +270,13 @@ class CellPayloadPreservationTests(unittest.TestCase):
 
     def test_independent_guard_same_value_routing_and_false_reroute_freeze_path(self):
         edge = self.cell(self.before, "edge", "e0")
-        current = self.tool.routing_adapter.existing_edge_spec(edge)
+        current = self.loaded.routing_adapter.existing_edge_spec(edge)
         updates = [{"id": "e0", "reroute": False}]
         updates.extend({"id": "e0", field: current[field]}
                        for field in ("from", "to", "type", "route", "exit_side") if field in current)
         for update in updates:
             with self.subTest(update=update):
-                self.assertFalse(self.tool.edge_route_update_requested(edge, update))
+                self.assertFalse(self.loaded.patch_operations.edge_route_update_requested(edge, update))
                 actual = copy.deepcopy(self.before)
                 self.document.set_style_option(self.cell(actual, "edge", "e0"), "exitX", "0.25")
                 self.assert_guard_rejects(self.before, actual, {"update_edges": [update]})
@@ -332,7 +335,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         spec = linear_spec()
         for item in spec["edges"]:
             item["label"] = ""
-        before = self.tool.build_tree(spec)
+        before = self.build.build_tree(spec)
         edge = self.cell(before, "edge", "e0")
         array = ET.SubElement(edge.find("mxGeometry"), "Array", {"as": "points", "vendor": "retain"})
         array.text = " before point "
@@ -356,8 +359,8 @@ class CellPayloadPreservationTests(unittest.TestCase):
                     })
                     self.assertEqual(raw["reason"], "unsupported_native_waypoint")
                     snapshot = ET.tostring(candidate.getroot())
-                    with self.assertRaises(self.tool.contracts.DiagramError) as caught:
-                        self.tool.patch_tree(candidate, changes, False)
+                    with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
+                        self.roundtrip.patch_tree(candidate, changes, False)
                     self.assertEqual(caught.exception.code, "routing/no-safe-route")
                     planning = caught.exception.evidence["planning"]
                     self.assertEqual(planning["reason"], "native_profile_unavailable")
@@ -378,7 +381,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
                                 allow_geometry_updates=False, accept_model_drift=True,
                                 expected_input_sha256=self.document.file_receipt(source)["sha256"],
                             )
-                            with self.assertRaises(self.tool.contracts.DiagramError) as cli_error:
+                            with self.assertRaises(self.loaded.contracts.DiagramError) as cli_error:
                                 self.tool.command_patch(args)
                             self.assertEqual(cli_error.exception.code, "routing/no-safe-route")
                             self.assertEqual(cli_error.exception.evidence["planning"]["reason"],
@@ -387,13 +390,13 @@ class CellPayloadPreservationTests(unittest.TestCase):
                             self.assertEqual(output.read_bytes(), b"old-output-sentinel")
                             self.assertFalse(list(directory.glob("*.candidate")))
                     continue
-                self.tool.patch_tree(candidate, changes, False)
+                self.roundtrip.patch_tree(candidate, changes, False)
                 saved_array = self.cell(candidate, "edge", "e0").find("mxGeometry/Array")
                 self.assertIsNotNone(saved_array)
                 self.assertEqual(saved_array.get("vendor"), "retain")
                 self.assertEqual(saved_array.text, " before point ")
                 self.assertEqual(ET.tostring(saved_array.find("vendorPointData")), ET.tostring(vendor))
-                self.assertTrue(self.tool.compare_trees(before, candidate, changes)["preserved"])
+                self.assertTrue(self.roundtrip.compare_trees(before, candidate, changes)["preserved"])
                 if "waypoints" in update:
                     self.assertEqual(saved_array.find("mxPoint").attrib, {"x": "120", "y": "115"})
 
@@ -406,7 +409,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         lanes, nodes = self.document.lane_node_records(root, pool)
         edge = self.cell(candidate, "edge", "e0")
         full_path = self.document.edge_polyline(edge, lanes, nodes)
-        adapter = self.tool.routing_adapter
+        adapter = self.loaded.routing_adapter
         edge_spec = adapter.existing_edge_spec(edge, for_reroute=True)
         array = ET.SubElement(edge.find("mxGeometry"), "Array", {"as": "points", "vendor": "retain"})
         array.text = " before point "
@@ -416,7 +419,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         expected_vendor = ET.tostring(vendor)
         before = copy.deepcopy(candidate)
         exit_port, entry_port = (self.document.port_from_style(edge, side) for side in ("exit", "entry"))
-        decision = self.tool.routing.RouteDecision("e0", None, {
+        decision = self.loaded.routing.RouteDecision("e0", None, {
             "exit_side": exit_port[0], "exit_offset": exit_port[1],
             "entry_side": entry_port[0], "entry_offset": entry_port[1],
             "route": "forward", "points": [], "full_path": full_path, "label_choice": None,
@@ -431,7 +434,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
         self.assertEqual(ET.tostring(saved.find("vendorPointData")), expected_vendor)
         changes = {"update_edges": [{"id": "e0", "reroute": True}]}
         # The independent guard does not replay the capability-gated planner.
-        self.assertEqual(self.tool.saved_edge_preservation_guard(before, candidate, changes)["changed_edges"], [])
+        self.assertEqual(self.roundtrip.saved_edge_preservation_guard(before, candidate, changes)["changed_edges"], [])
 
     def test_route_replacement_refuses_unmappable_point_owned_extensions(self):
         for extension in ("attribute", "subtree", "text", "tail"):
@@ -447,7 +450,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
                 else:
                     setattr(point, extension, " keep ")
                 original = ET.tostring(edge)
-                with self.assertRaises(self.tool.contracts.DiagramError) as caught:
+                with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
                     self.document.set_edge_points(edge, [(120, 115)], action="replace_explicit")
                 self.assertEqual(caught.exception.code, "patch/preservation-violation")
                 self.assertEqual(ET.tostring(edge), original)
@@ -489,8 +492,8 @@ class CellPayloadPreservationTests(unittest.TestCase):
     def test_actual_patch_candidate_must_pass_same_version_compare(self):
         changes = {"update_nodes": [{"id": "n1", "label": "Revised"}]}
         accepted = copy.deepcopy(self.before)
-        self.tool.patch_tree(accepted, changes, False)
-        compare = self.tool.compare_trees
+        self.roundtrip.patch_tree(accepted, changes, False)
+        compare = self.roundtrip.compare_trees
         calls = []
         def reject_declared_comparison(before, candidate, declaration=None):
             calls.append(declaration)
@@ -502,11 +505,11 @@ class CellPayloadPreservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "saved.drawio"
             output.write_bytes(b"old-output-sentinel")
-            with mock.patch.object(self.tool, "compare_trees", reject_declared_comparison):
-                with self.assertRaises(self.tool.contracts.DiagramError) as caught:
+            with mock.patch.object(self.roundtrip, "compare_trees", reject_declared_comparison):
+                with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
                     self.document.write_tree(
                         accepted, output,
-                        candidate_check=lambda candidate: self.tool._check_delivery_candidate(
+                        candidate_check=lambda candidate: self.roundtrip._check_delivery_candidate(
                             accepted, candidate, False, before=self.before, changes=changes),
                     )
             self.assertEqual(calls, [None, changes])
@@ -530,7 +533,7 @@ class CellPayloadPreservationTests(unittest.TestCase):
                     allow_geometry_updates=False, accept_model_drift=False,
                     expected_input_sha256=self.document.file_receipt(source)["sha256"],
                 )
-                validate = self.tool.core_validation.validate_tree
+                validate = self.loaded.validation.validate_tree
                 count = 0
                 target = 2 if command == "build" else 3
                 def reject_actual_candidate(tree):
@@ -542,9 +545,9 @@ class CellPayloadPreservationTests(unittest.TestCase):
                         result["warnings"] = ["injected actual-candidate warning"]
                         result["diagnostics"].append({"code": "test/candidate-warning", "severity": "warning"})
                     return result
-                with mock.patch.object(self.tool.core_validation, "validate_tree", reject_actual_candidate):
+                with mock.patch.object(self.loaded.validation, "validate_tree", reject_actual_candidate):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        with self.assertRaises(self.tool.contracts.DiagramError) as caught:
+                        with self.assertRaises(self.loaded.contracts.DiagramError) as caught:
                             getattr(self.tool, "command_" + command)(args)
                 self.assertEqual(caught.exception.code, "delivery/strict-validation-failed")
                 self.assertEqual(count, target)

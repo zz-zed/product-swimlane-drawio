@@ -178,11 +178,12 @@ class CoreBoundaryTests(unittest.TestCase):
     def test_contract_error_identity_and_group_diagnostics_are_preserved(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="core_boundary_contracts")
         with self.assertRaises(loaded.contracts.DiagramError) as caught:
-            loaded.tool.validate_build_spec({
+            loaded.spec_validation.validate_build_spec({
                 "title": "Flow", "lanes": "not-an-array", "nodes": [], "edges": [],
             })
         self.assertEqual(caught.exception.code, "schema/type")
-        self.assertIsInstance(caught.exception, loaded.tool.contracts.DiagramError)
+        self.assertIsInstance(caught.exception, loaded.spec_validation.contracts.DiagramError)
+        self.assertEqual(set(loaded.construction.NODE_STYLES), loaded.contracts.NODE_TYPES)
         with self.assertRaises(loaded.contracts.DiagramError) as group_error:
             loaded.contracts.validate_group_object(
                 {"id": "group", "lane": "lane", "kind": "unknown", "nodes": ["start"]},
@@ -224,6 +225,12 @@ class CoreBoundaryTests(unittest.TestCase):
         labels = ast.parse((CORE / "labels.py").read_text(encoding="utf-8"))
         routing = ast.parse((CORE / "routing.py").read_text(encoding="utf-8"))
         adapter = ast.parse((CORE / "routing_adapter.py").read_text(encoding="utf-8"))
+        construction = ast.parse((CORE / "construction.py").read_text(encoding="utf-8"))
+        build = ast.parse((CORE / "build.py").read_text(encoding="utf-8"))
+        patch_operations = ast.parse((CORE / "patch_operations.py").read_text(encoding="utf-8"))
+        roundtrip = ast.parse((CORE / "roundtrip.py").read_text(encoding="utf-8"))
+        spec_validation = ast.parse((CORE / "spec_validation.py").read_text(encoding="utf-8"))
+        layout = ast.parse((CORE / "layout.py").read_text(encoding="utf-8"))
         validation = ast.parse((CORE / "validation.py").read_text(encoding="utf-8"))
         assert_only_allowed_imports(validation, {
             "json", "xml.etree.ElementTree", "swimlane_core.contracts",
@@ -243,6 +250,41 @@ class CoreBoundaryTests(unittest.TestCase):
             "swimlane_core.geometry", "swimlane_core.labels", "swimlane_core.ports",
             "swimlane_core.routing",
         })
+        assert_only_allowed_imports(construction, {
+            "json", "re", "xml.etree.ElementTree", "swimlane_core.contracts",
+            "swimlane_core.document", "swimlane_core.layout", "swimlane_core.ports",
+            "swimlane_core.routing", "swimlane_core.routing_adapter",
+            "swimlane_core.sizing", "swimlane_core.spec_validation",
+        })
+        assert_only_allowed_imports(build, {
+            "json", "xml.etree.ElementTree", "swimlane_core.construction",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.layout",
+            "swimlane_core.metadata", "swimlane_core.routing",
+            "swimlane_core.routing_adapter", "swimlane_core.spec_validation",
+        })
+        assert_only_allowed_imports(patch_operations, {
+            "copy", "dataclasses", "json", "math", "xml.etree.ElementTree",
+            "swimlane_core.construction", "swimlane_core.contracts",
+            "swimlane_core.document", "swimlane_core.geometry", "swimlane_core.layout",
+            "swimlane_core.routing", "swimlane_core.routing_adapter",
+            "swimlane_core.sizing", "swimlane_core.spec_validation",
+        })
+        assert_only_allowed_imports(roundtrip, {
+            "copy", "json", "xml.etree.ElementTree",
+            "swimlane_core.construction", "swimlane_core.contracts", "swimlane_core.document",
+            "swimlane_core.layout", "swimlane_core.metadata", "swimlane_core.patch_operations",
+            "swimlane_core.routing_adapter", "swimlane_core.spec_validation", "swimlane_core.validation",
+        })
+        assert_only_allowed_imports(spec_validation, {
+            "re", "swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.layout",
+            "swimlane_core.ports", "swimlane_core.routing",
+            "swimlane_core.routing_policy", "swimlane_core.sizing",
+        })
+        assert_only_allowed_imports(layout, {
+            "math", "swimlane_core.clearance", "swimlane_core.contracts",
+            "swimlane_core.geometry", "swimlane_core.labels", "swimlane_core.routing",
+            "swimlane_core.routing_policy", "swimlane_core.sizing",
+        })
         assert_only_allowed_imports(contracts, {"re"})
         assert_only_allowed_imports(clearance, {
             "dataclasses", "math", "typing", "swimlane_core.geometry",
@@ -261,7 +303,49 @@ class CoreBoundaryTests(unittest.TestCase):
         self.assertEqual(geometry_functions, expected)
         entry_source = TOOL.read_text(encoding="utf-8")
         entry_functions = {node.name for node in ast.walk(ast.parse(entry_source)) if isinstance(node, ast.FunctionDef)}
+        self.assertEqual(entry_functions, {
+            "load_json", "command_build", "command_patch", "command_validate",
+            "command_compare", "command_inspect", "build_parser", "main",
+        })
+        roundtrip_functions = {
+            node.name for node in roundtrip.body if isinstance(node, ast.FunctionDef)
+        }
+        self.assertEqual(roundtrip_functions, {
+            "saved_edge_preservation_guard", "patch_tree", "allowed_missing_from_patch",
+            "compare_trees", "inspect_tree", "_check_delivery_candidate",
+        })
+        self.assertTrue(roundtrip_functions.isdisjoint(entry_functions))
         self.assertTrue(expected.isdisjoint(entry_functions))
+        construction_functions = {
+            node.name for node in construction.body if isinstance(node, ast.FunctionDef)
+        }
+        build_functions = {
+            node.name for node in build.body if isinstance(node, ast.FunctionDef)
+        }
+        self.assertEqual(
+            construction_functions,
+            {"clean_id", "mx_id", "create_lane_cell", "create_node_cell",
+             "phase_geometry_values", "create_phase_cell", "normalize_phase_layering",
+             "create_edge_cell", "phase_cell_spec", "apply_phase_update"},
+        )
+        self.assertEqual(build_functions, {"compile_v3_edges", "build_tree"})
+        self.assertIn(
+            "route_batch_error",
+            {node.name for node in adapter.body if isinstance(node, ast.FunctionDef)},
+        )
+        self.assertTrue(construction_functions.isdisjoint(entry_functions))
+        self.assertTrue(build_functions.isdisjoint(entry_functions))
+        operation_functions = {
+            node.name for node in patch_operations.body if isinstance(node, ast.FunctionDef)
+        }
+        self.assertTrue(operation_functions.isdisjoint(entry_functions))
+        self.assertTrue({
+            "check_deletion_dependencies", "check_node_type_dependencies",
+            "apply_declared_deletions", "apply_lane_operations", "apply_node_updates",
+            "apply_node_additions", "apply_group_patch", "apply_group_operations",
+            "apply_edge_operations", "apply_phase_operations", "apply_main_path_update",
+            "extend_canvas_for_nodes", "refresh_phase_geometry",
+        }.issubset(operation_functions))
         assert_only_allowed_imports(sizing, {"unicodedata", "swimlane_core.contracts", "swimlane_core.geometry"})
         assert_only_allowed_imports(routing_policy, set())
         assert_only_allowed_imports(ports, {"swimlane_core.contracts", "swimlane_core.geometry", "swimlane_core.routing_policy"})
@@ -313,7 +397,7 @@ class CoreBoundaryTests(unittest.TestCase):
     def test_document_defaults_are_supplied_by_caller_and_styles_keep_order(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="document_defaults")
         pool = ET.Element("mxCell", {"data-row-gap": "123"})
-        defaults = {key: value + 7 for key, value in loaded.tool.DEFAULTS.items()}
+        defaults = {key: value + 7 for key, value in loaded.layout.DEFAULTS.items()}
         values = loaded.document.values_from_pool(pool, defaults)
         self.assertEqual(values["row_gap"], 123)
         self.assertEqual(values["title_height"], defaults["title_height"])
@@ -338,7 +422,7 @@ class CoreBoundaryTests(unittest.TestCase):
 
     def test_document_atomic_writer_retains_existing_output_and_cleans_failure(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="document_atomic_writer")
-        tree = loaded.tool.build_tree(linear_spec(2))
+        tree = loaded.build.build_tree(linear_spec(2))
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "existing.drawio"
             sentinel = b"reviewed output must survive"
@@ -355,7 +439,7 @@ class CoreBoundaryTests(unittest.TestCase):
 
     def test_readonly_paths_never_refresh_or_mutate_managed_metadata(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="readonly_metadata")
-        original = loaded.tool.build_tree(linear_spec(2))
+        original = loaded.build.build_tree(linear_spec(2))
         for state in ("managed", "missing-hash", "mismatched-hash", "unknown-hash-version"):
             with self.subTest(state=state):
                 tree = copy.deepcopy(original)
@@ -369,20 +453,67 @@ class CoreBoundaryTests(unittest.TestCase):
                 before = ET.tostring(tree.getroot())
                 with mock.patch.object(loaded.metadata, "refresh_managed_metadata", side_effect=AssertionError("read-only refresh")):
                     loaded.metadata.managed_artifact_summary(tree)
-                    loaded.tool.inspect_tree(tree)
+                    loaded.roundtrip.inspect_tree(tree)
                     loaded.validation.validate_tree(tree)
-                    loaded.tool.compare_trees(tree, copy.deepcopy(tree))
+                    loaded.roundtrip.compare_trees(tree, copy.deepcopy(tree))
                 self.assertEqual(ET.tostring(tree.getroot()), before)
 
     def test_metadata_refresh_only_at_original_build_and_patch_sites(self) -> None:
         owners = []
-        for function in ast.parse(TOOL.read_text(encoding="utf-8")).body:
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            for node in ast.walk(function):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "refresh_managed_metadata":
-                    owners.append(function.name)
-        self.assertEqual(owners, ["build_tree", "patch_tree"])
+        for path in (TOOL, *sorted(CORE.glob("*.py"))):
+            for function in ast.parse(path.read_text(encoding="utf-8")).body:
+                if not isinstance(function, ast.FunctionDef):
+                    continue
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "refresh_managed_metadata":
+                        owners.append((path.name, function.name))
+        self.assertEqual(owners, [("build.py", "build_tree"), ("roundtrip.py", "patch_tree")])
+
+    def test_roundtrip_patch_and_declared_compare_keep_one_way_copy_boundary(self) -> None:
+        loaded = load_skill_modules(TOOL, module_name="roundtrip_copy_boundary")
+        before = loaded.build.build_tree(linear_spec(2))
+        after = copy.deepcopy(before)
+        changes = {"update_nodes": [{"id": "n1", "label": "Reviewed"}]}
+        changes_before = copy.deepcopy(changes)
+        before_bytes = ET.tostring(before.getroot())
+        with mock.patch.object(loaded.roundtrip, "compare_trees", side_effect=AssertionError("patch called compare")):
+            receipt = loaded.roundtrip.patch_tree(after, changes, False)
+        self.assertEqual(receipt["updated_nodes"], ["n1"])
+        after_bytes = ET.tostring(after.getroot())
+        real_patch = loaded.roundtrip.patch_tree
+        replayed = []
+
+        def replay(candidate, declaration, *, allow_geometry_updates):
+            self.assertIsNot(candidate, before)
+            self.assertIsNot(candidate, after)
+            original_elements = {id(element) for tree in (before, after) for element in tree.iter()}
+            self.assertTrue(original_elements.isdisjoint(id(element) for element in candidate.iter()))
+            self.assertEqual(ET.tostring(candidate.getroot()), before_bytes)
+            self.assertIs(declaration, changes)
+            self.assertIs(allow_geometry_updates, True)
+            replayed.append(candidate)
+            return real_patch(candidate, declaration, allow_geometry_updates=allow_geometry_updates)
+
+        with mock.patch.object(loaded.roundtrip, "patch_tree", side_effect=replay) as replay_mock:
+            compared = loaded.roundtrip.compare_trees(before, after, changes)
+        self.assertEqual(replay_mock.call_count, 1)
+        self.assertTrue(compared["preserved"])
+        self.assertEqual(ET.tostring(replayed[0].getroot()), after_bytes)
+        self.assertEqual(ET.tostring(before.getroot()), before_bytes)
+        self.assertEqual(ET.tostring(after.getroot()), after_bytes)
+        self.assertEqual(changes, changes_before)
+
+    def test_cli_has_no_roundtrip_function_reexports_and_readonly_paths_do_not_patch(self) -> None:
+        loaded = load_skill_modules(TOOL, module_name="roundtrip_cli_ownership")
+        for name in ("saved_edge_preservation_guard", "patch_tree", "allowed_missing_from_patch",
+                     "compare_trees", "inspect_tree", "_check_delivery_candidate"):
+            self.assertFalse(hasattr(loaded.tool, name), name)
+        tree = loaded.build.build_tree(linear_spec(2))
+        before = ET.tostring(tree.getroot())
+        with mock.patch.object(loaded.roundtrip, "patch_tree", side_effect=AssertionError("read-only patch")):
+            self.assertTrue(loaded.roundtrip.compare_trees(tree, copy.deepcopy(tree))["preserved"])
+            loaded.roundtrip.inspect_tree(tree)
+        self.assertEqual(ET.tostring(tree.getroot()), before)
 
     def test_metadata_distinguishes_missing_empty_malformed_and_wrong_type(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="metadata_values")
@@ -440,7 +571,7 @@ class CoreBoundaryTests(unittest.TestCase):
 
     def test_validation_module_does_not_call_document_or_metadata_mutators(self) -> None:
         loaded = load_skill_modules(TOOL, module_name="readonly_validation_module")
-        tree = loaded.tool.build_tree(linear_spec(2))
+        tree = loaded.build.build_tree(linear_spec(2))
         before = ET.tostring(tree.getroot())
         with ExitStack() as stack:
             for name in ("geometry", "set_style_option", "set_edge_points", "write_tree"):
@@ -464,7 +595,8 @@ class CoreBoundaryTests(unittest.TestCase):
                 path.relative_to(copied_skill).as_posix(): path.read_bytes()
                 for path in copied_skill.rglob("*.pyc")
             }
-            module_names = ("clearance", "contracts", "geometry", "document", "metadata", "sizing",
+            module_names = ("build", "construction", "spec_validation", "layout", "patch_operations", "roundtrip",
+                            "clearance", "contracts", "geometry", "document", "metadata", "sizing",
                             "routing_policy", "ports", "port_planner", "labels", "routing",
                             "routing_adapter", "validation")
             sentinel_names = ("swimlane_core", "swimlane_core.unrelated",
@@ -505,6 +637,12 @@ class CoreBoundaryTests(unittest.TestCase):
             self.assertIs(first.validation.metadata, first.metadata)
             self.assertIs(second.validation.routing, second.routing)
             self.assertIs(first.tool.document, first.document)
+            self.assertIs(first.tool.roundtrip, first.roundtrip)
+            self.assertIs(first.roundtrip.patch_operations, first.patch_operations)
+            self.assertIs(first.roundtrip.core_validation, first.validation)
+            self.assertIs(first.patch_operations.construction, first.construction)
+            self.assertIs(first.patch_operations.document, first.document)
+            self.assertIs(first.patch_operations.routing, first.routing)
             self.assertIs(first.metadata.document, first.document)
             self.assertIs(first.document.contracts, first.contracts)
             self.assertIs(second.metadata.document, second.document)

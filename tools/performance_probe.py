@@ -35,20 +35,21 @@ def check_limits(edges: int, timeout: float = 15) -> None:
         raise ValueError(f"timeout must be finite and between 0 (exclusive) and {MAX_TIMEOUT} seconds")
 
 
-def replay_label_overlaps(tool, geometry, tree) -> dict:
+def replay_label_overlaps(document, validation, geometry, tree) -> dict:
     """Time the three validation overlap loops without XML/diagnostic overhead.
 
     This is a separately executed microbenchmark, NOT a disjoint slice of the
     validation wall time. Preparation is outside the timed region.
     """
-    root = tool.document.graph_root(tree)
-    lanes, nodes = tool.document.lane_node_records(root, tool.document.find_pool(tree))
+    root = document.graph_root(tree)
+    pool = document.find_pool(tree)
+    lanes, nodes = document.lane_node_records(root, pool)
     bounds = [geometry.node_bounds_in_pool(node, lanes[node["lane"]]) for node in nodes.values()]
     segments, labels = {}, {}
-    for edge_id, cell in tool.document.edge_records(root).items():
-        points = tool.document.edge_polyline(cell, lanes, nodes)
+    for edge_id, cell in document.edge_records(root).items():
+        points = document.edge_polyline(cell, lanes, nodes)
         segments[edge_id] = list(zip(points, points[1:]))
-        label = tool.core_validation.effective_label_bounds(cell, points, {"lanes": lanes, "nodes": nodes, "pool": tool.document.find_pool(tree)})
+        label = validation.effective_label_bounds(cell, points, {"lanes": lanes, "nodes": nodes, "pool": pool})
         if label is not None:
             labels[edge_id] = label
     started = time.perf_counter()
@@ -73,18 +74,17 @@ def replay_label_overlaps(tool, geometry, tree) -> dict:
 def worker(edges: int) -> dict:
     check_limits(edges)
     loaded = load_skill_modules(TOOL, module_name="swimlane_probe")
-    tool = loaded.tool
     spec = linear_spec(edges)
     profiler = cProfile.Profile()
     profiler.enable()
     started = time.perf_counter()
-    tree = tool.build_tree(spec)
+    tree = loaded.build.build_tree(spec)
     built = time.perf_counter()
-    result = tool.core_validation.validate_tree(tree)
+    result = loaded.validation.validate_tree(tree)
     finished = time.perf_counter()
     profiler.disable()
     stats = pstats.Stats(profiler).stats
-    label_overlap = replay_label_overlaps(tool, loaded.geometry, tree)
+    label_overlap = replay_label_overlaps(loaded.document, loaded.validation, loaded.geometry, tree)
 
     def function_cost(name):
         entries = [data for (_, _, function), data in stats.items() if function == name]
