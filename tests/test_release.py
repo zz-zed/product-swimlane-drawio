@@ -523,7 +523,8 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(
             {alias.name for alias in core_imports[0].names},
             {
-                "build", "contracts", "document", "migration", "roundtrip", "validation",
+                "build", "context_workflow", "contracts", "document", "migration", "review_cycle", "review_workflow",
+                "roundtrip", "semantic_context", "validation",
             },
         )
         self.assertEqual(
@@ -532,7 +533,11 @@ class ReleasePackageTests(unittest.TestCase):
         )
         for module in ("clearance", "contracts", "geometry", "document", "metadata", "migration", "sizing",
                        "routing_policy", "ports", "port_planner", "labels", "routing",
-                       "routing_adapter", "construction", "build", "spec_validation", "layout", "validation"):
+                       "routing_adapter", "construction", "build", "spec_validation", "layout", "validation",
+                       "context_native", "pattern_rules", "group_rules", "semantic_context", "provenance",
+                       "context_bundle", "context_workflow", "preview_png", "review_evidence",
+                       "review_workflow", "review_preservation", "review_repair", "review_state",
+                       "review_cycle"):
             self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
             self.assertIn(f"| `{module}` |", architecture)
         self.assertIn("single-page process view", architecture)
@@ -1575,12 +1580,17 @@ class DiagramWorkflowTests(unittest.TestCase):
     def test_unexpected_exception_returns_stable_json_without_details(self) -> None:
         tool = load_tool_module()
 
+        def fail(_args):
+            raise RuntimeError("private implementation detail")
+
+        parsed = tool.build_parser().parse_args([
+            "build", "--spec", "unused-spec.json", "--output", "unused-output.drawio",
+        ])
+        parsed.func = fail
+
         class Parser:
             def parse_args(self):
-                def fail(_args):
-                    raise RuntimeError("private implementation detail")
-
-                return type("Args", (), {"func": staticmethod(fail)})()
+                return parsed
 
         stdout = io.StringIO()
         stderr = io.StringIO()

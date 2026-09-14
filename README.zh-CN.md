@@ -18,7 +18,7 @@
 
 生成过程不依赖 Draw.io MCP，也不要求安装 Draw.io 应用。只有需要可视化编辑或导出时，才需要 Draw.io Desktop 或 diagrams.net。
 
-**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [保守迁移](#保守元数据迁移) · [校验](#校验与输出可靠度) · [适用范围](#适用范围)
+**快速导航：** [为什么需要](#为什么需要这个-skill) · [完整示例](#查看完整示例) · [快速开始](#30-秒快速开始) · [安装](#安装) · [使用](#让-agent-生成或修改) · [增量修改](#编辑--检查--补丁) · [语义检查](#声明式语义检查) · [声明式来源记录](#声明式来源记录) · [视觉审阅证据](#视觉审阅证据) · [受权视觉修复](#受权视觉修复) · [保守迁移](#保守元数据迁移) · [校验](#校验与输出可靠度) · [适用范围](#适用范围)
 
 ## 为什么需要这个 Skill
 
@@ -160,6 +160,42 @@ Agent 可能会询问安装范围，并在运行命令前请求授权。
 标签校验和避让读取当前原生几何；文字框为估算，不支持的样式明确报告不可测并使 strict 失败。compare 包含受管 cell 的扩展子树、混合文本、空白和顺序；实际序列化候选须通过检查后才原子写入。原生导出、代理看图与真人验收分别记录。
 
 自动 build 和显式 reroute 会在最终校验前拒绝不可行或原生支持范围外的候选，非 strict 模式同样适用；空标签不再掩盖路径不支持。已有文件校验沿用命令和诊断严重级别约定，但保存的 v2/v3 跨泳道 automatic 回线不再要求目标泳道内的竖直走廊，因此警告及 strict 结果可能变化。同泳道回线检查及显式、已保存几何的保护保持。仅在 v3 中，同泳道向下的判断分支会在底部未被主路径保留时优先底出；显式端口仍优先。
+
+## 声明式语义检查
+
+对于受管的 v3 图，Agent 可以通过单独的上下文文件检查已明确声明的流程模式和 group 关系。这是显式启用的只读检查：不会根据标签或布局推断业务事实，不会改图，也不会自动修复不通过的关系。
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  validate --input process.drawio --context pattern-context.json --strict
+
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  inspect --input process.drawio --context pattern-context.json
+```
+
+当前契约检查已声明的 `linear`、`approval-loop`、`request-response`、`fork-join`、`fan-in`、`lifecycle` 和 `custom` scope，以及显式提供的 v3 group 合同：`parallel`、`branch`、`merge`、`exception`、`support`。同一个 branch outcome 可以触发多个已声明动作，检查器不会把同一 decision 的其他 outcome 推断成 group 成员。缺少必要声明会报告为 incomplete，结构矛盾会报告为 failed；未传 `--context` 的既有命令保持原有行为。可先运行虚构且中性的[语义上下文示例](examples/semantic-context/)，创建上下文文件前再阅读[语义上下文契约](skills/product-swimlane-drawio/references/semantic-context.md)。
+
+## 声明式来源记录
+
+显式上下文 bundle 还可以记录来源断言、事实，以及绑定到节点、连线或 decision-scoped outcome 字段的关系。这是一份本地声明记录：引擎不会打开来源引用、请求 URL、读取私密来源内容、核验外部摘要、认证 `asserted_by`，也不会判定 confirmed 事实为真。
+
+来源 `source_gate` 与模式/group 检查分开。它区分事实的声明状态和字段绑定是否仍为 current。覆盖全部对象只表示每个对象至少绑定了一个受支持字段，并不表示全部字段都已覆盖。语义补丁修改被绑定字段或来源 version/digest 时，会把受影响证据记为 stale；已证明的 geometry-only 重绑只绑定新的图文件字节，不会伪造确认。
+
+带来源的 build、patch 和符合条件的 migrate 会写入一个新目录，其中固定为 `diagram.drawio` 和 `context.json`；最后写入的 `completion.json` 才使 bundle 可读取。成员不可覆盖，但两份成员文件并非联合原子写入。读取来源上下文必须显式提供 completion manifest；更新后使用带上下文的 `compare` 独立核验记录保全。可先查看中性的[来源 bundle 示例](examples/provenance/)和完整的[来源契约](skills/product-swimlane-drawio/references/provenance.md)。
+
+## 视觉审阅证据
+
+`review prepare` 为受管 v3 图和可选 context 创建不可变快照。`review record` 再将外部提供的导出和审阅证据绑定到该快照，并写入独立的不可变包。两条命令都不会修改图或 context，不会运行导出器、调用模型、读取 URL，也不会创建修复候选。
+
+该包分别记录严格校验、预览导出、Agent 看图和人工审阅。导出成功不等于有人实际看图；格式正确的记录也可以如实保留 failed 或 not_available 的审阅状态。记录会校验受限 PNG 格式、字节、引用以及可选的原生坐标到像素的校准，但这些检查不证明图像由该图导出，也不证明像素内容被理解。
+
+两项操作都只写入新目录，并以最后写入的 manifest 标记完成。审阅建议只是观察，不能授权修改。准备证据前请阅读[视觉审阅证据契约](skills/product-swimlane-drawio/references/visual-review.md)。
+
+## 受权视觉修复
+
+对已明确授权的边标签或自动路由问题，Skill 可以基于不可变的 prepared 和 record 包构造受限候选，再绑定候选的新证据，并对受保护 XML、严格与语义检查、来源保全、已声明的审阅覆盖和原生前后指标进行 assessment。它不会修改原图，报告建议或 `automatic` 标记也不能授予权限。完成的 assessment 会明确给出 `accepted`、`rejected` 或 `stopped`；不能仅凭退出码判断接受。
+
+整个流程中的来源断言仍是声明。对于纯几何候选，可以保全 source gate 为 incomplete；但 pending、unresolved、stale 或仅声明的事实不会因此变成 confirmed。完整参数和回执说明见自包含的[视觉修复契约](skills/product-swimlane-drawio/references/visual-repair.md)。
 
 ## 保守元数据迁移
 

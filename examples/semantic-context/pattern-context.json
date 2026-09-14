@@ -1,0 +1,23 @@
+{
+  "context_version": 1,
+  "artifact": {
+    "sha256": "00cf8cb5cf2a1d92f09ff07df282784c982764e570ae53fa2d6509104dc01ffc",
+    "schema_version": "3",
+    "model_hash_version": "1",
+    "model_hash": "d733142af734be091363f95b60551f02cff14cc74c6e09d76ea145a02d69cc92"
+  },
+  "patterns": {
+    "version": 1,
+    "scopes": [
+      {
+        "id": "primary",
+        "role": "primary",
+        "pattern": "linear",
+        "nodes": ["start", "finish"],
+        "edges": ["next"],
+        "excluded_edges": [],
+        "declarations": {"entry": "start", "exit": "finish"}
+      }
+    ]
+  }
+}

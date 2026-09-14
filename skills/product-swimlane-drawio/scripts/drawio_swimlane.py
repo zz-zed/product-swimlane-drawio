@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from swimlane_core import build, contracts, document, migration, roundtrip, validation as core_validation
+from swimlane_core import build, context_workflow, contracts, document, migration, review_cycle, review_workflow, roundtrip, semantic_context, validation as core_validation
 
 
 def load_json(path: Path) -> dict:
@@ -148,9 +148,18 @@ def command_patch(args: argparse.Namespace) -> None:
 
 
 def command_validate(args: argparse.Namespace) -> None:
-    result = core_validation.validate_tree(document.read_tree(args.input))
+    if getattr(args, "context", None) is not None:
+        loaded = semantic_context.load_context(args.context)
+        tree, receipt = semantic_context.read_artifact(args.input)
+        result = core_validation.validate_tree(tree)
+        result["semantic_context"] = semantic_context.assess_context(
+            loaded, tree, receipt["sha256"], result, strict=args.strict,
+        )
+    else:
+        result = core_validation.validate_tree(document.read_tree(args.input))
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if not result["valid"] or (args.strict and result["warnings"]):
+    if (not result["valid"] or (args.strict and result["warnings"])
+            or result.get("semantic_context", {}).get("gate") in {"failed", "incomplete"}):
         raise SystemExit(1)
 
 
@@ -169,8 +178,17 @@ def command_compare(args: argparse.Namespace) -> None:
 
 
 def command_inspect(args: argparse.Namespace) -> None:
-    result = roundtrip.inspect_tree(document.read_tree(args.input))
-    result["input"] = document.file_receipt(args.input)
+    if getattr(args, "context", None) is not None:
+        loaded = semantic_context.load_context(args.context)
+        tree, receipt = semantic_context.read_artifact(args.input)
+        result = roundtrip.inspect_tree(tree)
+        result["input"] = receipt
+        result["semantic_context"] = semantic_context.assess_context(
+            loaded, tree, receipt["sha256"], result["validation"],
+        )
+    else:
+        result = roundtrip.inspect_tree(document.read_tree(args.input))
+        result["input"] = document.file_receipt(args.input)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -197,6 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not write output when quality warnings are present",
     )
     build.add_argument("--force", action="store_true", help="Replace an existing output file")
+    build.add_argument("--context", type=Path, help="Bind an explicit unbound context template to a new bundle")
+    build.add_argument("--context-output", type=Path, help="New bundle context.json path")
+    build.add_argument("--completion-manifest", type=Path, help="New bundle completion.json path")
     build.set_defaults(func=command_build)
 
     patch = subparsers.add_parser("patch", help="Incrementally patch an existing generated Draw.io file")
@@ -219,11 +240,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebaseline reviewed semantic edits when the stored model hash differs",
     )
     patch.add_argument("--force", action="store_true", help="Replace an existing output file")
+    patch.add_argument("--context", type=Path, help="Explicit bound context or first provenance initialization template")
+    patch.add_argument("--context-changes", type=Path, help="Declared context transition with both original input digests")
+    patch.add_argument("--expected-context-sha256", help="Reviewed raw context SHA-256")
+    patch.add_argument("--input-completion-manifest", type=Path, help="Existing input bundle completion.json")
+    patch.add_argument("--context-output", type=Path, help="New bundle context.json path")
+    patch.add_argument("--completion-manifest", type=Path, help="New bundle completion.json path")
     patch.set_defaults(func=command_patch)
 
     validate = subparsers.add_parser("validate", help="Validate structure and visual routing heuristics")
     validate.add_argument("--input", type=Path, required=True)
+    validate.add_argument("--context", type=Path, help="Check an explicitly supplied semantic context")
     validate.add_argument("--strict", action="store_true", help="Fail when quality warnings are present")
+    validate.add_argument("--completion-manifest", type=Path, help="Verify the explicitly supplied context bundle")
     validate.set_defaults(func=command_validate)
 
     compare = subparsers.add_parser("compare", help="Prove that all existing semantic cells were preserved")
@@ -233,10 +262,17 @@ def build_parser() -> argparse.ArgumentParser:
     comparison_mode.add_argument("--changes", type=Path, help="Allow cells named in a patch file to change")
     comparison_mode.add_argument("--migration", action="store_true",
                                  help="Require the exact same-schema metadata migration plan")
+    compare.add_argument("--before-context", type=Path)
+    compare.add_argument("--after-context", type=Path)
+    compare.add_argument("--context-changes", type=Path)
+    compare.add_argument("--before-completion-manifest", type=Path)
+    compare.add_argument("--after-completion-manifest", type=Path)
     compare.set_defaults(func=command_compare)
 
     inspect = subparsers.add_parser("inspect", help="Inspect compatible semantic metadata and geometry")
     inspect.add_argument("--input", type=Path, required=True)
+    inspect.add_argument("--context", type=Path, help="Inspect an explicitly supplied semantic context")
+    inspect.add_argument("--completion-manifest", type=Path, help="Verify the explicitly supplied context bundle")
     inspect.set_defaults(func=command_inspect)
 
     migrate = subparsers.add_parser("migrate", help="Plan conservative same-schema metadata repair")
@@ -246,13 +282,60 @@ def build_parser() -> argparse.ArgumentParser:
     destination.add_argument("--output", type=Path)
     migrate.add_argument("--expected-input-sha256")
     migrate.add_argument("--accept-unverified-baseline", action="store_true")
+    migrate.add_argument("--context", type=Path, help="Explicit original context for exact metadata-only rebinding")
+    migrate.add_argument("--context-changes", type=Path)
+    migrate.add_argument("--expected-context-sha256")
+    migrate.add_argument("--input-completion-manifest", type=Path)
+    migrate.add_argument("--context-output", type=Path)
+    migrate.add_argument("--completion-manifest", type=Path)
     migrate.set_defaults(func=command_migrate)
+    review = subparsers.add_parser("review", help="Prepare or record explicit immutable visual evidence")
+    review.add_argument("action", help="prepare, record, plan, repair, or assess")
+    for name in ("input", "context", "input-completion-manifest", "output", "prepared", "evidence-dir", "report"):
+        review.add_argument("--" + name, type=Path)
+    for name in ("expected-input-sha256", "expected-context-sha256", "expected-prepared-sha256", "expected-report-sha256"):
+        review.add_argument("--" + name)
+    for name in ("plan", "authorization", "parent-prepared", "parent-record", "parent-assessment", "candidate", "candidate-prepared",
+                 "before", "before-context", "before-completion-manifest", "resolutions", "record"):
+        review.add_argument("--" + name, type=Path)
+    for name in ("expected-plan-sha256", "expected-authorization-sha256", "expected-parent-prepared-sha256", "expected-parent-record-sha256",
+                 "expected-assessment-sha256", "expected-candidate-sha256", "expected-candidate-prepared-sha256", "expected-before-sha256",
+                 "expected-before-context-sha256", "expected-resolutions-sha256", "expected-record-sha256", "claim-sha256", "stop-reason"):
+        review.add_argument("--" + name)
+    review.add_argument("--attempt", type=int)
     return parser
 
 
 def main() -> int:
     try:
         args = build_parser().parse_args()
+        if args.command == "review":
+            use_cycle = args.action in {"plan", "repair", "assess"} or args.candidate is not None
+            if args.action == "record" and args.prepared is not None:
+                use_cycle = review_workflow.review_read_json(args.prepared)[0].get("review_bundle_version") == 2
+            if not use_cycle and any(getattr(args, key, None) is not None for key in (
+                    "plan", "authorization", "parent_prepared", "parent_record", "parent_assessment", "candidate_prepared", "before", "before_context",
+                    "before_completion_manifest", "resolutions", "record", "expected_plan_sha256", "expected_authorization_sha256", "expected_parent_prepared_sha256",
+                    "expected_parent_record_sha256", "expected_assessment_sha256", "expected_candidate_sha256", "expected_candidate_prepared_sha256",
+                    "expected_before_sha256", "expected_before_context_sha256", "expected_resolutions_sha256", "expected_record_sha256", "claim_sha256", "stop_reason", "attempt")):
+                raise contracts.DiagramError("Cycle arguments require an explicit cycle operation", code="input/invalid")
+            result, exit_code = review_cycle.run_review_cycle(args) if use_cycle else review_workflow.run_review_workflow(args)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return exit_code
+        context_options = ("context_output", "completion_manifest", "input_completion_manifest",
+                           "context_changes", "expected_context_sha256", "before_context", "after_context",
+                           "before_completion_manifest", "after_completion_manifest")
+        use_context = any(getattr(args, option, None) is not None for option in context_options)
+        if args.command in {"build", "patch", "migrate"}:
+            use_context = use_context or args.context is not None
+        elif args.command in {"inspect", "validate"} and args.context is not None:
+            use_context = use_context or "provenance" in semantic_context.load_context(args.context).data
+        if use_context:
+            if args.command != "compare" and args.context is None:
+                raise contracts.DiagramError("Context bundle options require an explicit --context", code="input/invalid")
+            result, exit_code = context_workflow.run_context_workflow(args)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return exit_code
         args.func(args)
         return 0
     except contracts.DiagramError as exc:
@@ -260,6 +343,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
+                    **({"operation": "review", "action": args.action} if "args" in locals() and args.command == "review" else {}),
                     "valid": False,
                     "errors": [str(exc)],
                     "warnings": [],
@@ -284,6 +368,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
+                    **({"operation": "review", "action": args.action} if "args" in locals() and args.command == "review" else {}),
                     "valid": False,
                     "errors": [str(exc)],
                     "warnings": [],
@@ -307,6 +392,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
+                    **({"operation": "review", "action": args.action} if "args" in locals() and args.command == "review" else {}),
                     "valid": False,
                     "errors": [message],
                     "warnings": [],

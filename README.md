@@ -18,7 +18,7 @@
 
 Generation requires neither Draw.io MCP nor the Draw.io application. Draw.io Desktop or diagrams.net is only needed when you want to visually edit or export the result.
 
-**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Conservative migration](#conservative-metadata-migration) · [Validation](#validation-and-reliability) · [Scope](#supported-scope)
+**Quick navigation:** [Why this exists](#why-this-exists) · [Example](#see-it-in-action) · [Quick start](#30-second-quick-start) · [Install](#install) · [Use](#ask-an-agent) · [Incremental editing](#edit--inspect--patch) · [Semantic checks](#declared-semantic-checks) · [Declared provenance](#declared-provenance) · [Visual review evidence](#visual-review-evidence) · [Authorized visual repair](#authorized-visual-repair) · [Conservative migration](#conservative-metadata-migration) · [Validation](#validation-and-reliability) · [Scope](#supported-scope)
 
 ## Why this exists
 
@@ -156,6 +156,78 @@ Safe patching depends on semantic metadata, a matching semantic-model hash, stab
 Automatic build and explicit reroute reject infeasible or unsupported native candidates before final validation, including without `--strict`; an empty label does not hide an unsupported path. Saved-file commands and diagnostic severity conventions remain, but a saved v2 or v3 automatic cross-lane return no longer needs a vertical corridor inside the target lane, so its warnings or strict result can change. Same-lane return checks and explicit or saved geometry remain protected. In v3 only, a same-lane downward decision branch prefers a bottom exit when that bottom is not reserved by the main path; explicit ports still win.
 
 Use the same tool version for a patch and its comparison. In 0.6.0, reviewing a patch already completed by 0.5.1 may fail solely because its producing-tool stamp differs; this does not mean the diagram was damaged. Editing a supported old input with the current tool and comparing with that same version is the normal workflow. A failed comparison is not waived, and read-only review must not rewrite stamps or automatically patch/rebuild files. See the [compatibility matrix](skills/product-swimlane-drawio/references/schema.md#compatibility).
+
+## Declared semantic checks
+
+For a managed v3 diagram, an agent can validate explicitly declared process patterns and group relationships with a separate context file. This is an opt-in, read-only check; it does not infer business facts from labels or layout, change the diagram, or repair a failed relationship.
+
+```bash
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  validate --input process.drawio --context pattern-context.json --strict
+
+python3 skills/product-swimlane-drawio/scripts/drawio_swimlane.py \
+  inspect --input process.drawio --context pattern-context.json
+```
+
+The current contract checks declared `linear`, `approval-loop`, `request-response`, `fork-join`, `fan-in`, `lifecycle`, and `custom` scopes, plus opt-in v3 group contracts for `parallel`, `branch`, `merge`, `exception`, and `support`. A branch outcome may trigger multiple declared actions; the checker does not infer that every other decision outcome belongs to the group. A missing declaration is reported as incomplete; a contradiction is reported as failed. Existing commands without `--context` retain their normal behavior. Start with the fictional [semantic context examples](examples/semantic-context/) and read the [semantic context contract](skills/product-swimlane-drawio/references/semantic-context.md) before creating a context file.
+
+## Declared provenance
+
+An explicit context bundle can also record fictional or real-world source
+assertions, facts, and bindings to node, edge, or decision-scoped outcome
+fields. It is a local declaration ledger: the engine does not open a source
+reference, fetch a URL, read private source material, verify an external digest,
+authenticate `asserted_by`, or establish that a confirmed statement is true.
+
+The provenance `source_gate` is separate from semantic pattern/group checks.
+It distinguishes a fact's declared status from whether its field binding is
+current. Coverage of every object means at least one supported field is bound;
+it does not mean every field is covered. A semantic patch that changes a bound
+field or a source version/digest records affected evidence as stale. A proven
+geometry-only rebind can bind new diagram bytes without inventing confirmation.
+
+Build, provenance-aware patch, and eligible provenance-aware migration write a
+new directory containing fixed `diagram.drawio` and `context.json` members;
+`completion.json` is written last and makes the bundle readable. The members
+are immutable but not a joint atomic write. Read a provenance context only with
+its explicit completion manifest, and use context-aware `compare` to prove
+record preservation across an update. See the neutral [provenance bundle
+example](examples/provenance/) and the full [provenance contract](skills/product-swimlane-drawio/references/provenance.md).
+
+## Visual review evidence
+
+`review prepare` creates an immutable snapshot of a managed v3 diagram and its
+optional context. `review record` then binds externally supplied export and
+review evidence to that exact snapshot in a separate immutable package. Neither
+command changes the diagram or context, runs an exporter, invokes a model,
+reads a URL, or creates a repair candidate.
+
+The package distinguishes strict validation, preview export, agent image review,
+and human review. A successful export is not proof that anyone viewed the
+image, and a format-valid record can honestly retain a failed or unavailable
+review. The record validates a bounded PNG subset, bytes, references, and an
+optional native-coordinate-to-pixel calibration; those checks do not establish
+that the image came from the diagram or that pixels were understood.
+
+Both operations write only a new directory and make it complete with a final
+manifest. Review suggestions remain observations and do not authorize changes.
+Read the [visual review evidence contract](skills/product-swimlane-drawio/references/visual-review.md) before preparing evidence.
+
+## Authorized visual repair
+
+For an explicitly authorized edge-label or automatic-route issue, the Skill can
+create a bounded candidate from immutable prepared and record packages, then
+bind fresh candidate evidence and assess it against protected XML, strict and
+semantic checks, source preservation, declared review coverage, and native
+before/after metrics. It never changes the original diagram, and a report
+suggestion or `automatic` marker never grants authorization. A completed
+assessment distinguishes `accepted`, `rejected`, and `stopped`; its exit code
+alone is not an acceptance signal.
+
+Source assertions remain declarations throughout this workflow. An incomplete
+source gate can be preserved for a geometry-only candidate, but a pending,
+unresolved, stale, or merely declared fact does not become confirmed. See the
+self-contained [visual-repair contract](skills/product-swimlane-drawio/references/visual-repair.md).
 
 ## Conservative metadata migration
 

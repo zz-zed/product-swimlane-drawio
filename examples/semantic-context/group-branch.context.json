@@ -1,0 +1,39 @@
+{
+  "context_version": 1,
+  "artifact": {
+    "sha256": "f8a1bec748d0efbfe40eea14bc292428a869307f62d56f39222abc662f014788",
+    "schema_version": "3",
+    "model_hash_version": "1",
+    "model_hash": "1429e45d31161bd0a055dc6e32cbc9f356629391786d51be600102824526853b"
+  },
+  "patterns": {
+    "version": 1,
+    "scopes": [
+      {
+        "id": "primary",
+        "role": "primary",
+        "pattern": "custom",
+        "nodes": ["start", "decision", "record", "declined", "notify", "approved-end"],
+        "edges": ["start-decision", "decision-record", "decision-notify", "decision-declined", "record-finish", "notify-finish"],
+        "excluded_edges": [],
+        "declarations": {}
+      }
+    ]
+  },
+  "group_contracts": {
+    "version": 1,
+    "groups": [
+      {
+        "group_id": "approval-actions",
+        "scope_id": "primary",
+        "declarations": {
+          "decision": "decision",
+          "branches": [
+            {"entry_edge": "decision-record", "outcome": "approved", "member": "record", "path": []},
+            {"entry_edge": "decision-notify", "outcome": "approved", "member": "notify", "path": []}
+          ]
+        }
+      }
+    ]
+  }
+}

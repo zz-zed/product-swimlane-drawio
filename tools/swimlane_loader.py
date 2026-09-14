@@ -42,6 +42,20 @@ class LoadedSkill:
     spec_validation: ModuleType
     layout: ModuleType
     validation: ModuleType
+    pattern_rules: ModuleType
+    group_rules: ModuleType
+    context_native: ModuleType
+    semantic_context: ModuleType
+    provenance: ModuleType
+    context_bundle: ModuleType
+    context_workflow: ModuleType
+    preview_png: ModuleType
+    review_evidence: ModuleType
+    review_workflow: ModuleType
+    review_preservation: ModuleType
+    review_repair: ModuleType
+    review_state: ModuleType
+    review_cycle: ModuleType
 
 
 def _package_modules() -> dict[str, ModuleType]:
@@ -84,6 +98,20 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
         spec_validation = importlib.import_module("swimlane_core.spec_validation")
         layout = importlib.import_module("swimlane_core.layout")
         validation = importlib.import_module("swimlane_core.validation")
+        pattern_rules = importlib.import_module("swimlane_core.pattern_rules")
+        group_rules = importlib.import_module("swimlane_core.group_rules")
+        context_native = importlib.import_module("swimlane_core.context_native")
+        semantic_context = importlib.import_module("swimlane_core.semantic_context")
+        provenance = importlib.import_module("swimlane_core.provenance")
+        context_bundle = importlib.import_module("swimlane_core.context_bundle")
+        context_workflow = importlib.import_module("swimlane_core.context_workflow")
+        preview_png = importlib.import_module("swimlane_core.preview_png")
+        review_evidence = importlib.import_module("swimlane_core.review_evidence")
+        review_workflow = importlib.import_module("swimlane_core.review_workflow")
+        review_preservation = importlib.import_module("swimlane_core.review_preservation")
+        review_repair = importlib.import_module("swimlane_core.review_repair")
+        review_state = importlib.import_module("swimlane_core.review_state")
+        review_cycle = importlib.import_module("swimlane_core.review_cycle")
         spec = importlib.util.spec_from_file_location(module_name, tool_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to load swimlane tool: {tool_path}")
@@ -97,7 +125,14 @@ def load_skill_modules(tool_path: Path, *, module_name: str) -> LoadedSkill:
                            patch_operations=patch_operations, roundtrip=roundtrip,
                            routing=routing, routing_adapter=routing_adapter,
                            spec_validation=spec_validation, layout=layout,
-                           validation=validation)
+                           validation=validation, pattern_rules=pattern_rules,
+                           group_rules=group_rules, context_native=context_native,
+                           semantic_context=semantic_context, provenance=provenance,
+                           context_bundle=context_bundle, context_workflow=context_workflow,
+                           preview_png=preview_png,
+                           review_evidence=review_evidence, review_workflow=review_workflow,
+                           review_preservation=review_preservation, review_repair=review_repair,
+                           review_state=review_state, review_cycle=review_cycle)
     finally:
         for name in list(_package_modules()):
             sys.modules.pop(name, None)

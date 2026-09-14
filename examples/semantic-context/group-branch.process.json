@@ -1,0 +1,28 @@
+{
+  "schema_version": "3",
+  "title": "Neutral branch group",
+  "behavior_pattern": "custom",
+  "lanes": [
+    {"id": "lane", "label": "Owner"}
+  ],
+  "nodes": [
+    {"id": "start", "lane": "lane", "rank": 1, "type": "start", "label": ""},
+    {"id": "decision", "lane": "lane", "rank": 2, "type": "decision", "label": "Choose"},
+    {"id": "record", "lane": "lane", "rank": 3, "slot": "left", "type": "process", "label": "Record"},
+    {"id": "declined", "lane": "lane", "rank": 3, "slot": "main", "type": "end", "label": ""},
+    {"id": "notify", "lane": "lane", "rank": 3, "slot": "right", "type": "process", "label": "Notify"},
+    {"id": "approved-end", "lane": "lane", "rank": 4, "type": "end", "label": ""}
+  ],
+  "edges": [
+    {"id": "start-decision", "from": "start", "to": "decision", "flow_role": "main"},
+    {"id": "decision-record", "from": "decision", "to": "record", "branch": "positive", "outcome": "approved", "flow_role": "branch"},
+    {"id": "decision-notify", "from": "decision", "to": "notify", "branch": "positive", "outcome": "approved", "flow_role": "branch"},
+    {"id": "decision-declined", "from": "decision", "to": "declined", "branch": "negative", "outcome": "declined", "flow_role": "branch"},
+    {"id": "record-finish", "from": "record", "to": "approved-end", "flow_role": "main"},
+    {"id": "notify-finish", "from": "notify", "to": "approved-end", "flow_role": "join"}
+  ],
+  "main_path": ["start", "decision", "record", "approved-end"],
+  "groups": [
+    {"id": "approval-actions", "lane": "lane", "kind": "branch", "nodes": ["decision", "record", "notify"]}
+  ]
+}

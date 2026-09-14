@@ -23,6 +23,32 @@ Strict checks, native preview export, later agent image inspection, and human
 review remain separate. A numeric model or exported image alone is not a visual
 review or an interactive editor round trip.
 
+`review prepare` and `review record` preserve these distinctions in immutable
+packages for one exact managed v3 artifact. Prepare records the original diagram,
+optional context, strict result, and native object index without exporting or
+changing either input. Record validates and copies an externally supplied report,
+PNG, and export logs, then stores a receipt with four independent states: strict
+validation, preview export, agent image review, and human review. A record can
+be format-valid while a review is failed, not run, or unavailable; its success
+does not convert those states into a visual pass.
+
+The opt-in visual-repair cycle is separate from this read-only evidence path.
+It requires an explicit edge-level authorization, SHA-bound plan and candidate,
+fresh candidate review record, and an assessment receipt. The immutable claim
+is consumed before candidate output, with at most two attempts. Assessment
+records `accepted`, `rejected`, or `stopped`; exit zero alone is not acceptance.
+It preserves source/fact/binding/history state during a geometry-only candidate:
+an incomplete or pending source declaration is not automatically confirmed.
+The original artifact remains separate from `last_accepted` and `last_good`
+digest references.
+
+PNG structure, byte identity, and an optional calibrated coordinate mapping are
+bounded input checks. They do not prove image origin, pixel interpretation,
+exporter invocation, or reviewer identity. The record receipt therefore marks
+its external data as declared evidence. The read-only record alone cannot
+authorize a repair; an authorized repair needs separate candidate and
+assessment packages.
+
 The existing cross-version completed-patch limitation remains; no entire pool
 attribute set, diagnostic set or receipt is waived to force equivalence.
 

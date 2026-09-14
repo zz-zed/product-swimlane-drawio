@@ -233,6 +233,20 @@ class CoreBoundaryTests(unittest.TestCase):
         spec_validation = ast.parse((CORE / "spec_validation.py").read_text(encoding="utf-8"))
         layout = ast.parse((CORE / "layout.py").read_text(encoding="utf-8"))
         validation = ast.parse((CORE / "validation.py").read_text(encoding="utf-8"))
+        pattern_rules = ast.parse((CORE / "pattern_rules.py").read_text(encoding="utf-8"))
+        group_rules = ast.parse((CORE / "group_rules.py").read_text(encoding="utf-8"))
+        context_native = ast.parse((CORE / "context_native.py").read_text(encoding="utf-8"))
+        semantic_context = ast.parse((CORE / "semantic_context.py").read_text(encoding="utf-8"))
+        provenance = ast.parse((CORE / "provenance.py").read_text(encoding="utf-8"))
+        context_bundle = ast.parse((CORE / "context_bundle.py").read_text(encoding="utf-8"))
+        context_workflow = ast.parse((CORE / "context_workflow.py").read_text(encoding="utf-8"))
+        preview_png = ast.parse((CORE / "preview_png.py").read_text(encoding="utf-8"))
+        review_evidence = ast.parse((CORE / "review_evidence.py").read_text(encoding="utf-8"))
+        review_workflow = ast.parse((CORE / "review_workflow.py").read_text(encoding="utf-8"))
+        review_preservation = ast.parse((CORE / "review_preservation.py").read_text(encoding="utf-8"))
+        review_repair = ast.parse((CORE / "review_repair.py").read_text(encoding="utf-8"))
+        review_state = ast.parse((CORE / "review_state.py").read_text(encoding="utf-8"))
+        review_cycle = ast.parse((CORE / "review_cycle.py").read_text(encoding="utf-8"))
         assert_only_allowed_imports(validation, {
             "json", "xml.etree.ElementTree", "swimlane_core.contracts",
             "swimlane_core.clearance",
@@ -304,6 +318,72 @@ class CoreBoundaryTests(unittest.TestCase):
             "xml.etree.ElementTree", "xml.parsers", "swimlane_core.contracts",
             "swimlane_core.document", "swimlane_core.metadata", "swimlane_core.routing_policy",
             "swimlane_core.spec_validation", "swimlane_core.validation",
+        })
+        assert_only_allowed_imports(pattern_rules, {"collections"})
+        assert_only_allowed_imports(group_rules, {
+            "swimlane_core.contracts", "swimlane_core.pattern_rules",
+        })
+        assert_only_allowed_imports(context_native, {
+            "json", "math", "re", "xml.etree.ElementTree", "xml.parsers",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.metadata",
+        })
+        assert_only_allowed_imports(semantic_context, {
+            "dataclasses", "hashlib", "json", "math", "pathlib", "re",
+            "swimlane_core.contracts", "swimlane_core.context_native",
+            "swimlane_core.group_rules", "swimlane_core.pattern_rules",
+            "swimlane_core.provenance",
+        })
+        assert_only_allowed_imports(provenance, {
+            "copy", "re", "urllib.parse", "swimlane_core.contracts",
+        })
+        assert_only_allowed_imports(context_bundle, {
+            "dataclasses", "hashlib", "json", "os", "pathlib", "stat",
+            "swimlane_core.contracts", "swimlane_core.semantic_context",
+        })
+        assert_only_allowed_imports(context_workflow, {
+            "copy", "json", "xml.etree.ElementTree", "swimlane_core.build",
+            "swimlane_core.context_bundle", "swimlane_core.context_native",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.metadata",
+            "swimlane_core.migration", "swimlane_core.provenance", "swimlane_core.roundtrip",
+            "swimlane_core.semantic_context", "swimlane_core.validation",
+        })
+        assert_only_allowed_imports(preview_png, {
+            "binascii", "hashlib", "struct", "zlib", "swimlane_core.contracts",
+        })
+        assert_only_allowed_imports(review_evidence, {
+            "copy", "math", "re", "swimlane_core.contracts", "swimlane_core.document",
+        })
+        assert_only_allowed_imports(review_workflow, {
+            "json", "os", "uuid", "swimlane_core.context_bundle", "swimlane_core.context_native",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.preview_png",
+            "swimlane_core.review_evidence", "swimlane_core.semantic_context",
+            "swimlane_core.validation",
+        })
+        assert_only_allowed_imports(review_preservation, {
+            "copy", "xml.etree.ElementTree", "xml.parsers", "swimlane_core.clearance",
+            "swimlane_core.context_native", "swimlane_core.contracts", "swimlane_core.document",
+            "swimlane_core.geometry", "swimlane_core.labels", "swimlane_core.migration",
+            "swimlane_core.review_evidence",
+        })
+        assert_only_allowed_imports(review_repair, {
+            "copy", "xml.etree.ElementTree", "swimlane_core.context_native",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.geometry",
+            "swimlane_core.review_preservation", "swimlane_core.routing",
+            "swimlane_core.routing_adapter", "swimlane_core.validation",
+        })
+        assert_only_allowed_imports(review_state, {
+            "os", "stat", "uuid", "swimlane_core.context_bundle",
+            "swimlane_core.contracts", "swimlane_core.preview_png",
+            "swimlane_core.review_evidence", "swimlane_core.review_workflow",
+            "swimlane_core.semantic_context",
+        })
+        assert_only_allowed_imports(review_cycle, {
+            "copy", "swimlane_core.context_bundle", "swimlane_core.context_native",
+            "swimlane_core.contracts", "swimlane_core.document", "swimlane_core.preview_png",
+            "swimlane_core.provenance", "swimlane_core.review_evidence",
+            "swimlane_core.review_preservation", "swimlane_core.review_repair",
+            "swimlane_core.review_state", "swimlane_core.review_workflow",
+            "swimlane_core.semantic_context", "swimlane_core.validation",
         })
         expected = {"node_bounds_in_pool", "port_xy", "port_point", "compact_points", "remove_collinear_points", "segment_length", "polyline_length", "bend_count", "bounds_overlap", "segment_axis", "value_between", "segment_crosses_bounds", "segment_intersects_box", "segments_conflict"}
         geometry_functions = {node.name for node in geometry.body if isinstance(node, ast.FunctionDef)}
@@ -605,7 +685,10 @@ class CoreBoundaryTests(unittest.TestCase):
             module_names = ("build", "construction", "spec_validation", "layout", "patch_operations", "roundtrip",
                             "clearance", "contracts", "geometry", "document", "metadata", "sizing",
                             "routing_policy", "ports", "port_planner", "labels", "routing",
-                            "routing_adapter", "validation")
+                            "routing_adapter", "validation", "pattern_rules", "group_rules",
+                            "context_native", "semantic_context", "provenance", "context_bundle",
+                            "context_workflow", "preview_png", "review_evidence", "review_workflow",
+                            "review_preservation", "review_repair", "review_state", "review_cycle")
             sentinel_names = ("swimlane_core", "swimlane_core.unrelated",
                               *(f"swimlane_core.{name}" for name in module_names))
             sentinels = {name: ModuleType(name) for name in sentinel_names}

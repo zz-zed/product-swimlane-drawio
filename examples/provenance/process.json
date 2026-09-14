@@ -1,0 +1,16 @@
+{
+  "schema_version": "3",
+  "title": "Neutral provenance",
+  "behavior_pattern": "linear",
+  "lanes": [
+    {"id": "lane", "label": "Owner"}
+  ],
+  "nodes": [
+    {"id": "start", "lane": "lane", "rank": 1, "type": "start", "label": ""},
+    {"id": "finish", "lane": "lane", "rank": 2, "type": "end", "label": ""}
+  ],
+  "edges": [
+    {"id": "next", "from": "start", "to": "finish", "type": "flow", "flow_role": "main"}
+  ],
+  "main_path": ["start", "finish"]
+}

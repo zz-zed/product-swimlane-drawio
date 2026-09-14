@@ -13,7 +13,17 @@ import subprocess
 SKILL_PREFIX = "skills/product-swimlane-drawio"
 EXPECTED_SKILL_FILES = frozenset({
     "SKILL.md", "agents/openai.yaml", "references/schema.json",
-    "references/schema.md", "scripts/drawio_swimlane.py",
+    "references/schema.md", "references/semantic-context.md", "references/provenance.md", "scripts/drawio_swimlane.py",
+    "scripts/swimlane_core/context_native.py", "scripts/swimlane_core/pattern_rules.py",
+    "scripts/swimlane_core/semantic_context.py",
+    "scripts/swimlane_core/group_rules.py",
+    "scripts/swimlane_core/provenance.py", "scripts/swimlane_core/context_bundle.py",
+    "scripts/swimlane_core/context_workflow.py",
+    "references/visual-review.md", "scripts/swimlane_core/preview_png.py",
+    "scripts/swimlane_core/review_evidence.py", "scripts/swimlane_core/review_workflow.py",
+    "references/visual-repair.md", "scripts/swimlane_core/review_state.py",
+    "scripts/swimlane_core/review_cycle.py",
+    "scripts/swimlane_core/review_repair.py", "scripts/swimlane_core/review_preservation.py",
     "scripts/swimlane_core/__init__.py", "scripts/swimlane_core/clearance.py",
     "scripts/swimlane_core/build.py", "scripts/swimlane_core/construction.py",
     "scripts/swimlane_core/contracts.py",

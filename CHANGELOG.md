@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Added
+
+- Add opt-in, read-only semantic-context checks to `validate` and `inspect` for explicitly declared patterns on managed v3 diagrams. The context binds to the input bytes and existing semantic-model identity; legacy inputs and unsupported components are refused rather than inferred or migrated.
+- Document the seven declared pattern contracts, scope coverage, structured legal exceptions, context resource limits, and the separation between incomplete declarations and detected contradictions.
+- Add optional v3 group-contract checks for declared parallel, branch, merge, exception, and support relationships. Group topology coverage, reference-only assessments, and pattern coverage remain separate in the receipt.
+- Add opt-in provenance context bundles for declared sources, facts, and field bindings. Bundle readers verify an explicit completion manifest; source declaration coverage and binding validity remain separate from pattern/group gates and external confirmation is reported as declaration-only.
+- Add context-aware build, patch, compare, and eligible migration delivery paths with raw context SHA preconditions, no-clobber bundle members, and a final completion manifest. Existing commands without context options retain their defaults.
+- Add opt-in `review prepare` and `review record` evidence packages for a managed v3 diagram. They preserve independent strict/export/agent/human states and externally supplied PNG/report declarations without rendering, invoking a model, or modifying the diagram.
+- Add opt-in authorized visual-repair plan, candidate, candidate-evidence, and assessment packages. They bind every input by raw digest, consume at most two immutable claims, preserve protected XML and provenance state, and distinguish accepted, rejected, and stopped decisions from process exit status.
+
 ## [0.8.0] - 2026-09-09
 
 ### Added

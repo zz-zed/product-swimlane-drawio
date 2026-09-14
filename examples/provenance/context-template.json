@@ -1,0 +1,62 @@
+{
+  "context_template_version": 1,
+  "provenance": {
+    "version": 1,
+    "sources": [
+      {
+        "id": "source-1",
+        "kind": "note",
+        "version": "1",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "reference": "Neutral note"
+      }
+    ],
+    "facts": [
+      {
+        "id": "fact-start",
+        "status": "confirmed",
+        "source_refs": ["source-1"],
+        "confirmation": {"asserted_by": "Example reviewer", "basis": "Declared example"}
+      },
+      {
+        "id": "fact-finish",
+        "status": "confirmed",
+        "source_refs": ["source-1"],
+        "confirmation": {"asserted_by": "Example reviewer", "basis": "Declared example"}
+      },
+      {
+        "id": "fact-next",
+        "status": "confirmed",
+        "source_refs": ["source-1"],
+        "confirmation": {"asserted_by": "Example reviewer", "basis": "Declared example"}
+      }
+    ],
+    "bindings": [
+      {
+        "id": "binding-start",
+        "fact_id": "fact-start",
+        "target": {"kind": "node", "id": "start"},
+        "fields": {"label": "", "owner": "lane", "type": "start"},
+        "source_snapshots": [{"source_id": "source-1", "version": "1", "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+        "validity": "current"
+      },
+      {
+        "id": "binding-finish",
+        "fact_id": "fact-finish",
+        "target": {"kind": "node", "id": "finish"},
+        "fields": {"label": "", "owner": "lane", "type": "end"},
+        "source_snapshots": [{"source_id": "source-1", "version": "1", "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+        "validity": "current"
+      },
+      {
+        "id": "binding-next",
+        "fact_id": "fact-next",
+        "target": {"kind": "edge", "id": "next"},
+        "fields": {"label": "", "from": "start", "to": "finish", "outcome": null},
+        "source_snapshots": [{"source_id": "source-1", "version": "1", "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+        "validity": "current"
+      }
+    ],
+    "history": []
+  }
+}

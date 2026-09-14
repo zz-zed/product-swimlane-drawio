@@ -58,6 +58,40 @@ The pool cell stores the producing tool version, model-hash version, stable lane
 
 For eligible metadata omissions, `migrate` checks original XML facts and plans only exact pool-attribute repairs under the existing schema. It does not call build, patch, metadata refresh, or routing. A write requires the reviewed input SHA, applicable missing-hash acceptance, projected and serialized strict checks, exact preservation, and atomic no-clobber delivery. `compare --migration` independently recomputes this plan and compares the full document under the serialization-signature formatting boundary; it neither accepts a baseline nor substitutes for strict validation.
 
+### Explicit semantic context
+
+`validate --context` and `inspect --context` can add an explicitly supplied,
+read-only semantic check to a managed v3 diagram. The context binds to the
+actual diagram bytes and existing semantic-model identity; it does not change
+the Draw.io schema, embedded model hash, diagram, or context file. Without the
+option, the existing command paths retain their normal behavior.
+
+The context layer evaluates declared scopes and optional group relationships
+through stable IDs and explicit topology. It does not infer process facts from
+labels, geometry, rank, or same-lane placement, and it does not call patch,
+migration, layout, routing, writers, renderers, or network services. A context
+validation failure is kept separate from the underlying artifact diagnostics.
+
+An optional provenance component adds declared sources, facts, and field
+bindings. Its fact status is separate from binding validity: a confirmed record
+is only a supplied declaration, while a current binding requires its exact
+field and source snapshots to match. The engine does not read a source
+reference, network resource, token, or private document, and it does not
+authenticate a confirmer. Provenance-aware writers deliver a new diagram/context
+bundle whose completion manifest is the final commit point; explicit readers
+verify that manifest before accepting the two members.
+
+### Visual review evidence
+
+The `review prepare` and `review record` actions create separate immutable
+evidence packages for an exact managed v3 artifact. Prepare snapshots native
+objects and optional context without rendering. Record validates and copies an
+externally supplied report, PNGs, and export logs; it does not execute a report
+command, invoke a model, or modify the diagram. Strict validation, preview
+export, agent image review, and human review remain independent states. PNG and
+calibration checks establish bounded file integrity and declared coordinate
+consistency, not image understanding or exporter/reviewer authentication.
+
 ## Trust boundaries
 
 - The model proposes semantics; it is not trusted to optimize raw geometry directly.
@@ -81,6 +115,20 @@ The portable CLI is limited to file arguments, input summaries, authorization pr
 | `document` | Draw.io XML readers and writers, raw routing views, native order, file receipts, and atomic output. |
 | `metadata` | Managed semantic identity, model hashing, and explicit metadata refresh. |
 | `migration` | Original-byte eligibility checks, exact same-schema metadata plans, conservative delivery, and independent migration comparison. |
+| `context_native` | Read original managed v3 identity, ownership, endpoint, and geometry facts for an opt-in context check without repairing defaults. |
+| `semantic_context` | Load the explicit context with bounded JSON parsing, bind it to the inspected artifact, coordinate read-only checks, and assemble the context receipt. |
+| `pattern_rules` | Pure predicates over declared semantic scopes; it uses explicit topology rather than labels, layout, or routing. |
+| `group_rules` | Pure predicates over declared v3 group relationships, including topology coverage and reference-only group kinds. |
+| `provenance` | Pure source/fact/binding schema, field projections, validity assessment, declared transitions, and preservation checks. |
+| `context_bundle` | Bounded context inputs plus a shared secure no-clobber publisher for immutable context and review members; E3 keeps its fixed diagram/context protocol. |
+| `context_workflow` | Explicit context-aware adapters for build, patch, compare, inspect, validate, and eligible migration. |
+| `preview_png` | Bounded structural validation for accepted PNG bytes; it does not identify image content. |
+| `review_evidence` | Pure review-report, object-index, state, typed-reference, and calibration checks. |
+| `review_workflow` | Explicit immutable prepare and record package adapters; neither renders, invokes a reviewer, nor repairs an artifact. |
+| `review_preservation` | Independent XML protection projection and native before/after metrics for an authorized candidate; it rejects unsupported serialization carriers. |
+| `review_repair` | Bounded construction of authorized edge-label or automatic-route candidates; it cannot authorize a target or accept a candidate. |
+| `review_state` | Immutable two-attempt claim, result, and marker packages; it fails closed on an incomplete or conflicting chain. |
+| `review_cycle` | Explicit plan, repair, candidate prepare/record, and assessment adapters that bind every input by raw digest; it does not render or authenticate external review. |
 | `sizing` | Text estimates and node sizes. |
 | `routing_policy` | Shared routing and validation thresholds. |
 | `ports` | Port candidates, pair allocation, and per-operation allocator state. |
@@ -96,9 +144,9 @@ The portable CLI is limited to file arguments, input summaries, authorization pr
 | `roundtrip` | Patch coordination, saved-edit protection, declared-patch comparison, inspection, and domain-level delivery-candidate checks. |
 | `validation` | Ordered diagnostic collectors and read-only validation summaries. |
 
-The dependency direction is CLI to build, roundtrip, or migration; build to construction, layout, specification validation, and the shared core; and roundtrip to patch operations, construction, layout, specification validation, validation, and the shared core. Migration reads document, metadata, validation, and shared contract facts without invoking build, patch, or routing. Validation, routing, and the other shared modules do not import the higher-level orchestrators. Declared-patch `compare` calls patch processing only for its forward replay; patch operations do not depend on compare or delivery gates.
+The dependency direction is CLI to build, roundtrip, migration, semantic context, explicit context workflow, or review workflow; build to construction, layout, specification validation, and the shared core; and roundtrip to patch operations, construction, layout, specification validation, validation, and the shared core. Migration reads document, metadata, validation, and shared contract facts without invoking build, patch, or routing. Semantic context reads original artifact facts and invokes pure pattern, group, and provenance rules without invoking layout, routing, or network services. The context workflow coordinates explicit bundle I/O and existing operations; it does not change their no-context paths. Review workflow consumes snapshots and pure PNG/review checks without invoking renderers, models, routing, patch, or repair. Validation, routing, and the other shared modules do not import the higher-level orchestrators. Declared-patch `compare` calls patch processing only for its forward replay; patch operations do not depend on compare or delivery gates.
 
-Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans new edges and existing edges with declared route changes while treating frozen connector paths and labels as obstacles. A spatial change that makes a frozen route invalid requires an explicit route declaration; existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata.
+Routing consumes plain node and lane views rather than XML elements. The document views retain raw geometry and semantic values so conversion, defaults, and errors occur at the existing decision points. Planners and routing context are explicit operation-local state; there is no process-wide route cache. Build plans all edges as one mutable batch. Patch plans new edges and existing edges with declared route changes while treating frozen connector paths and labels as obstacles. A spatial change that makes a frozen route invalid requires an explicit route declaration; existing manual waypoints and explicit port locks are never silently rewritten. Validation reads the latest tree and calls shared geometry, sizing, label, routing, and clearance helpers without calling the XML routing adapter or refreshing metadata. The repair cycle reuses bounded route and label planning only for explicitly authorized targets, then independently checks the complete XML preservation projection, immutable claim chain, fresh external-evidence bindings, and assessment receipt. It does not change the existing six-command defaults or turn a review report into an authorization.
 
 These are implementation boundaries inside one complete Skill, not separately installed packages or new public APIs. The public interface includes six CLI commands and their structured JSON receipts: build, inspect, patch, validate, compare, and migrate. The original five command defaults remain unchanged; migration comparison is an explicit compare mode. Internal functions are not compatibility guarantees.
 
