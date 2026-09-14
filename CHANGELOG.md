@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+## [0.9.0] - 2026-09-14
+
 ### Added
 
 - Add opt-in, read-only semantic-context checks to `validate` and `inspect` for explicitly declared patterns on managed v3 diagrams. The context binds to the input bytes and existing semantic-model identity; legacy inputs and unsupported components are refused rather than inferred or migrated.
@@ -15,6 +17,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Add context-aware build, patch, compare, and eligible migration delivery paths with raw context SHA preconditions, no-clobber bundle members, and a final completion manifest. Existing commands without context options retain their defaults.
 - Add opt-in `review prepare` and `review record` evidence packages for a managed v3 diagram. They preserve independent strict/export/agent/human states and externally supplied PNG/report declarations without rendering, invoking a model, or modifying the diagram.
 - Add opt-in authorized visual-repair plan, candidate, candidate-evidence, and assessment packages. They bind every input by raw digest, consume at most two immutable claims, preserve protected XML and provenance state, and distinguish accepted, rejected, and stopped decisions from process exit status.
+
+### Compatibility
+
+- Keep existing command defaults unchanged when no semantic context, review package, or repair package is requested. New output carries the 0.9.0 producing-tool stamp, so its XML and raw file hash differ from 0.8.0.
 
 ## [0.8.0] - 2026-09-09
 
@@ -353,7 +359,8 @@ This release is based on the locally verified candidate and is published with th
 - Agent Skills-compatible packaging for Codex, Claude Code, and compatible tools.
 - English and Simplified Chinese README documentation, with English as the default.
 
-[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/zz-zed/product-swimlane-drawio/compare/v0.6.5...v0.7.0
