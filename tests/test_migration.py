@@ -354,7 +354,7 @@ class MigrationPlanTests(MigrationFixture):
             report = json.loads(result.stdout)
             self.assertEqual(report["operation"], "migrate")
             self.assertEqual(report["migration_rule_version"], "1")
-            self.assertEqual(report["producing_tool_version"], "0.9.1")
+            self.assertEqual(report["producing_tool_version"], self.loaded.contracts.TOOL_VERSION)
             self.assertEqual(list(Path(temp).iterdir()), [path])
 
 
@@ -576,7 +576,9 @@ class MigrationDeliveryTests(MigrationFixture):
                     elif mutation == "malformed":
                         raw += b"<broken>"
                     else:
-                        raw = raw.replace(b'data-tool-version="0.9.1"', b'data-tool-version="wrong"')
+                        stamp = f'data-tool-version="{self.loaded.contracts.TOOL_VERSION}"'.encode()
+                        self.assertIn(stamp, raw)
+                        raw = raw.replace(stamp, b'data-tool-version="wrong"')
                     candidate.write_bytes(raw)
                 with mock.patch.object(ET.ElementTree, "write", new=corrupt):
                     report, code = self.deliver(source, output)

@@ -2,32 +2,74 @@ name: test
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   python:
-    runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # PRs cover the supported endpoints; main/manual runs cover every minor.
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.10", "3.15"]' || '["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Check release inventory and version consistency
+        run: python -B tools/release_check.py --versions
       - name: Run neutral release tests
         run: python -B -m unittest discover -s tests -v
 
   skill-discovery:
-    runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 24
+          package-manager-cache: false
       - name: Discover packaged Skill
         run: npx --yes skills@1.5.22 add . --list
+
+  release-package:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require release tags to point to main history
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: git merge-base --is-ancestor HEAD origin/main
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Verify the actual extracted release package
+        shell: bash
+        run: |
+          args=(--discover-skill)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          python -B tools/verify_release.py "${args[@]}"

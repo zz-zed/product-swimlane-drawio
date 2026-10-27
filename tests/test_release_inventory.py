@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,6 +15,25 @@ CORE_MODULES = ("contracts", "geometry", "document", "metadata", "sizing",
 
 
 class ReleaseInventoryTests(unittest.TestCase):
+    def test_manifest_rejects_duplicates_unsafe_paths_caches_and_missing_entrypoints(self):
+        approved = sorted(release.EXPECTED_RELEASE_FILES)
+        invalid = [None, {}, [], [*approved, approved[0]],
+                   [name for name in approved if name != release.TOOL_VERSION_FILE]]
+        for name in (None, 1, "", ".", "../outside", "/absolute", "a/../b", "a//b",
+                     "./a", "a/", "C:/outside", "a\\b", "a\nfile", ".git/config",
+                     "nested/__pycache__/x", "nested/file.pyc", "nested/file.pyo",
+                     "nested/.DS_Store"):
+            invalid.append([*approved, name])
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "release-files.json"
+            for values in invalid:
+                with self.subTest(values=values if len(str(values)) < 100 else str(values)[-100:]):
+                    manifest.write_text(json.dumps(values), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        release.load_release_manifest(manifest)
+            manifest.write_text(json.dumps(approved), encoding="utf-8")
+            self.assertEqual(release.load_release_manifest(manifest), release.EXPECTED_RELEASE_FILES)
+
     def make_source(self, root, *, source=True):
         if source:
             subprocess.run(["git", "init", "-q", str(root)], check=True)

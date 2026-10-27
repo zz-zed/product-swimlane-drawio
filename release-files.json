@@ -79,6 +79,7 @@
   "skills/product-swimlane-drawio/scripts/swimlane_core/sizing.py",
   "skills/product-swimlane-drawio/scripts/swimlane_core/spec_validation.py",
   "skills/product-swimlane-drawio/scripts/swimlane_core/validation.py",
+  "tests/cli_test_support.py",
   "tests/fixtures/cli-contract-v1.json",
   "tests/fixtures/neutral-flow.json",
   "tests/fixtures/neutral-patch.json",
@@ -89,6 +90,7 @@
   "tests/test_clearance_validation.py",
   "tests/test_core_boundaries.py",
   "tests/test_d2_delivery_boundaries.py",
+  "tests/test_diagram_workflow.py",
   "tests/test_e1_semantic_context.py",
   "tests/test_e2_group_contracts.py",
   "tests/test_e3_context_bundle.py",
@@ -102,11 +104,12 @@
   "tests/test_migration.py",
   "tests/test_native_label_geometry.py",
   "tests/test_native_preflight.py",
+  "tests/test_package_contracts.py",
   "tests/test_patch_operations.py",
   "tests/test_port_planner.py",
   "tests/test_reference_benchmark.py",
-  "tests/test_release.py",
   "tests/test_release_inventory.py",
+  "tests/test_release_verification.py",
   "tests/test_routing_modules.py",
   "tests/test_saved_edit_contracts.py",
   "tests/test_v3_layout.py",
@@ -116,5 +119,6 @@
   "tools/reference_benchmark.py",
   "tools/regression_baseline.py",
   "tools/release_check.py",
-  "tools/swimlane_loader.py"
+  "tools/swimlane_loader.py",
+  "tools/verify_release.py"
 ]

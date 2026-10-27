@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
+### Changed
+
+- Separate CI responsibilities: PRs test Python 3.10 and 3.15, main/manual runs cover 3.10–3.15, and release tags verify the actual extracted package on Python 3.12 instead of repeating the source matrix. Cancel superseded branch/PR checks, bound job runtimes, and update the pinned Actions and discovery runtime.
+- Use `release-files.json` as the single reviewed inventory, with derived Skill membership and required entrypoints. Check runtime, plugin, marketplace, changelog, and optional tag version consistency without executing the Skill.
+- Add actual archive/extraction verification with the full tests, optional Skill discovery, and before/after inventory and byte-preservation checks.
+- Separate package/document contracts from diagram workflow tests, retain installation and reliability checks while allowing editorial wording changes, and read the current runtime version in generic assertions.
+- Allow named CLI baseline captures for focused checks while retaining the full-corpus default and complete frozen-baseline regression.
+
+### Compatibility
+
+- Runtime commands, diagram behavior, historical compatibility cases, and the 0.9.1 producing-tool stamp are unchanged.
+
 ## [0.9.1] - 2026-10-27
 
 ### Changed
