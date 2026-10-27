@@ -13,10 +13,14 @@ import sys
 import tempfile
 
 from evidence_cases import corpus, digest, linear_spec
+from release_check import read_tool_version
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/product-swimlane-drawio/scripts/drawio_swimlane.py"
-BASELINE_TOOL_VERSIONS = {"0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0", "0.7.1", "0.8.0", "0.9.0", "0.9.1"}
+BASELINE_TOOL_VERSIONS = {
+    "0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0", "0.7.1", "0.8.0", "0.9.0", "0.9.1",
+    read_tool_version(ROOT),
+}
 
 
 def normalize(value, replacements, *, tool_version=None, input_version=None, path=()):
@@ -42,10 +46,20 @@ def normalize(value, replacements, *, tool_version=None, input_version=None, pat
     return value
 
 
-def capture(tool: Path = TOOL) -> dict:
+def capture(tool: Path = TOOL, *, cases: list[str] | tuple[str, ...] | None = None) -> dict:
+    """Capture all contracts by default, or a named subset for focused checks."""
+    specs = {**{f"linear-v{v}": linear_spec(version=v) for v in ("1", "2", "3")},
+             **corpus()}
+    if cases is not None:
+        selected = set(cases)
+        if not selected:
+            raise ValueError("at least one baseline case is required")
+        unknown = selected - specs.keys()
+        if unknown:
+            raise ValueError(f"unknown baseline cases: {', '.join(sorted(unknown))}")
+        specs = {name: spec for name, spec in specs.items() if name in selected}
     records = {}
-    for name, spec in {**{f"linear-v{v}": linear_spec(version=v) for v in ("1", "2", "3")},
-                       **corpus()}.items():
+    for name, spec in specs.items():
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             source = directory / "spec.json"
@@ -109,5 +123,10 @@ def capture(tool: Path = TOOL) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tool", type=Path, default=TOOL)
+    parser.add_argument("--cases", nargs="+", help="Capture only these named cases (default: full corpus)")
     args = parser.parse_args()
-    print(json.dumps(capture(args.tool), ensure_ascii=False, indent=2))
+    try:
+        result = capture(args.tool, cases=args.cases)
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(json.dumps(result, ensure_ascii=False, indent=2))

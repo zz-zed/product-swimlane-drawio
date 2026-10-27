@@ -1,143 +1,18 @@
-import ast
+"""CLI and native-diagram behavior, preservation and layout regressions."""
+
 import contextlib
-import json
 import hashlib
-import importlib.util
 import io
-import re
-import subprocess
-import struct
-import sys
+import json
+from pathlib import Path
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills" / "product-swimlane-drawio"
-TOOL = SKILL / "scripts" / "drawio_swimlane.py"
-FIXTURES = ROOT / "tests" / "fixtures"
-sys.path.insert(0, str(ROOT / "tools"))
-from release_check import check_release, skill_inventory, EXPECTED_SKILL_FILES
+from cli_test_support import (
+    FIXTURES, ROOT, TOOL, TOOL_VERSION, load_tool_module, run_tool,
+)
 from swimlane_loader import load_skill_modules
-
-
-def run_tool(
-    *args: str,
-    check: bool = True,
-    bind_patch_baseline: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    command_args = list(args)
-    if (
-        bind_patch_baseline
-        and command_args
-        and command_args[0] == "patch"
-        and "--expected-input-sha256" not in command_args
-    ):
-        input_index = command_args.index("--input") + 1
-        input_path = Path(command_args[input_index])
-        command_args.extend(
-            ["--expected-input-sha256", hashlib.sha256(input_path.read_bytes()).hexdigest()]
-        )
-    result = subprocess.run(
-        [sys.executable, "-B", str(TOOL), *command_args],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if check and result.returncode != 0:
-        raise AssertionError(
-            f"command failed with exit code {result.returncode}\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
-    return result
-
-
-def load_tool_module():
-    return load_skill_modules(TOOL, module_name="drawio_swimlane_under_test").tool
-
-
-def load_spec_validation_module():
-    return load_skill_modules(
-        TOOL, module_name="spec_validation_under_test"
-    ).spec_validation
-
-
-def schema_matches(value, rule: dict, root: dict) -> bool:
-    if "$ref" in rule:
-        target = root
-        for part in rule["$ref"].removeprefix("#/").split("/"):
-            target = target[part.replace("~1", "/").replace("~0", "~")]
-        return schema_matches(value, target, root)
-    if "allOf" in rule and not all(schema_matches(value, item, root) for item in rule["allOf"]):
-        return False
-    if "oneOf" in rule and sum(schema_matches(value, item, root) for item in rule["oneOf"]) != 1:
-        return False
-    if "anyOf" in rule and not any(schema_matches(value, item, root) for item in rule["anyOf"]):
-        return False
-    if "not" in rule and schema_matches(value, rule["not"], root):
-        return False
-    if "if" in rule:
-        branch = rule.get("then") if schema_matches(value, rule["if"], root) else rule.get("else")
-        if branch is not None and not schema_matches(value, branch, root):
-            return False
-    if "const" in rule and value != rule["const"]:
-        return False
-    if "enum" in rule and value not in rule["enum"]:
-        return False
-
-    expected_type = rule.get("type")
-    if expected_type == "object" and not isinstance(value, dict):
-        return False
-    if expected_type == "array" and not isinstance(value, list):
-        return False
-    if expected_type == "string" and not isinstance(value, str):
-        return False
-    if expected_type == "boolean" and not isinstance(value, bool):
-        return False
-    if expected_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
-        return False
-    if expected_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
-        return False
-
-    if isinstance(value, dict):
-        required = set(rule.get("required", []))
-        if not required.issubset(value):
-            return False
-        properties = rule.get("properties", {})
-        if rule.get("additionalProperties") is False and set(value) - set(properties):
-            return False
-        for key, child in properties.items():
-            if key in value and not schema_matches(value[key], child, root):
-                return False
-    if isinstance(value, list):
-        if len(value) < rule.get("minItems", 0) or len(value) > rule.get("maxItems", float("inf")):
-            return False
-        if rule.get("uniqueItems"):
-            serialized = [json.dumps(item, sort_keys=True) for item in value]
-            if len(serialized) != len(set(serialized)):
-                return False
-        for index, child in enumerate(rule.get("prefixItems", [])):
-            if index < len(value) and not schema_matches(value[index], child, root):
-                return False
-        if "items" in rule and not all(schema_matches(item, rule["items"], root) for item in value):
-            return False
-    if isinstance(value, str):
-        if len(value) < rule.get("minLength", 0):
-            return False
-        if "pattern" in rule and re.fullmatch(rule["pattern"], value) is None:
-            return False
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if "minimum" in rule and value < rule["minimum"]:
-            return False
-        if "exclusiveMinimum" in rule and value <= rule["exclusiveMinimum"]:
-            return False
-        if "maximum" in rule and value > rule["maximum"]:
-            return False
-    return True
 
 
 def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
@@ -182,6 +57,7 @@ def write_boundary_spec(path: Path, *, include_forward: bool) -> None:
     )
 
 
+
 def write_supported_neutral_patch(directory: Path) -> Path:
     """Keep preservation setup in the calibrated path domain; retain the source fixture."""
     value = json.loads((FIXTURES / "neutral-patch.json").read_text(encoding="utf-8"))
@@ -189,6 +65,7 @@ def write_supported_neutral_patch(directory: Path) -> Path:
     path = directory / "supported-neutral-patch.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     return path
+
 
 
 def write_linear_v2_spec(path: Path, *, long_label: bool = False) -> None:
@@ -216,6 +93,7 @@ def write_linear_v2_spec(path: Path, *, long_label: bool = False) -> None:
         ),
         encoding="utf-8",
     )
+
 
 
 def write_adjacent_decision_spec(path: Path) -> None:
@@ -266,6 +144,7 @@ def write_adjacent_decision_spec(path: Path) -> None:
     )
 
 
+
 def write_geometry_spec(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -309,374 +188,6 @@ def write_geometry_spec(path: Path) -> None:
     )
 
 
-class ReleasePackageTests(unittest.TestCase):
-    def test_readme_language_navigation_and_structure(self) -> None:
-        english = (ROOT / "README.md").read_text(encoding="utf-8")
-        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
-        self.assertIn("[简体中文](README.zh-CN.md)", english)
-        self.assertIn("[English](README.md)", chinese)
-        self.assertIn("**Quick navigation:**", english)
-        self.assertIn("**快速导航：**", chinese)
-        install_command = "npx skills add zz-zed/product-swimlane-drawio"
-        self.assertIn(install_command, english)
-        self.assertIn(install_command, chinese)
-        self.assertNotIn("--skill product-swimlane-drawio", english)
-        self.assertNotIn("--skill product-swimlane-drawio", chinese)
-        self.assertIn("## 30-second quick start", english)
-        self.assertIn("### Manual installation", english)
-        self.assertIn("#### Agent Skills", english)
-        self.assertIn("#### Claude Code Plugin Marketplace", english)
-        self.assertIn("#### Codex Plugin Marketplace", english)
-        self.assertIn("### Agent-assisted installation", english)
-        self.assertIn("### Verify installation", english)
-        self.assertIn("## 30 秒快速开始", chinese)
-        self.assertIn("### 手动安装", chinese)
-        self.assertIn("#### Agent Skills", chinese)
-        self.assertIn("#### Claude Code Plugin Marketplace", chinese)
-        self.assertIn("#### Codex Plugin Marketplace", chinese)
-        self.assertIn("### 通过 Agent 安装", chinese)
-        self.assertIn("### 验证安装结果", chinese)
-        self.assertIn("github.com/zz-zed/product-swimlane-drawio", english)
-        self.assertIn("github.com/zz-zed/product-swimlane-drawio", chinese)
-        self.assertIn("npx skills list -g", english)
-        self.assertIn("npx skills list -g", chinese)
-        self.assertIn("codex plugin marketplace add zz-zed/product-swimlane-drawio", english)
-        self.assertIn("codex plugin marketplace add zz-zed/product-swimlane-drawio", chinese)
-        self.assertIn("/plugin marketplace add zz-zed/product-swimlane-drawio", english)
-        self.assertIn("/plugin marketplace add zz-zed/product-swimlane-drawio", chinese)
-        self.assertIn(
-            "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-en.png)",
-            english,
-        )
-        self.assertIn(
-            "![product-swimlane-drawio overview](docs/illustrations/product-swimlane-readme/overview-zh.png)",
-            chinese,
-        )
-        shared_images = {
-            "docs/illustrations/product-swimlane-readme/create-update.png",
-            "docs/illustrations/product-swimlane-readme/quality-gate.png",
-        }
-        for image_reference in shared_images:
-            self.assertIn(image_reference, english)
-            self.assertIn(image_reference, chinese)
-        self.assertIn("examples/request-review/preview.png", english)
-        self.assertIn("examples/request-review/preview.png", chinese)
-        self.assertIn("Semantic → Deterministic → Editable → Incremental → Validated", english)
-        self.assertIn("语义化 → 确定性 → 可编辑 → 可迭代 → 可验证", chinese)
-        self.assertIn("## Edit → inspect → patch", english)
-        self.assertIn("## 编辑 → 检查 → 补丁", chinese)
-        self.assertIn("build --spec process.json --output process.drawio --strict", english)
-        self.assertIn("build --spec process.json --output process.drawio --strict", chinese)
-        self.assertIn(
-            'patch --input process.drawio --expected-input-sha256 "<sha256-from-inspect>" --changes changes.json --output process-updated.drawio --strict',
-            english,
-        )
-        self.assertIn(
-            'patch --input process.drawio --expected-input-sha256 "<inspect返回的sha256>" --changes changes.json --output process-updated.drawio --strict',
-            chinese,
-        )
-        self.assertEqual(english.count("\n## "), chinese.count("\n## "))
-        self.assertEqual(english.count("```"), chinese.count("```"))
-
-    def test_plugin_marketplace_manifests_share_one_skill_source(self) -> None:
-        claude_plugin = json.loads(
-            (ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
-        )
-        claude_marketplace = json.loads(
-            (ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
-        )
-        codex_plugin = json.loads(
-            (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
-        )
-        codex_marketplace = json.loads(
-            (ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
-        )
-
-        plugin_name = "product-swimlane-drawio"
-        self.assertEqual(claude_plugin["name"], plugin_name)
-        self.assertEqual(codex_plugin["name"], plugin_name)
-        self.assertNotIn("version", claude_plugin)
-        self.assertEqual(claude_marketplace["plugins"][0]["name"], plugin_name)
-        self.assertEqual(claude_marketplace["plugins"][0]["source"], ".")
-        self.assertEqual(
-            claude_marketplace["plugins"][0]["version"], codex_plugin["version"]
-        )
-        self.assertEqual(codex_plugin["version"], "0.9.1")
-        self.assertEqual(codex_marketplace["plugins"][0]["name"], plugin_name)
-        self.assertEqual(
-            codex_marketplace["plugins"][0]["source"],
-            {"source": "local", "path": "."},
-        )
-        self.assertEqual(codex_plugin["skills"], "./skills/")
-        self.assertTrue((SKILL / "SKILL.md").is_file())
-
-    def test_readme_infographic_is_valid_landscape_png(self) -> None:
-        image_dir = ROOT / "docs" / "illustrations" / "product-swimlane-readme"
-        image_names = {
-            "overview-en.png",
-            "overview-zh.png",
-            "create-update.png",
-            "quality-gate.png",
-        }
-        for image_name in image_names:
-            data = (image_dir / image_name).read_bytes()
-            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-            width, height = struct.unpack(">II", data[16:24])
-            self.assertGreater(width, height)
-            self.assertAlmostEqual(width / height, 16 / 9, delta=0.03)
-
-    def test_readme_illustration_directory_contains_final_images_only(self) -> None:
-        image_dir = ROOT / "docs" / "illustrations" / "product-swimlane-readme"
-        relative_files = {
-            path.relative_to(image_dir).as_posix()
-            for path in image_dir.rglob("*")
-            if path.is_file()
-        }
-        self.assertEqual(
-            relative_files,
-            {
-                "overview-en.png",
-                "overview-zh.png",
-                "create-update.png",
-                "quality-gate.png",
-            },
-        )
-
-    def test_complete_example_rebuilds_deterministically_and_strictly_validates(self) -> None:
-        example = ROOT / "examples" / "request-review"
-        preview = example / "preview.png"
-        self.assertTrue((example / "prompt.md").is_file())
-        self.assertTrue((example / "README.md").is_file())
-        self.assertEqual(preview.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-
-        with tempfile.TemporaryDirectory() as temp:
-            rebuilt = Path(temp) / "process.drawio"
-            rebuilt_again = Path(temp) / "process-again.drawio"
-            report = json.loads(
-                run_tool(
-                    "build",
-                    "--spec",
-                    str(example / "process.json"),
-                    "--output",
-                    str(rebuilt),
-                ).stdout
-            )
-            self.assertTrue(report["valid"])
-            self.assertEqual(report["warnings"], [])
-            run_tool(
-                "build",
-                "--spec",
-                str(example / "process.json"),
-                "--output",
-                str(rebuilt_again),
-            )
-            self.assertEqual(rebuilt.read_bytes(), rebuilt_again.read_bytes())
-            validation = json.loads(
-                run_tool("validate", "--input", str(rebuilt), "--strict").stdout
-            )
-            self.assertTrue(validation["valid"])
-            self.assertEqual(validation["warnings"], [])
-
-            inspected = json.loads(
-                run_tool("inspect", "--input", str(rebuilt)).stdout
-            )
-            self.assertEqual(inspected["schema_version"], "3")
-            self.assertEqual(inspected["behavior_pattern"], "approval-loop")
-            self.assertEqual(inspected["layout"]["profile"], "long-form")
-            self.assertEqual(inspected["layout"]["phase_presentation"], "rail")
-            lanes = {lane["id"]: lane for lane in inspected["lanes"]}
-            nodes = {node["id"]: node for node in inspected["nodes"]}
-            retry = next(
-                edge for edge in inspected["edges"] if edge["id"] == "approved-review"
-            )
-            self.assertEqual((retry["from"], retry["to"]), ("approved", "review"))
-            self.assertEqual(nodes[retry["from"]]["lane"], "reviewer")
-            self.assertEqual(nodes[retry["to"]]["lane"], "reviewer")
-            corridor_x = {point["x"] for point in retry["waypoints"]}
-            self.assertEqual(len(corridor_x), 1)
-            corridor_x = corridor_x.pop()
-            reviewer = lanes["reviewer"]
-            review_left = reviewer["x"] + nodes["review"]["x"]
-            self.assertGreaterEqual(corridor_x - reviewer["x"], 16.0)
-            self.assertLess(corridor_x, review_left)
-
-    def test_architecture_documents_capture_product_boundaries(self) -> None:
-        architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
-        principles = (ROOT / "docs" / "design-principles.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("Versioned semantic JSON", architecture)
-        self.assertIn("Inspect latest file → semantic patch → compare", architecture)
-        self.assertIn("Managed artifact identity", architecture)
-        self.assertIn("A patch is bound to the exact inspected input bytes", architecture)
-        self.assertIn("Strict validation and visual review are independent", architecture)
-        self.assertIn("bounded compilation pipeline, not an unbounded global solver", architecture)
-        self.assertIn("complete Skill directory is its distribution unit", architecture)
-        self.assertIn("portable CLI is limited to file arguments, input summaries, authorization preflight checks, command dispatch and output, and exception mapping", architecture)
-        self.assertIn("public interface includes six CLI commands", architecture)
-        tool_tree = ast.parse(TOOL.read_text(encoding="utf-8"))
-        core_imports = [
-            node for node in tool_tree.body
-            if isinstance(node, ast.ImportFrom) and node.module == "swimlane_core"
-        ]
-        self.assertEqual(len(core_imports), 1)
-        self.assertEqual(
-            {alias.name for alias in core_imports[0].names},
-            {
-                "build", "context_workflow", "contracts", "document", "migration", "review_cycle", "review_workflow",
-                "roundtrip", "semantic_context", "validation",
-            },
-        )
-        self.assertEqual(
-            {alias.name: alias.asname for alias in core_imports[0].names}["validation"],
-            "core_validation",
-        )
-        for module in ("clearance", "contracts", "geometry", "document", "metadata", "migration", "sizing",
-                       "routing_policy", "ports", "port_planner", "labels", "routing",
-                       "routing_adapter", "construction", "build", "spec_validation", "layout", "validation",
-                       "context_native", "pattern_rules", "group_rules", "semantic_context", "provenance",
-                       "context_bundle", "context_workflow", "preview_png", "review_evidence",
-                       "review_workflow", "review_preservation", "review_repair", "review_state",
-                       "review_cycle"):
-            self.assertTrue((SKILL / "scripts" / "swimlane_core" / f"{module}.py").is_file())
-            self.assertIn(f"| `{module}` |", architecture)
-        self.assertIn("single-page process view", architecture)
-        self.assertIn("Stay narrow", principles)
-        self.assertIn("does not attempt to become a general-purpose generator", principles)
-
-    def test_integrity_workflow_is_documented(self) -> None:
-        schema = (SKILL / "references" / "schema.md").read_text(encoding="utf-8")
-        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        round_trip = (ROOT / "docs" / "ROUND_TRIP_CONTRACT.md").read_text(
-            encoding="utf-8"
-        )
-        for document in (schema, skill, round_trip):
-            self.assertIn("managed", document)
-            self.assertIn("recoverable", document)
-            self.assertIn("unsafe", document)
-            self.assertIn("--expected-input-sha256", document)
-            self.assertIn("--accept-model-drift", document)
-
-    def test_readme_discloses_multimodal_review_reliability(self) -> None:
-        english = (ROOT / "README.md").read_text(encoding="utf-8")
-        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
-        self.assertIn("Validation and reliability", english)
-        self.assertIn("does **not** claim a measured accuracy percentage", english)
-        self.assertIn("校验与输出可靠度", chinese)
-        self.assertIn("**不声明**模型生成流程图具有经过测量的准确率", chinese)
-
-    def test_expected_skill_files_only(self) -> None:
-        self.assertEqual(skill_inventory(ROOT), EXPECTED_SKILL_FILES)
-
-    def test_v2_json_schema_is_strict_and_valid_json(self) -> None:
-        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
-        self.assertFalse(schema["additionalProperties"])
-        self.assertIn("schema_version", schema["required"])
-        self.assertIn("main_path", schema["required"])
-        self.assertFalse(schema["$defs"]["edge"]["additionalProperties"])
-
-    def test_json_schema_fields_match_runtime_build_contract(self) -> None:
-        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
-        spec_validation = load_spec_validation_module()
-        self.assertEqual(set(schema["properties"]), spec_validation.TOP_LEVEL_FIELDS)
-        self.assertEqual(set(schema["$defs"]["lane"]["properties"]), spec_validation.LANE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["node"]["properties"]), spec_validation.NODE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["edge"]["properties"]), spec_validation.EDGE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["phase"]["properties"]), spec_validation.PHASE_FIELDS)
-        self.assertEqual(set(schema["$defs"]["group"]["properties"]), spec_validation.contracts.GROUP_FIELDS)
-        self.assertEqual(set(schema["$defs"]["anchor"]["properties"]), spec_validation.ANCHOR_FIELDS)
-        self.assertEqual(set(schema["$defs"]["layout"]["properties"]), spec_validation.LAYOUT_FIELDS)
-        self.assertEqual(set(schema["$defs"]["canvas"]["properties"]), spec_validation.CANVAS_FIELDS)
-
-    def test_loading_tool_module_does_not_write_into_skill_directory(self) -> None:
-        cache_directory = TOOL.parent / "__pycache__"
-        before = set(cache_directory.iterdir()) if cache_directory.exists() else set()
-        load_tool_module()
-        after = set(cache_directory.iterdir()) if cache_directory.exists() else set()
-        self.assertEqual(after, before)
-
-    def test_json_schema_and_runtime_agree_on_representative_v2_v3_specs(self) -> None:
-        schema = json.loads((SKILL / "references" / "schema.json").read_text(encoding="utf-8"))
-        valid_v2 = json.loads((FIXTURES / "neutral-flow.json").read_text(encoding="utf-8"))
-        valid_v3 = json.loads(
-            (ROOT / "examples" / "request-review" / "process.json").read_text(encoding="utf-8")
-        )
-
-        invalid_specs = []
-        missing_pattern = json.loads(json.dumps(valid_v3))
-        missing_pattern.pop("behavior_pattern")
-        invalid_specs.append(missing_pattern)
-
-        v2_layout = json.loads(json.dumps(valid_v2))
-        v2_layout["layout"] = {"profile": "review"}
-        invalid_specs.append(v2_layout)
-
-        v2_slot = json.loads(json.dumps(valid_v2))
-        v2_slot["nodes"][1]["slot"] = "main"
-        invalid_specs.append(v2_slot)
-
-        v2_flow_role = json.loads(json.dumps(valid_v2))
-        v2_flow_role["edges"][0]["flow_role"] = "main"
-        invalid_specs.append(v2_flow_role)
-
-        labeled_end = json.loads(json.dumps(valid_v2))
-        end_node = next(node for node in labeled_end["nodes"] if node["type"] == "end")
-        end_node["label"] = "Done"
-        invalid_specs.append(labeled_end)
-
-        unknown_edge_field = json.loads(json.dumps(valid_v2))
-        unknown_edge_field["edges"][0]["unexpected"] = True
-        invalid_specs.append(unknown_edge_field)
-
-        with tempfile.TemporaryDirectory() as temp:
-            directory = Path(temp)
-            for index, candidate in enumerate((valid_v2, valid_v3)):
-                self.assertTrue(schema_matches(candidate, schema, schema))
-                spec_path = directory / f"valid-{index}.json"
-                output = directory / f"valid-{index}.drawio"
-                spec_path.write_text(json.dumps(candidate), encoding="utf-8")
-                result = run_tool(
-                    "build",
-                    "--spec",
-                    str(spec_path),
-                    "--output",
-                    str(output),
-                    "--strict",
-                )
-                self.assertTrue(json.loads(result.stdout)["quality_gate_passed"])
-
-            for index, candidate in enumerate(invalid_specs):
-                self.assertFalse(schema_matches(candidate, schema, schema))
-                spec_path = directory / f"invalid-{index}.json"
-                output = directory / f"invalid-{index}.drawio"
-                spec_path.write_text(json.dumps(candidate), encoding="utf-8")
-                result = run_tool(
-                    "build",
-                    "--spec",
-                    str(spec_path),
-                    "--output",
-                    str(output),
-                    check=False,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(output.exists())
-
-    def test_frontmatter_is_minimal(self) -> None:
-        content = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertTrue(content.startswith("---\n"))
-        frontmatter = content.split("---\n", 2)[1]
-        keys = {
-            line.split(":", 1)[0].strip()
-            for line in frontmatter.splitlines()
-            if re.match(r"^[a-zA-Z0-9_-]+:", line)
-        }
-        self.assertEqual(keys, {"name", "description"})
-
-    def test_skill_has_no_absolute_user_paths_or_generated_files(self) -> None:
-        result = check_release(ROOT)
-        self.assertTrue(result["valid"], result["errors"])
-
 
 class DiagramWorkflowTests(unittest.TestCase):
     def build_diagram(self, directory: Path) -> Path:
@@ -693,7 +204,7 @@ class DiagramWorkflowTests(unittest.TestCase):
         self.assertTrue(report["quality_gate_passed"])
         self.assertEqual(report["warnings"], [])
         self.assertEqual(report["managed_state"], "managed")
-        self.assertEqual(report["tool_version"], "0.9.1")
+        self.assertEqual(report["tool_version"], TOOL_VERSION)
         self.assertEqual(report["model_hash_version"], "1")
         self.assertTrue(report["model_hash_matches"])
         self.assertIsNone(report["manual_waypoints_preserved"])
@@ -906,7 +417,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             )
             upgraded = json.loads(run_tool("inspect", "--input", str(after)).stdout)
             self.assertEqual(upgraded["managed_state"], "managed")
-            self.assertEqual(upgraded["tool_version"], "0.9.1")
+            self.assertEqual(upgraded["tool_version"], TOOL_VERSION)
             self.assertTrue(upgraded["model_hash_matches"])
 
     def test_schema_composition_and_unmanaged_vertex_are_diagnosed(self) -> None:
@@ -2933,6 +2444,7 @@ class DiagramWorkflowTests(unittest.TestCase):
             self.assertIn("layout/main-path-zigzag", codes)
             self.assertIn("text/edge-label-node-overlap", codes)
             self.assertIn("text/edge-label-edge-overlap", codes)
+
 
 
 if __name__ == "__main__":

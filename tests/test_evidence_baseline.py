@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from evidence_cases import corpus, linear_spec
-from regression_baseline import capture, normalize, TOOL
+from regression_baseline import BASELINE_TOOL_VERSIONS, capture, normalize, TOOL
 from performance_probe import probe, worker, resource
 from swimlane_loader import load_skill_modules
 
@@ -50,7 +50,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         after = copy.deepcopy(before)
         loaded.roundtrip.patch_tree(after, changes, allow_geometry_updates=False)
         self.assertTrue(loaded.roundtrip.compare_trees(before, after, changes)["preserved"])
-        self.assertEqual(loaded.document.find_pool(after).get("data-tool-version"), "0.9.1")
+        self.assertEqual(loaded.document.find_pool(after).get("data-tool-version"), loaded.contracts.TOOL_VERSION)
         for field, value in (("custom-protected", "tampered"), ("data-model-hash", "0" * 64)):
             with self.subTest(field=field):
                 tampered = copy.deepcopy(after)
@@ -318,6 +318,18 @@ class EvidenceBaselineTests(unittest.TestCase):
         self.assertEqual(actual.keys(), expected.keys())
         self.assertEqual(actual["cases"].keys(), expected["cases"].keys())
 
+    def test_selected_baseline_matches_full_contract_without_other_cases(self):
+        expected = json.loads((ROOT / "tests/fixtures/cli-contract-v1.json").read_text())
+        actual = capture(cases=["linear-v3"])
+        self.assertEqual(actual["cases"], {"linear-v3": expected["cases"]["linear-v3"]})
+
+    def test_invalid_baseline_selection_fails_before_running_a_command(self):
+        with mock.patch("regression_baseline.subprocess.run") as run:
+            for cases in ([], ["missing"], ["linear-v3", "missing"]):
+                with self.subTest(cases=cases), self.assertRaises(ValueError):
+                    capture(cases=cases)
+            run.assert_not_called()
+
     def test_repeated_builds_and_unordered_list_permutations(self):
         loaded = load_tool()
         for name, spec in {"linear": linear_spec(), "decision": corpus()["decision-retry-phases"]}.items():
@@ -415,7 +427,7 @@ class EvidenceBaselineTests(unittest.TestCase):
         for value in (None, 501, True, "unknown", "0.5.0"):
             result = {"result": {"patch_receipt": {"input_tool_version": value}}}
             self.assertEqual(normalize(result, {}, input_version="0.5.1"), result)
-        for version in ("0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.5", "0.7.0", "0.7.1", "0.8.0", "0.9.0", "0.9.1"):
+        for version in sorted(BASELINE_TOOL_VERSIONS):
             result = {"result": {"patch_receipt": {"input_tool_version": version}}}
             self.assertEqual(normalize(result, {}, input_version=version)["result"]["patch_receipt"]["input_tool_version"], "<tool-version>")
 
@@ -447,7 +459,7 @@ class EvidenceBaselineTests(unittest.TestCase):
                                         '"input_tool_version": None,')
             self.assertNotEqual(original, mutation)
             tool.write_text(mutation, encoding="utf-8")
-            actual = capture(tool)
+            actual = capture(tool, cases=["linear-v3"])
             expected = json.loads((ROOT / "tests/fixtures/cli-contract-v1.json").read_text(encoding="utf-8"))
             self.assertNotEqual(actual["cases"]["linear-v3"]["commands"]["patch"],
                                 expected["cases"]["linear-v3"]["commands"]["patch"])

@@ -127,7 +127,7 @@ class CoreBoundaryTests(unittest.TestCase):
                 for key in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX", "PYTHONPATH")
             }
             try:
-                for helper_name in ("test_release", "test_v3_layout"):
+                for helper_name in ("cli_test_support", "test_v3_layout"):
                     with self.subTest(helper=helper_name):
                         helper_path = ROOT / "tests" / f"{helper_name}.py"
                         helper_spec = importlib.util.spec_from_file_location(
