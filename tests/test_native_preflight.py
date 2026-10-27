@@ -30,6 +30,29 @@ class NativePreflightTests(unittest.TestCase):
         assignment = {"exit_side": "bottom", "entry_side": "top", "exit_offset": .5, "entry_offset": .5}
         return cell, scene, assignment
 
+    def test_saved_pair_check_uses_supported_native_paths_and_stored_fallback(self):
+        tree = self.loaded.build.build_tree(linear_spec(3, version="2"))
+        tree = ET.ElementTree(ET.fromstring(ET.tostring(tree.getroot())))
+        before = ET.tostring(tree.getroot())
+        original = self.document.edge_label_measurement
+        # Distinct saved routes are safe. Independently supplied native path
+        # evidence introduces a remote T contact, even with empty labels.
+        visible = {"e0": [(0., 0.), (0., 40.), (40., 40.)],
+                   "e1": [(20., 10.), (20., 40.)]}
+        def measurement(cell, *args, **kwargs):
+            result = original(cell, *args, **kwargs)
+            edge_id = cell.get(self.loaded.contracts.DATA_SEMANTIC_ID)
+            return dict(result, path=visible[edge_id], path_available=True) if edge_id in visible else result
+        with mock.patch.object(self.document, "edge_label_measurement", side_effect=measurement):
+            checked = self.loaded.validation.validate_tree(tree)
+        self.assertIn("routing/edge-conflict", {item["code"] for item in checked["diagnostics"]})
+        def unavailable(cell, *args, **kwargs):
+            return dict(measurement(cell, *args, **kwargs), path_available=False)
+        with mock.patch.object(self.document, "edge_label_measurement", side_effect=unavailable):
+            checked = self.loaded.validation.validate_tree(tree)
+        self.assertNotIn("routing/edge-conflict", {item["code"] for item in checked["diagnostics"]})
+        self.assertEqual(ET.tostring(tree.getroot()), before)
+
     def test_extraction_is_plain_and_compatible(self):
         cell, scene, _ = self.setup_native()
         raw = self.document.extract_native_label_profile(cell, scene=scene)

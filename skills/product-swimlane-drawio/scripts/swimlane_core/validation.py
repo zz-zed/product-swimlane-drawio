@@ -1226,7 +1226,14 @@ def validate_tree(tree: ET.ElementTree) -> dict:
     clearance_measurements = _collect_arrowhead_clearance(
         edge_cells, edge_points, nodes, node_bounds, add,
     )
-    _collect_edge_pair_quality(edge_segments, edge_cells_by_id, add)
+    # Supported native reconstruction is the visible connector, including its
+    # terminal stubs and bends. Unsupported styles retain stored-path evidence.
+    pair_segments = {
+        edge_id: list(zip(label_measurements[edge_id]["path"], label_measurements[edge_id]["path"][1:]))
+        if label_measurements.get(edge_id, {}).get("path_available") else segments
+        for edge_id, segments in edge_segments.items()
+    }
+    _collect_edge_pair_quality(pair_segments, edge_cells_by_id, add)
     label_segments = {
         edge_id: list(zip(measured["path"], measured["path"][1:]))
         if measured.get("path_available") else edge_segments[edge_id]

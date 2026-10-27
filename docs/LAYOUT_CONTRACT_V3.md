@@ -32,7 +32,7 @@ This is a bounded deterministic pass with finite route candidates and a label-re
 
 ## Slot rules
 
-- A single node with no authored slot uses `main` and remains centered.
+- A single node with no authored slot uses `main` and remains centered, except a lone unpositioned end with one same-lane predecessor may align to that predecessor when its vertical column is clear and its incoming edge has no explicit ports or waypoints. Explicit coordinates, slots, anchors, and merge terminals retain their placement.
 - Multiple nodes in the same lane and rank are ordered `left → main → right`.
 - Every occupied slot receives its own horizontal footprint.
 - The lane expands when the occupied slots, node widths, gaps, and padding do not fit.
@@ -59,6 +59,7 @@ The initial slice stores group metadata and uses its membership for validation. 
 - No node outside its lane.
 - No connector through an unrelated node.
 - Orthogonal automatic routes only.
+- No remote connector contacts, T junctions, or positive overlaps. A contact is exempt only at a true common-node attachment.
 - Distinct attach points for distinct connectors unless reuse is intentional.
 - No automatic internal segment shorter than 16 px.
 - Labels require a clear carrier and cannot overlap nodes, routes, or other labels.
@@ -66,11 +67,11 @@ The initial slice stores group metadata and uses its membership for validation. 
 
 ## Port priority
 
-- A downward main-path edge leaves from the source bottom and enters the target top, including across lanes.
+- A downward main-path edge prefers source bottom and target top, including across lanes. A v3 decision with one downward same-lane sibling may instead use a facing-side cross-lane main continuation after a complete safe-batch comparison; the sibling then leaves downward. Equal quality keeps the original batch.
 - After sides are selected, both endpoints use the center port (`0.5`) when it is free.
 - Secondary offsets are conflict-resolution slots, not route-shortening controls.
 - A decision exception may leave toward its target lane, while a same-lane terminal outcome directly below the decision leaves from the bottom.
-- A cross-lane side outcome may share the decision's rank to produce a centered horizontal handoff. A directly following same-lane terminal stays on the lane's main axis for a straight vertical connection.
+- A cross-lane side outcome may share the decision's rank to produce a centered horizontal handoff. A lone automatic same-lane terminal can align with its single predecessor for a straight vertical connection.
 - An adjacent-lane retry leaves toward the target and enters through the target's outer-side slot, preserving the facing request/response corridor; only longer returns default to an outer-bottom corridor.
 
 ## Quality profiles

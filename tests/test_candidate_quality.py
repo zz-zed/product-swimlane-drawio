@@ -61,13 +61,31 @@ class CandidateQualityTests(unittest.TestCase):
             self.assertEqual(self.codes(issues), [code] if code else [])
 
     def test_shared_endpoint_is_exempt_but_interior_crossing_is_not(self):
-        first, second = {"id": "a"}, {"id": "b", "from": "p"}
+        first, second = {"id": "a", "from": "source", "to": "p"}, {"id": "b", "from": "p", "to": "target"}
         for other, expected in (([(0, 40), (40, 40)], []),
                                  ([(-20, 20), (20, 20)], ["routing/edge-conflict"])):
             issues = self.routing.edge_pair_issues(
                 first, [((0, 0), (0, 40))], second, [tuple(other)],
             )
             self.assertEqual(self.codes(issues), expected)
+
+    def test_remote_bends_t_junctions_and_tiny_overlaps_conflict(self):
+        first = {"id": "a", "from": "shared", "to": "q"}
+        second = {"id": "b", "from": "shared", "to": "r"}
+        path = [((0, 0), (0, 40)), ((0, 40), (40, 40))]
+        cases = [([((0, 0), (40, 0)), ((40, 0), (40, 40))], "remote bend"),
+                 ([((20, 10), (20, 40))], "T junction"),
+                 ([((39.9, 40), (60, 40))], "tiny overlap")]
+        for segments, name in cases:
+            with self.subTest(name=name):
+                self.assertIn("routing/edge-conflict", self.codes(
+                    self.routing.edge_pair_issues(first, path, second, segments)))
+        # Sharing only an attachment is valid; geometric coincidence alone is
+        # not proof that two unrelated endpoints describe the same node.
+        attached = [((0, 0), (40, 0))]
+        self.assertEqual(self.routing.edge_pair_issues(first, path, second, attached), ())
+        self.assertIn("routing/edge-conflict", self.codes(self.routing.edge_pair_issues(
+            first, path, dict(second, **{"from": "unrelated"}), attached)))
 
     def test_reciprocal_evidence_order_and_input_preservation(self):
         first = {"id": "a", "from": "p", "to": "q"}

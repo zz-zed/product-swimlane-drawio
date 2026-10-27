@@ -156,6 +156,40 @@ def v3_node_x_positions(
             for node, width in zip(ordered, widths):
                 positions[node["id"]] = cursor
                 cursor += width + gap
+    # A lone automatic terminal belongs under its only local predecessor,
+    # including a predecessor in a side slot. Never reinterpret explicit slots,
+    # anchors, saved coordinates, merge terminals, or crowded vertical columns.
+    nodes = {node["id"]: node for node in spec["nodes"]}
+    for node in spec["nodes"]:
+        if (node.get("type") != "end" or any(key in node for key in ("x", "slot", "anchor"))
+                or sum(other["lane"] == node["lane"] and int(other["rank"]) == int(node["rank"])
+                       for other in spec["nodes"]) != 1):
+            continue
+        incoming = [edge for edge in spec["edges"] if edge["to"] == node["id"]]
+        if (len(incoming) != 1
+                or any(key in incoming[0] for key in ("waypoints", "exit_side", "entry_side", "exit_offset", "entry_offset"))
+                or incoming[0].get("route", "auto") not in {"auto", "forward"}):
+            continue
+        predecessor = nodes[incoming[0]["from"]]
+        if predecessor["lane"] != node["lane"] or int(predecessor["rank"]) >= int(node["rank"]):
+            continue
+        width = sizing.node_size(node)[0]
+        predecessor_x = float(predecessor["x"]) if "x" in predecessor else positions.get(predecessor["id"])
+        if predecessor_x is None:
+            continue
+        candidate = predecessor_x + sizing.node_size(predecessor)[0] / 2.0 - width / 2.0
+        if not 8.0 <= candidate <= lane_widths[node["lane"]] - width - 8.0:
+            continue
+        blocked = False
+        for other in spec["nodes"]:
+            if (other["lane"] != node["lane"] or not int(predecessor["rank"]) < int(other["rank"]) < int(node["rank"])):
+                continue
+            other_x = float(other["x"]) if "x" in other else positions.get(other["id"])
+            if other_x is None or other_x - gap <= candidate + width / 2.0 <= other_x + sizing.node_size(other)[0] + gap:
+                blocked = True
+                break
+        if not blocked:
+            positions[node["id"]] = candidate
     return positions
 
 

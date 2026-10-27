@@ -71,12 +71,12 @@ Wait for explicit confirmation. Never add unprovided intermediate steps, data ex
 ## Routing semantics
 
 - Route the confirmed `main_path` before ordinary branches and returns so its channels remain visually dominant.
-- Keep every downward main-path continuation bottom-to-top, including a main path that crosses into another lane. Do not send a decision's normal continuation through a side hook merely because its target is in another lane.
+- Prefer bottom-to-top for downward main-path progress. Compose a decision's outgoing paths together: when a cross-lane main continuation competes with one same-lane downward branch, compare the complete safe batch with a facing-side continuation and a bottom branch. Keep the baseline on a quality tie; do not impose side exits on every cross-lane continuation.
 - Plan source and target ports across the complete mutable edge batch, then allocate each pair together. Prefer the center (`0.5`) of the selected source and target sides whenever those ports are free and yield a valid route; move to secondary offsets for an actual conflict, route failure, main-path continuity, or explicit override. Keep successful unrelated port components stable when one component is replanned.
 - Route returns and retries after forward paths, using independent return channels; retain explicit waypoints unchanged.
 - Across lanes, prefer a clear direct elbow or outer return corridor without adding a vertical leg solely to enter the target lane. Within one lane, retain the internal return corridor. In v3, a same-lane downward decision branch uses a free bottom exit before a side hook; reserved main-path and explicit ports remain protected.
 - Keep decision outcomes semantically explicit and let the script select safe route/label candidates. Use manual ports or waypoints only after diagnostic or visual evidence identifies a need.
-- Automatic candidates must pass shared geometry checks and native-path/label preflight before scoring. Side, port, path and batch-label repairs are bounded; an exhausted search is a failure, not a low-quality output.
+- Automatic candidates must pass shared geometry checks and native-path/label preflight before scoring. Protected semantics, explicit ports, waypoints, and frozen geometry take priority; feasibility (including connector contacts and batch labels) precedes branch readability, bends, and length. The decision-composition comparison tries at most two complete batches within shared budgets. Side, port, path and batch-label repairs are bounded. Exhaustion without a complete safe batch is a failure; exhaustion during optional composition exploration retains an already complete safe baseline.
 - Read optional `evidence.planning` for the failed stage, native reason, blockers and budget. Automatic planning can fail before final validation even without `--strict`; an empty label does not hide an unsupported native path. Saved-file commands and diagnostic severity conventions remain, but saved v2/v3 cross-lane automatic returns can have different warnings or strict results because their target-lane vertical corridor is no longer required.
 - Use explicit `exit_side`, `entry_side`, offsets, or waypoints only when semantic defaults cannot produce a clear route.
 - Never simplify or silently rewrite explicit waypoints. Diagnose their quality issues and require an intentional edit instead.
@@ -93,7 +93,7 @@ Require strict validation to have no warnings. It checks:
 - Reused ports.
 - Connectors collinear with lane boundaries.
 - Connectors crossing nodes.
-- Connector segments crossing, overlapping, or becoming non-orthogonal.
+- Connector segments crossing, overlapping, touching at remote bends or T junctions, or becoming non-orthogonal. A zero-length contact is allowed only at a true shared-node attachment. Saved connector-pair checks use reconstructed native paths when supported and stored paths otherwise.
 - Internal segments shorter than 16 pixels, unnecessary bends, hairpins, near-parallel crowding, and ambiguous reciprocal channels.
 - Calibrated arrowhead terminal-run clearance for supported default Draw.io connector and target styles; unsupported rendering states remain `not_available`, not passed.
 - Same-lane main-path zigzags.
@@ -181,6 +181,7 @@ Historical-source reconstruction and reproducible neutral mutations establish li
 - Give each participating system or role one full-height vertical lane.
 - Use global `rank` values for top-to-bottom order; assign the same rank to parallel steps.
 - In v3, use `left/main/right` slots for nodes sharing a lane and rank. Use groups to preserve why nodes are parallel, branching, merging, exceptional, or supportive; equal ranks alone do not carry that meaning.
+- An unpositioned lone end node may align with its only same-lane predecessor when the vertical column is clear and its incoming edge has no explicit ports or waypoints. Explicit coordinates, slots, anchors, and merge terminals stay authoritative; rerouting an existing edge never moves saved nodes.
 - Anchor notes to the node they explain. Do not position floating annotations with guessed coordinates when a semantic anchor is sufficient.
 - Keep nodes structurally parented to their owning lanes.
 - When phases use `bands`, keep semantic Z-order as phase backgrounds, lanes, nodes, then connectors; make lane bodies transparent. When phases use `rail`, reserve the left label column and keep lane bodies opaque. Phase cells remain non-interactive in both modes.

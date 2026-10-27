@@ -737,17 +737,62 @@ def back_corridor_issues(edge, segments, lanes, nodes, node_bounds):
     }),)
 
 
+def _unattached_contact(first_edge, first_segments, second_edge, second_segments):
+    """Closed orthogonal contacts are safe only at a true common attachment.
+
+    Segment-end contacts elsewhere include remote bends and T junctions. Even
+    edges sharing a source may not touch again away from that source.
+    """
+    if not first_segments or not second_segments:
+        return False
+    allowed = []
+    for first_key, first_point in (("from", first_segments[0][0]), ("to", first_segments[-1][1])):
+        for second_key, second_point in (("from", second_segments[0][0]), ("to", second_segments[-1][1])):
+            if (first_edge.get(first_key) is not None
+                    and first_edge.get(first_key) == second_edge.get(second_key)
+                    and max(abs(a-b) for a, b in zip(first_point, second_point)) < core_geometry.GEOMETRY_TOLERANCE):
+                allowed.append(first_point)
+    epsilon = 1e-7
+    for first in first_segments:
+        for second in second_segments:
+            axis_a, axis_b = core_geometry.segment_axis(first), core_geometry.segment_axis(second)
+            if "diagonal" in (axis_a, axis_b):
+                continue
+            if axis_a != axis_b:
+                vertical, horizontal = (first, second) if axis_a == "vertical" else (second, first)
+                contact = (vertical[0][0], horizontal[0][1])
+                if not (min(horizontal[0][0], horizontal[1][0])-epsilon <= contact[0] <= max(horizontal[0][0], horizontal[1][0])+epsilon
+                        and min(vertical[0][1], vertical[1][1])-epsilon <= contact[1] <= max(vertical[0][1], vertical[1][1])+epsilon):
+                    continue
+            else:
+                constant, varying = (0, 1) if axis_a == "vertical" else (1, 0)
+                if abs(first[0][constant]-second[0][constant]) > epsilon:
+                    continue
+                low = max(min(point[varying] for point in first), min(point[varying] for point in second))
+                high = min(max(point[varying] for point in first), max(point[varying] for point in second))
+                if high < low-epsilon:
+                    continue
+                if high-low > epsilon:
+                    return True
+                contact = (first[0][0], low) if varying == 1 else (low, first[0][1])
+            if not any(max(abs(a-b) for a, b in zip(contact, point)) < core_geometry.GEOMETRY_TOLERANCE
+                       for point in allowed):
+                return True
+    return False
+
+
 def edge_pair_issues(first_edge, first_segments, second_edge, second_segments):
     """Pair conflicts, close parallels and reciprocal ambiguity, in that order.
 
-    Caller chooses pair order (the XML collector sorts semantic IDs). Shared
-    endpoints retain core_geometry.segments_conflict's exact exemptions.
+    Caller chooses pair order (the XML collector sorts semantic IDs). Only a
+    true shared-node attachment exempts a zero-length contact.
     """
     issues = []
     subject = (first_edge.get("id"), second_edge.get("id"))
     evidence = {"other_edge": second_edge.get("id")}
-    conflict = any(core_geometry.segments_conflict(first, second)
-                   for first in first_segments for second in second_segments)
+    conflict = (any(core_geometry.segments_conflict(first, second)
+                    for first in first_segments for second in second_segments)
+                or _unattached_contact(first_edge, first_segments, second_edge, second_segments))
     near_parallel = any(segments_near_parallel(first, second)
                         for first in first_segments for second in second_segments)
     if conflict:
@@ -2287,11 +2332,15 @@ def plan_route_batch(
     )
 
 
-def side_pair_candidates(edge, default, lanes, nodes, *, main=False, locked=(None, None), occupied=None):
+def side_pair_candidates(edge, default, lanes, nodes, *, main=False, locked=(None, None), occupied=None,
+                         allow_main_decision=False):
     """Finite geometric alternatives; explicit endpoints never change side."""
-    if "waypoints" in edge or main:
-        return (default,)
     source, target = nodes[edge["from"]], nodes[edge["to"]]
+    decision_continuation = (main and allow_main_decision and source["semantic"].get("type") == "decision"
+                             and source["lane"] != target["lane"]
+                             and infer_route_class(edge, source, target) == "forward")
+    if "waypoints" in edge or (main and not decision_continuation):
+        return (default,)
     route = infer_route_class(edge, source, target)
     indices = {lane: index for index, lane in enumerate(lanes)}
     delta = indices[target["lane"]] - indices[source["lane"]]
@@ -2301,6 +2350,10 @@ def side_pair_candidates(edge, default, lanes, nodes, *, main=False, locked=(Non
     fixed = tuple(edge.get(prefix + "_side") is not None or edge.get(prefix + "_offset") is not None
                   or locked[index] is not None for index, prefix in enumerate(("exit", "entry")))
     sides = ("top", "right", "bottom", "left")
+    if decision_continuation:
+        values = [default, ("right" if delta > 0 else "left", "top"), ("bottom", "top")]
+        return tuple(dict.fromkeys(pair for pair in values
+                                   if all(not fixed[index] or pair[index] == default[index] for index in (0, 1))))
     values = [default, escape]
     if route == "back" and delta:
         # Before mixing opposite source/target sides, try the source's outer
@@ -2379,9 +2432,92 @@ def _supported_offsets(profiles, edges):
     return domains
 
 
-def _plan_feasible_route_batch(edges, lanes, nodes, *, main_path=None, mutable_edge_ids=None,
+def _decision_composition_preferences(edges, lanes, nodes, main_path, mutable, locked):
+    """A bounded alternative for a downward branch plus cross-lane progress."""
+    pairs = set(zip(main_path, main_path[1:]))
+    preferences = {}
+    lane_indices = {key: index for index, key in enumerate(lanes)}
+    for edge in edges:
+        source, target = nodes[edge["from"]], nodes[edge["to"]]
+        if (edge["id"] not in mutable or (edge["from"], edge["to"]) not in pairs
+                or source["semantic"].get("type") != "decision" or source["lane"] == target["lane"]
+                or infer_route_class(edge, source, target) != "forward"):
+            continue
+        siblings = [other for other in edges if other["from"] == edge["from"] and other["id"] != edge["id"]
+                    and nodes[other["to"]]["lane"] == source["lane"]
+                    and infer_route_class(other, source, nodes[other["to"]]) == "forward"]
+        # A single downward sibling gives unambiguous composition. Multiple
+        # downward branches remain with the established joint repair planner.
+        if len(siblings) != 1:
+            continue
+        sibling = siblings[0]
+        if any(item["id"] not in mutable or "waypoints" in item
+               or any(item.get(key) is not None for key in ("exit_side", "entry_side", "exit_offset", "entry_offset"))
+               or any(value is not None for value in locked.get(item["id"], (None, None)))
+               for item in (edge, sibling)):
+            continue
+        preferences[edge["id"]] = ("right" if lane_indices[target["lane"]] > lane_indices[source["lane"]] else "left", "top")
+        preferences[sibling["id"]] = ("bottom", "top")
+    return preferences
+
+
+def _batch_readability_key(result, preferences):
+    by_id = {decision.edge_id: decision for decision in result.decisions}
+    missed = sum((by_id[key].assignment.exit.side, by_id[key].assignment.entry.side) != pair
+                 for key, pair in preferences.items())
+    paths = [decision.routed.get("native_path", decision.routed["full_path"]) for decision in result.decisions]
+    return (missed, sum(core_geometry.bend_count(path) for path in paths),
+            sum(core_geometry.polyline_length(path) for path in paths))
+
+
+def _plan_feasible_route_batch(edges, lanes, nodes, **options):
+    """Compare at most two complete safe batches, sharing finite budgets.
+
+    Protected/saved geometry never enters the alternative domain. Complete
+    feasibility (including native contacts and batch labels) precedes branch
+    readability, bends and length. Equal results retain the original batch.
+    """
+    mutable = {edge["id"] for edge in edges} if options.get("mutable_edge_ids") is None else set(options["mutable_edge_ids"])
+    preferences = (_decision_composition_preferences(edges, lanes, nodes, options.get("main_path") or [],
+                    mutable, options.get("locked_offsets") or {})
+                   if options.get("v3_semantics") and all(edge["from"] in nodes and edge["to"] in nodes for edge in edges) else {})
+    baseline = _plan_feasible_route_batch_once(edges, lanes, nodes,
+                    **dict(options, record_seed_components=bool(preferences)))
+    if not preferences:
+        return baseline
+    budget = options.get("route_budget") or RouteSearchBudget()
+    evaluations = baseline.planning.get("candidate_evaluations", 0)
+    pairs = baseline.planning.get("label_pair_attempts", 0)
+    remaining = {name: getattr(budget, name) for name in budget.__slots__}
+    remaining["max_candidate_evaluations"] -= evaluations
+    remaining["max_batch_label_pairs"] -= pairs
+    remaining["max_batch_replays"] -= baseline.batch_replays
+    if min(remaining.values()) <= 0:
+        return baseline
+    alternate = _plan_feasible_route_batch_once(edges, lanes, nodes, **dict(options,
+                    route_budget=RouteSearchBudget(**remaining), side_preferences=preferences,
+                    initial_component_replans=baseline.component_replans,
+                    initial_seed_components=baseline.planning.get("seed_components"), record_seed_components=True))
+    selected = baseline
+    if alternate.status == ROUTE_COMPLETE and (baseline.status != ROUTE_COMPLETE
+            or _batch_readability_key(alternate, preferences) < _batch_readability_key(baseline, preferences)):
+        selected = alternate
+    selected.batch_replays = baseline.batch_replays + alternate.batch_replays
+    aggregate_replans = dict(baseline.component_replans)
+    aggregate_replans.update(alternate.component_replans)
+    selected.component_replans = aggregate_replans
+    selected.planning = dict(selected.planning, budgets={name: getattr(budget, name) for name in budget.__slots__}, complete_alternatives=sum(result.status == ROUTE_COMPLETE for result in (baseline, alternate)),
+                             compared_batches=2, selected_composition=selected is alternate,
+                             candidate_evaluations=evaluations + alternate.planning.get("candidate_evaluations", 0),
+                             label_pair_attempts=pairs + alternate.planning.get("label_pair_attempts", 0))
+    return selected
+
+
+def _plan_feasible_route_batch_once(edges, lanes, nodes, *, main_path=None, mutable_edge_ids=None,
                                locked_offsets=None, routing_context=None, v3_semantics=False,
-                               port_budget=None, route_budget=None, clearance_profiles=None):
+                               port_budget=None, route_budget=None, clearance_profiles=None, side_preferences=None,
+                               initial_component_replans=None, initial_seed_components=None,
+                               record_seed_components=False):
     """Bounded repair of automatic candidates with immutable external obstacles.
 
     Every replay has one finite state. Previously accepted independent decisions
@@ -2432,8 +2568,10 @@ def _plan_feasible_route_batch(edges, lanes, nodes, *, main_path=None, mutable_e
             nodes[edge["from"]], nodes[edge["to"]], lanes, main_path_pairs=base["main_path_pairs"],
             outgoing_counts=base["outgoing_counts"], bottom_reserved_sources=base["bottom_reserved_sources"],
             v3_semantics=v3_semantics)
+    default_sides.update(side_preferences or {})
     side_options = {edge["id"]: side_pair_candidates(edge, default_sides[edge["id"]], lanes, nodes,
                     main=edge["id"] in main_ids or edge["id"] not in mutable,
+                    allow_main_decision=v3_semantics and edge["id"] in mutable,
                     locked=(locked_offsets or {}).get(edge["id"], (None, None)),
                     occupied={key: sum(other["id"] != edge["id"] and
                                (other[field], default_sides[other["id"]][index]) == key
@@ -2451,7 +2589,11 @@ def _plan_feasible_route_batch(edges, lanes, nodes, *, main_path=None, mutable_e
     for edge_id in sorted(by_id):
         component = tuple(sorted(_port_dependency_closure({edge_id}, requests, links)))
         seed_for[edge_id] = component
-    replans = {}
+    for component in initial_seed_components or ():
+        for edge_id in component:
+            if edge_id in seed_for:
+                seed_for[edge_id] = tuple(component)
+    replans = dict(initial_component_replans or {})
     evaluated = 0
     label_pairs_used = 0
     stable = {}
@@ -2474,6 +2616,8 @@ def _plan_feasible_route_batch(edges, lanes, nodes, *, main_path=None, mutable_e
                     "history": history[-32:], "history_count": len(history),
                     "truncated": len(history) > 32,
                     "budgets": {name: getattr(budget, name) for name in budget.__slots__}}
+        if record_seed_components:
+            planning["seed_components"] = [list(component) for component in sorted(set(seed_for.values()))]
         if failure is not None:
             detail = failure.evidence.setdefault("planning", {})
             detail.update(planning)

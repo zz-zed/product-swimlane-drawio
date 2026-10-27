@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -324,6 +325,150 @@ class FeasibleRoutingTests(unittest.TestCase):
         self.assertEqual(sides(edge), ("bottom", "top"))
         self.assertEqual(sides(dict(edge, exit_side="right")), ("right", "top"))
         self.assertEqual(sides(edge, {"n1"}), ("left", "top"))
+
+    @staticmethod
+    def composition_spec(reverse=False):
+        source_lane, target_lane = ("b", "a") if reverse else ("a", "b")
+        return dict(schema_version="3", title="Neutral choice", behavior_pattern="custom",
+            lanes=[{"id": key, "label": key.upper(), "width": 240} for key in ("a", "b")],
+            nodes=[{"id": key, "lane": lane, "rank": rank, "type": kind,
+                    "label": "" if kind in {"start", "end"} else key}
+                   for key, lane, rank, kind in (("start", source_lane, 1, "start"),
+                       ("choice", source_lane, 2, "decision"), ("continue", target_lane, 3, "process"),
+                       ("later", source_lane, 3, "process"), ("end", target_lane, 4, "end"),
+                       ("later_end", source_lane, 4, "end"))],
+            edges=[{"id": "begin", "from": "start", "to": "choice", "flow_role": "main"},
+                   {"id": "continue", "from": "choice", "to": "continue", "flow_role": "main", "branch": "positive", "outcome": "continue"},
+                   {"id": "later", "from": "choice", "to": "later", "flow_role": "branch", "branch": "negative", "outcome": "later"},
+                   {"id": "finish", "from": "continue", "to": "end", "flow_role": "main"},
+                   {"id": "later_finish", "from": "later", "to": "later_end", "flow_role": "branch"}],
+            main_path=["start", "choice", "continue", "end"])
+
+    def test_complete_composition_batches_choose_mirrored_facing_exits(self):
+        for reverse, side in ((False, "right"), (True, "left")):
+            with self.subTest(reverse=reverse):
+                spec = self.composition_spec(reverse)
+                args, kwargs = self.captured(spec)
+                result = self.replay(args, kwargs)
+                self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+                self.assertEqual(result.planning["compared_batches"], 2)
+                decisions = {item.edge_id: item for item in result.decisions}
+                self.assertEqual(decisions["continue"].assignment.exit.side, side)
+                self.assertEqual(decisions["later"].assignment.exit.side, "bottom")
+                self.assertTrue(self.loaded.validation.validate_tree(self.loaded.build.build_tree(spec))["quality_gate_passed"])
+                self.assertLessEqual(result.planning["candidate_evaluations"], 8192)
+
+    def test_composition_respects_explicit_sides_and_locked_saved_ports(self):
+        spec = self.composition_spec()
+        spec["edges"][1].update(exit_side="bottom", entry_side="top")
+        args, kwargs = self.captured(spec)
+        result = self.replay(args, kwargs)
+        decision = next(item for item in result.decisions if item.edge_id == "continue")
+        self.assertEqual(decision.assignment.exit.side, "bottom")
+        self.assertNotIn("compared_batches", result.planning)
+        edges, lanes, nodes = args
+        for main in (False, True):
+            alternatives = self.routing.side_pair_candidates(edges[1], ("bottom", "top"), lanes, nodes, main=main)
+            self.assertEqual(set(alternatives), {("bottom", "top")})
+        self.assertEqual(self.routing._decision_composition_preferences(edges, lanes, nodes,
+            spec["main_path"], set(), {}), {})
+
+    def test_optional_composition_shares_original_component_budgets_and_keeps_safe_baseline(self):
+        args, kwargs = self.captured(self.composition_spec())
+        original_once = self.routing._plan_feasible_route_batch_once
+        original_route = self.routing.route_edge_at_ports
+        snapshots = []
+        def observed(*args, **options):
+            result = original_once(*args, **options)
+            snapshots.append(copy.deepcopy((result.batch_replays, result.component_replans, result.planning)))
+            return result
+        def blocked_alternative(edge, assignment, *args, **options):
+            if edge["id"] == "continue" and assignment.exit.side == "right":
+                return self.routing.RouteFailure("routing/no-safe-route", edge["id"],
+                    "Neutral obstruction in optional facing corridor",
+                    evidence={"planning": {"reason": "candidate_space_exhausted"}})
+            return original_route(edge, assignment, *args, **options)
+        budget = self.routing.RouteSearchBudget(max_component_replans=3)
+        with mock.patch.object(self.routing, "_plan_feasible_route_batch_once", side_effect=observed), \
+             mock.patch.object(self.routing, "route_edge_at_ports", side_effect=blocked_alternative):
+            result = self.replay(args, kwargs, route_budget=budget)
+        self.assertEqual(result.status, self.routing.ROUTE_COMPLETE)
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(result.batch_replays, sum(item[0] for item in snapshots))
+        self.assertEqual(snapshots[0][2]["seed_components"], snapshots[1][2]["seed_components"])
+        self.assertTrue(all(value <= 3 for value in result.component_replans.values()))
+        self.assertEqual(result.planning["candidate_evaluations"], sum(item[2]["candidate_evaluations"] for item in snapshots))
+        self.assertLessEqual(result.batch_replays, budget.max_batch_replays)
+        self.assertFalse(result.planning["selected_composition"])
+
+    def test_reroute_only_patch_composes_saved_automatic_edges_without_moving_nodes(self):
+        with mock.patch.object(self.routing, "_decision_composition_preferences", return_value={}):
+            tree = self.loaded.build.build_tree(self.composition_spec())
+        document = self.loaded.document
+        before = copy.deepcopy(tree)
+        root = document.graph_root(tree)
+        node_geometry = {key: copy.deepcopy(record["geometry"]) for key, record in
+                         document.lane_node_records(root, document.find_pool(tree))[1].items()}
+        edges = document.edge_records(root)
+        protected = {key: copy.deepcopy(cell) for key, cell in edges.items() if key not in {"continue", "later"}}
+        changes = {"update_edges": [{"id": key, "reroute": True} for key in ("continue", "later")]}
+        self.loaded.roundtrip.patch_tree(tree, changes, allow_geometry_updates=False)
+        after_root = document.graph_root(tree)
+        after_edges = document.edge_records(after_root)
+        self.assertIn("exitX=1;", after_edges["continue"].attrib["style"])
+        self.assertIn("exitY=1;", after_edges["later"].attrib["style"])
+        self.assertEqual(node_geometry, {key: record["geometry"] for key, record in
+            document.lane_node_records(after_root, document.find_pool(tree))[1].items()})
+        for key, cell in protected.items():
+            self.assertEqual(ET.tostring(cell), ET.tostring(after_edges[key]))
+        self.assertTrue(self.loaded.validation.validate_tree(tree)["quality_gate_passed"])
+        self.assertTrue(self.loaded.roundtrip.compare_trees(before, tree, changes)["preserved"])
+
+    def test_lone_unpositioned_terminal_aligns_to_predecessor_and_protects_intent(self):
+        spec = self.composition_spec()
+        predecessor = next(node for node in spec["nodes"] if node["id"] == "later")
+        predecessor["x"] = 20
+        widths = self.loaded.layout.effective_lane_widths(spec)
+        positions = self.loaded.layout.v3_node_x_positions(spec, widths)
+        end_width = self.loaded.sizing.node_size(next(node for node in spec["nodes"] if node["id"] == "later_end"))[0]
+        self.assertEqual(positions["later_end"] + end_width / 2,
+                         20 + self.loaded.sizing.node_size(predecessor)[0] / 2)
+        terminal = next(node for node in spec["nodes"] if node["id"] == "later_end")
+        terminal["x"] = 144
+        self.assertNotIn("later_end", self.loaded.layout.v3_node_x_positions(spec, widths))
+        terminal.pop("x")
+        terminal["slot"] = "main"
+        self.assertNotEqual(self.loaded.layout.v3_node_x_positions(spec, widths)["later_end"], positions["later_end"])
+        terminal.pop("slot")
+        spec["edges"].append({"id": "merge", "from": "choice", "to": "later_end"})
+        self.assertNotEqual(self.loaded.layout.v3_node_x_positions(spec, widths)["later_end"], positions["later_end"])
+
+    def test_terminal_alignment_serializes_straight_auto_path_and_preserves_explicit_route(self):
+        spec = dict(schema_version="3", behavior_pattern="linear", title="Neutral side slot",
+            layout={"profile": "review"}, lanes=[{"id": "a", "label": "Lane A", "width": 500}],
+            nodes=[{"id": "start", "lane": "a", "rank": 1, "type": "start", "label": ""},
+                   {"id": "work", "lane": "a", "rank": 2, "type": "process", "label": "Work", "slot": "left"},
+                   {"id": "note", "lane": "a", "rank": 2, "type": "note", "label": "Context", "slot": "main"},
+                   {"id": "end", "lane": "a", "rank": 3, "type": "end", "label": ""}],
+            edges=[{"id": "e0", "from": "start", "to": "work"}, {"id": "e1", "from": "work", "to": "end"}],
+            main_path=["start", "work", "end"])
+        document = self.loaded.document
+        def records(tree):
+            return document.lane_node_records(document.graph_root(tree), document.find_pool(tree))
+        automatic = self.loaded.build.build_tree(spec)
+        automatic = ET.ElementTree(ET.fromstring(ET.tostring(automatic.getroot())))
+        lanes, nodes = records(automatic)
+        path = document.edge_polyline(document.edge_records(document.graph_root(automatic))["e1"], lanes, nodes)
+        self.assertEqual(self.loaded.geometry.bend_count(path), 0)
+        self.assertTrue(self.loaded.validation.validate_tree(automatic)["quality_gate_passed"])
+        waypoints = [(165., 245.5), (332., 245.5)]
+        spec["edges"][1].update(exit_side="bottom", entry_side="top", exit_offset=.5, entry_offset=.5, waypoints=waypoints)
+        explicit = self.loaded.build.build_tree(spec)
+        explicit = ET.ElementTree(ET.fromstring(ET.tostring(explicit.getroot())))
+        lanes, nodes = records(explicit)
+        self.assertEqual(nodes["end"]["geometry"]["x"] + nodes["end"]["geometry"]["width"]/2, 332.)
+        self.assertEqual(document.edge_waypoints(document.edge_records(document.graph_root(explicit))["e1"]), waypoints)
+        self.assertTrue(self.loaded.validation.validate_tree(explicit)["quality_gate_passed"])
 
     def test_cross_lane_return_prefers_outer_pair_before_opposite_side_detour(self):
         args, _ = self.captured()
